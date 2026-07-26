@@ -1,0 +1,19 @@
+.build/
+Build/
+tmp/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Local IDE/agent caches
+.claude/
+.codex-derived/
+
+# Keep the remote main branch source-only. These local materials must never
+# be staged or pushed, including with `git add -A`.
+/Research/
+/Scripts/
+/Tests/
+/AGENTS.md
+/Agent.md
+/Claude.md
