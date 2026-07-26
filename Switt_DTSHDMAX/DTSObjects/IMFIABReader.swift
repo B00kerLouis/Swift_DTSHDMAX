@@ -79,7 +79,7 @@ public enum IMFIABReader {
                 }
                 switch tag {
                 case 0x01:
-                    break // Preamble segment; content is out of scope per ST 2098-2 §8.1.3.
+                    break // Preamble segment; content is out of scope per ST 2098-2 section 8.1.3.
                 case 0x02:
                     guard length <= UInt64(Int.max) else {
                         throw DTSError.valueOutOfRange(field: "IAFrame length", value: String(length))
@@ -460,7 +460,7 @@ public enum IMFIABReader {
                 throw DTSError.malformed("IAFrame contains duplicate AudioDataID \(audioDataID)")
             }
         default:
-            break // Unknown elements shall be skipped (ST 2098-2 §10.1.1).
+            break // Unknown elements shall be skipped (ST 2098-2 section 10.1.1).
         }
 
         try reader.seek(to: endBit, field: "IAElement boundary")
@@ -736,7 +736,7 @@ public enum IMFIABReader {
 
     // MARK: - Field helpers
 
-    /// ST 2098-2 §5.2 Plex decoding on the shared MSB-first bit reader.
+    /// ST 2098-2 section 5.2 Plex decoding on the shared MSB-first bit reader.
     static func plex(_ reader: inout BitReader, startWidth: Int, field: String) throws -> Int {
         var width = startWidth
         while true {
@@ -754,7 +754,7 @@ public enum IMFIABReader {
         }
     }
 
-    /// ST 2098-2 §5.4 DistanceXY: maps [2^(n-1)-1, 2^n-1] linearly onto [0,1].
+    /// ST 2098-2 section 5.4 DistanceXY: maps [2^(n-1)-1, 2^n-1] linearly onto [0,1].
     private static func distanceXY(_ code: Int, field: String) throws -> Double {
         guard code >= 32_767, code <= 65_535 else {
             throw DTSError.valueOutOfRange(field: field, value: String(code))

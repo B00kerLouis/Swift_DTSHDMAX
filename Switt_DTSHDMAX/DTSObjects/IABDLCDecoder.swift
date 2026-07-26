@@ -4,9 +4,9 @@ import Foundation
 ///
 /// The 96 kHz extension layer is rejected at the IAFrame level because this
 /// pipeline requires SampleRate code 0; a compliant AudioDataDLC element must
-/// carry the same DLCSampleRate as its IAFrame (§10.2.2), which the decoder
+/// carry the same DLCSampleRate as its IAFrame (section 10.2.2), which the decoder
 /// enforces. All arithmetic follows the normative INT32/INT64 pseudocode in
-/// B.6–B.10, including truncating overflow semantics.
+/// B.6-B.10, including truncating overflow semantics.
 enum IABDLCDecoder {
     /// Decodes one AudioDataDLC payload (starting at the DLCSize field) into
     /// 24-bit samples. `sampleCount` and `frameRateCode` come from the
@@ -59,7 +59,7 @@ enum IABDLCDecoder {
             }
         }
 
-        // Entropy-coded residual (§9.6).
+        // Entropy-coded residual (section 9.6).
         var residual = [Int32](repeating: 0, count: sampleCount)
         for subBlock in 0..<subBlockCount {
             let base = subBlock * subBlockSize

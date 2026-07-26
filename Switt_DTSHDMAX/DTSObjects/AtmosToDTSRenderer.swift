@@ -25,7 +25,7 @@ public enum AtmosToDTSRenderer {
     }
 
     private static let q30: Int64 = 1 << 30
-    /// round(2^30 / sqrt(2)) — the same -3.0103 dB constant as DTSBedRenderer.
+    /// round(2^30 / sqrt(2)) - the same -3.0103 dB constant as DTSBedRenderer.
     private static let q30HalfPower: Int64 = 759_250_125
 
     public static func renderSevenOne(

@@ -117,7 +117,7 @@ public struct DTSFrameRate: Sendable, Hashable, Codable, CustomStringConvertible
     }
 
     /// Non-drop SMPTE timecode counts fractional rates on their nominal clock:
-    /// 23.976→24, 29.97→30, 47.952→48 and 59.94→60.
+    /// 23.976 maps to 24, 29.97 to 30, 47.952 to 48, and 59.94 to 60.
     public var nominalFramesPerSecond: Int {
         Self.definition(numerator: numerator, denominator: denominator)!.nominalFramesPerSecond
     }

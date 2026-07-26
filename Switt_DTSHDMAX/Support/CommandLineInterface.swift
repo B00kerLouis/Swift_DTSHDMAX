@@ -1670,8 +1670,8 @@ public enum DTSHDMACommandLine {
         private func render(percent: Int) {
             let width = 40
             let filled = percent * width / 100
-            let bar = String(repeating: "█", count: filled)
-                + String(repeating: "░", count: width - filled)
+            let bar = String(repeating: "#", count: filled)
+                + String(repeating: "-", count: width - filled)
             FileHandle.standardError.write(
                 Data("\r  Encoding [\(bar)] \(percent)%".utf8)
             )
