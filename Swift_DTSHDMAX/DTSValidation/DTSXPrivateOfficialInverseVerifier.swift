@@ -42,10 +42,17 @@ public struct DTSXPrivateOfficialInverseFrame: Sendable, Equatable, Codable {
 public struct DTSXPrivateOfficialInverseReport: Sendable, Equatable, Codable {
     public let indexPath: String
     public let payloadPath: String
+    public let requestedFrameOffset: Int
     public let requestedMaximumFrameCount: Int?
     public let examinedFrameCount: Int
     public let branchZeroFrameCount: Int
+    public let branchOneFrameCount: Int
+    public let branchTwoFrameCount: Int
+    public let branchThreeFrameCount: Int
     public let decodedBranchZeroFrameCount: Int
+    public let decodedBranchOneFrameCount: Int
+    public let decodedBranchTwoFrameCount: Int
+    public let decodedBranchThreeFrameCount: Int
     public let officialGrammarEligibleFrameCount: Int
     public let reencodedFrameCount: Int
     public let byteExactFrameCount: Int
@@ -73,7 +80,7 @@ public struct DTSXPrivateOfficialInverseReport: Sendable, Equatable, Codable {
     }
 }
 
-/// Re-encodes PCM decoded from official branch-zero frames and compares every
+/// Re-encodes PCM decoded from official recovered decorrelation branches and compares every
 /// serialized field. This is intentionally a reference-set verifier, not a
 /// product dependency: production encoding never reads or copies oracle bytes.
 public enum DTSXPrivateOfficialInverseVerifier {
@@ -81,20 +88,31 @@ public enum DTSXPrivateOfficialInverseVerifier {
         indexURL: URL,
         payloadURL: URL,
         outputURL: URL,
-        maximumFrameCount: Int? = nil
+        maximumFrameCount: Int? = nil,
+        frameOffset: Int = 0
     ) throws -> DTSXPrivateOfficialInverseReport {
         if let maximumFrameCount, maximumFrameCount <= 0 {
             throw DTSError.invalidArgument("maximum official inverse frame count must be positive")
+        }
+        guard frameOffset >= 0 else {
+            throw DTSError.invalidArgument("official inverse frame offset must not be negative")
         }
         let loaded = try DTSXPrivateArtifactLoader.load(
             indexURL: indexURL,
             payloadURL: payloadURL
         )
-        let records = maximumFrameCount.map { Array(loaded.records.prefix($0)) }
-            ?? loaded.records
+        let offsetRecords = Array(loaded.records.dropFirst(frameOffset))
+        let records = maximumFrameCount.map { Array(offsetRecords.prefix($0)) }
+            ?? offsetRecords
 
         var branchZeroFrameCount = 0
+        var branchOneFrameCount = 0
+        var branchTwoFrameCount = 0
+        var branchThreeFrameCount = 0
         var decodedBranchZeroFrameCount = 0
+        var decodedBranchOneFrameCount = 0
+        var decodedBranchTwoFrameCount = 0
+        var decodedBranchThreeFrameCount = 0
         var eligibleFrameCount = 0
         var reencodedFrameCount = 0
         var exactFrameCount = 0
@@ -121,8 +139,20 @@ public enum DTSXPrivateOfficialInverseVerifier {
             originalTotalByteCount += original.count
             do {
                 let ast = try DTSXPrivateFrameAST.parse(original[...])
-                guard ast.candidateSecondaryBranchCode == 0 else { continue }
-                branchZeroFrameCount += 1
+                let branchCode = ast.candidateSecondaryBranchCode
+                guard (0...3).contains(branchCode) else { continue }
+                switch branchCode {
+                case 0:
+                    branchZeroFrameCount += 1
+                case 1:
+                    branchOneFrameCount += 1
+                case 2:
+                    branchTwoFrameCount += 1
+                case 3:
+                    branchThreeFrameCount += 1
+                default:
+                    break
+                }
                 let prediction = try ast.parsePredictionHeaderCandidate()
                 let navigation = try? ast.parseNavigation(
                     segmentCount: record.xllSyntax?.segmentCount ?? 2
@@ -155,7 +185,18 @@ public enum DTSXPrivateOfficialInverseVerifier {
                     segmentCount: record.xllSyntax?.segmentCount ?? 2,
                     segmentSampleCount: record.xllSyntax?.segmentSampleCount ?? 256
                 )
-                decodedBranchZeroFrameCount += 1
+                switch branchCode {
+                case 0:
+                    decodedBranchZeroFrameCount += 1
+                case 1:
+                    decodedBranchOneFrameCount += 1
+                case 2:
+                    decodedBranchTwoFrameCount += 1
+                case 3:
+                    decodedBranchThreeFrameCount += 1
+                default:
+                    break
+                }
                 let routing = try ast.routing
                 let reencoded = try DTSXPrivateFrameEncoder(
                     allowsExperimentalHybridRice: true
@@ -163,7 +204,15 @@ public enum DTSXPrivateOfficialInverseVerifier {
                     codedPlanes: decoded.codedPlanes,
                     routing: routing,
                     prediction: prediction,
-                    navigation: navigation,
+                    // Some no-NAVI zero-code forms can satisfy the loose
+                    // structural NAVI probe by coincidence. The decoder's
+                    // CRC-closed side-info classification is authoritative
+                    // for this inverse reconstruction.
+                    navigation: decoded.noNavigationZeroSideInfo == nil
+                        ? navigation
+                        : nil,
+                    entropySegments: decoded.entropySegments,
+                    noNavigationZeroSideInfo: decoded.noNavigationZeroSideInfo,
                     segmentationPlan: segmentationPlan
                 )
                 reencodedFrameCount += 1
@@ -181,6 +230,11 @@ public enum DTSXPrivateOfficialInverseVerifier {
                     collectEntropyDiagnostics: true
                 )
                 let rebuiltRouting = try rebuiltAST.routing
+                guard rebuiltDecoded.codedPlanes == decoded.codedPlanes else {
+                    throw DTSError.malformed(
+                        "qualified XLL-X inverse changed decoded coded-plane PCM"
+                    )
+                }
                 reencodedPredictionReservedByteCounts[
                     reservedPredictionByteCount(rebuiltPrediction),
                     default: 0
@@ -285,10 +339,17 @@ public enum DTSXPrivateOfficialInverseVerifier {
         let report = DTSXPrivateOfficialInverseReport(
             indexPath: indexURL.standardizedFileURL.path,
             payloadPath: payloadURL.standardizedFileURL.path,
+            requestedFrameOffset: frameOffset,
             requestedMaximumFrameCount: maximumFrameCount,
             examinedFrameCount: records.count,
             branchZeroFrameCount: branchZeroFrameCount,
+            branchOneFrameCount: branchOneFrameCount,
+            branchTwoFrameCount: branchTwoFrameCount,
+            branchThreeFrameCount: branchThreeFrameCount,
             decodedBranchZeroFrameCount: decodedBranchZeroFrameCount,
+            decodedBranchOneFrameCount: decodedBranchOneFrameCount,
+            decodedBranchTwoFrameCount: decodedBranchTwoFrameCount,
+            decodedBranchThreeFrameCount: decodedBranchThreeFrameCount,
             officialGrammarEligibleFrameCount: eligibleFrameCount,
             reencodedFrameCount: reencodedFrameCount,
             byteExactFrameCount: exactFrameCount,

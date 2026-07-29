@@ -45,6 +45,46 @@ public struct HDMAEncoder: Sendable {
         progress?(1_000, 1_000)
         return stream
     }
+
+    /// Writes the final `.dtshd` product at `outputURL` as each access unit is
+    /// encoded. The target file is created before the first XLL batch completes
+    /// and grows throughout the job; its DTSHD container metadata is finalized
+    /// only after the last access unit is available.
+    public func encode(
+        _ pcm: PCMBuffer,
+        to outputURL: URL,
+        progress: ((Int, Int) -> Void)? = nil
+    ) throws {
+        guard pcm.format == format else {
+            throw DTSError.invalidArgument("PCM format does not match HDMA encoder format")
+        }
+        guard pcm.format.layout == .fiveOneSide || pcm.format.layout == .sevenOne else {
+            throw DTSError.unsupported("DTS HDMA accepts 5.1(side) or 7.1 PCM")
+        }
+        let writer = try DTSHDFileContainer.StreamingWriter(
+            outputURL: outputURL,
+            format: pcm.format,
+            sourceSampleCount: pcm.sampleCount,
+            frameRate: frameRate
+        )
+        do {
+            try DTSHDMAEncoder(configuration: DTSHDMAEncoderConfiguration(
+                format: pcm.format,
+                profile: .dtsHDMA,
+                deterministic: true,
+                tailPolicy: tailPolicy
+            )).encode(pcm, writingAccessUnitsTo: { accessUnit in
+                try writer.append(accessUnit: accessUnit)
+            }, progress: { completed, total in
+                progress?(950 * completed / max(1, total), 1_000)
+            })
+            try writer.finish()
+        } catch {
+            writer.cancel()
+            throw error
+        }
+        progress?(1_000, 1_000)
+    }
 }
 
 /// Configuration for the qualified Atmos-to-DTS:X HDMA path.

@@ -16,6 +16,200 @@ enum DTSHDFileContainer {
     private static let headerTag = Array("DTSHDHDR".utf8)
     private static let streamDataTag = Array("STRMDATA".utf8)
 
+    private struct HDMAMetrics {
+        let accessUnitCount: Int
+        let totalExSSByteCount: Int
+        let maximumExSSByteCount: Int
+        let accessUnitOffsets: [Int]
+        let firstAccessUnitByteCount: Int
+    }
+
+    private struct StreamingPrefix {
+        let data: Data
+        let extensionMetadataOffset: UInt64
+        let accessUnitCountOffset: UInt64
+        let streamByteCountOffset: UInt64
+    }
+
+    /// Writes a DTSHD product to its final URL as access units become ready.
+    ///
+    /// The STRMDATA chunk length and metrics are not known until encoding
+    /// completes, so the writer reserves those header fields, appends every
+    /// complete Core+ExSS access unit immediately, then patches the reserved
+    /// fields and writes the navigation/footer chunks during ``finish()``.
+    /// Until finish succeeds the target is intentionally an incomplete DTSHD
+    /// file, but its size advances with encoder progress instead of remaining
+    /// absent until the full program has been built in memory.
+    final class StreamingWriter {
+        let outputURL: URL
+
+        private let handle: FileHandle
+        private let sourceSampleCount: Int
+        private let frameRate: DTSFrameRate
+        private let prefix: StreamingPrefix
+        private var elementaryByteCount = 0
+        private var accessUnitOffsets: [Int] = []
+        private var totalExSSByteCount = 0
+        private var maximumExSSByteCount = 0
+        private var firstAccessUnit: Data?
+        private var isFinished = false
+
+        init(
+            outputURL: URL,
+            format: PCMFormat,
+            sourceSampleCount: Int,
+            frameRate: DTSFrameRate,
+            streamKind: DTSHDMAStreamKind = .dtsHDMA
+        ) throws {
+            let output = outputURL.standardizedFileURL
+            let prefix = try DTSHDFileContainer.makeStreamingPrefix(
+                format: format,
+                sourceSampleCount: sourceSampleCount,
+                streamKind: streamKind
+            )
+            let parent = output.deletingLastPathComponent()
+            do {
+                try FileManager.default.createDirectory(
+                    at: parent,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                throw DTSError.io(
+                    "cannot create output directory \(parent.path): \(error.localizedDescription)"
+                )
+            }
+
+            let outputHandle: FileHandle
+            do {
+                if FileManager.default.fileExists(atPath: output.path) {
+                    outputHandle = try FileHandle(forWritingTo: output)
+                    try outputHandle.truncate(atOffset: 0)
+                } else {
+                    guard FileManager.default.createFile(atPath: output.path, contents: nil) else {
+                        throw DTSError.io("cannot create \(output.path)")
+                    }
+                    outputHandle = try FileHandle(forWritingTo: output)
+                }
+            } catch let error as DTSError {
+                throw error
+            } catch {
+                throw DTSError.io("cannot open \(output.path) for progressive output: \(error.localizedDescription)")
+            }
+
+            self.outputURL = output
+            self.handle = outputHandle
+            self.sourceSampleCount = sourceSampleCount
+            self.frameRate = frameRate
+            self.prefix = prefix
+            do {
+                try outputHandle.write(contentsOf: prefix.data)
+                try outputHandle.synchronize()
+            } catch {
+                try? outputHandle.close()
+                throw DTSError.io("cannot initialize progressive output \(output.path): \(error.localizedDescription)")
+            }
+        }
+
+        deinit {
+            try? handle.close()
+        }
+
+        var byteCount: UInt64 {
+            UInt64(prefix.data.count + elementaryByteCount)
+        }
+
+        func append(accessUnit: Data) throws {
+            guard !isFinished else {
+                throw DTSError.invalidArgument("cannot append to a finalized DTSHD output")
+            }
+            let metrics = try DTSHDFileContainer.hdmaMetrics(accessUnit)
+            guard metrics.accessUnitCount == 1,
+                  metrics.firstAccessUnitByteCount == accessUnit.count else {
+                throw DTSError.malformed("progressive DTSHD output requires exactly one complete access unit")
+            }
+            guard elementaryByteCount <= Int(UInt32.max) else {
+                throw DTSError.valueOutOfRange(
+                    field: "DTSHD navigation offset",
+                    value: String(elementaryByteCount)
+                )
+            }
+            let (newElementaryByteCount, byteOverflow) = elementaryByteCount.addingReportingOverflow(accessUnit.count)
+            let (newExSSByteCount, exssOverflow) = totalExSSByteCount.addingReportingOverflow(metrics.totalExSSByteCount)
+            guard !byteOverflow, !exssOverflow else {
+                throw DTSError.valueOutOfRange(
+                    field: "DTSHD progressive stream size",
+                    value: String(accessUnit.count)
+                )
+            }
+
+            do {
+                try handle.write(contentsOf: accessUnit)
+                // Make every completed access unit visible to directory
+                // watchers and consumers that monitor the requested output.
+                try handle.synchronize()
+            } catch {
+                throw DTSError.io("cannot append DTSHD access unit to \(outputURL.path): \(error.localizedDescription)")
+            }
+            accessUnitOffsets.append(elementaryByteCount)
+            elementaryByteCount = newElementaryByteCount
+            totalExSSByteCount = newExSSByteCount
+            maximumExSSByteCount = max(maximumExSSByteCount, metrics.maximumExSSByteCount)
+            if firstAccessUnit == nil {
+                firstAccessUnit = accessUnit
+            }
+        }
+
+        func finish() throws {
+            guard !isFinished else {
+                throw DTSError.invalidArgument("DTSHD progressive output is already finalized")
+            }
+            guard let firstAccessUnit, !accessUnitOffsets.isEmpty else {
+                throw DTSError.malformed("DTSHD progressive output has no access units")
+            }
+            let metrics = HDMAMetrics(
+                accessUnitCount: accessUnitOffsets.count,
+                totalExSSByteCount: totalExSSByteCount,
+                maximumExSSByteCount: maximumExSSByteCount,
+                accessUnitOffsets: accessUnitOffsets,
+                firstAccessUnitByteCount: firstAccessUnit.count
+            )
+            let extensionMetadata = try DTSHDFileContainer.extensionMetadata(
+                metrics: metrics,
+                sourceSampleCount: sourceSampleCount
+            )
+            let footer = try DTSHDFileContainer.makeContainerFooter(
+                metrics: metrics,
+                frameRate: frameRate,
+                blackoutAccessUnit: firstAccessUnit
+            )
+            var accessUnitCount = Data()
+            DTSHDFileContainer.appendUInt32(metrics.accessUnitCount, to: &accessUnitCount)
+            var elementaryLength = Data()
+            DTSHDFileContainer.appendUInt64(elementaryByteCount, to: &elementaryLength)
+
+            do {
+                try handle.write(contentsOf: footer)
+                try handle.seek(toOffset: prefix.extensionMetadataOffset)
+                try handle.write(contentsOf: extensionMetadata)
+                try handle.seek(toOffset: prefix.accessUnitCountOffset)
+                try handle.write(contentsOf: accessUnitCount)
+                try handle.seek(toOffset: prefix.streamByteCountOffset)
+                try handle.write(contentsOf: elementaryLength)
+                try handle.synchronize()
+                try handle.close()
+            } catch {
+                throw DTSError.io("cannot finalize progressive DTSHD output \(outputURL.path): \(error.localizedDescription)")
+            }
+            isFinished = true
+        }
+
+        func cancel() {
+            guard !isFinished else { return }
+            try? handle.close()
+            isFinished = true
+        }
+    }
+
     static func wrapHDMA(
         elementaryStream: Data,
         format: PCMFormat,
@@ -161,6 +355,166 @@ enum DTSHDFileContainer {
         return output
     }
 
+    private static func makeStreamingPrefix(
+        format: PCMFormat,
+        sourceSampleCount: Int,
+        streamKind: DTSHDMAStreamKind
+    ) throws -> StreamingPrefix {
+        guard sourceSampleCount > 0, sourceSampleCount <= 0xffff_ffff_ff else {
+            throw DTSError.valueOutOfRange(
+                field: "DTSHD source sample count",
+                value: String(sourceSampleCount)
+            )
+        }
+        let channelPairMask = try containerChannelPairMask(format: format, streamKind: streamKind)
+
+        var output = Data()
+        appendChunk(
+            tag: "DTSHDHDR",
+            payload: Data([
+                0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+                0x00, 0x02, 0x00, 0x1d, 0x01, 0x00, 0x00, 0x00
+            ]),
+            to: &output
+        )
+        appendChunk(
+            tag: "CORESSMD",
+            payload: Data([
+                0x00, 0xbb, 0x80, 0x05, 0xe5, 0x08,
+                0x0b, 0x00, 0x00, 0x07, 0xdc, 0x00
+            ]),
+            to: &output
+        )
+
+        let extensionMetadataOffset = UInt64(output.count + 16)
+        appendChunk(tag: "EXTSS_MD", payload: Data(repeating: 0, count: 8), to: &output)
+
+        var accessUnitMetadata = Data([0x00, 0x00, 0x05])
+        appendUInt24(48_000, to: &accessUnitMetadata)
+        let accessUnitCountOffset = UInt64(output.count + 16 + accessUnitMetadata.count)
+        appendUInt32(0, to: &accessUnitMetadata)
+        appendUInt16(XLLSyntax.frameSampleCount, to: &accessUnitMetadata)
+        appendUInt40(sourceSampleCount, to: &accessUnitMetadata)
+        appendUInt16(channelPairMask, to: &accessUnitMetadata)
+        appendUInt16(XLLSyntax.coreCompatiblePrimingSampleCount, to: &accessUnitMetadata)
+        accessUnitMetadata.append(contentsOf: [0x00, 0x00, 0x00])
+        appendChunk(tag: "AUPR-HDR", payload: accessUnitMetadata, to: &output)
+
+        let streamByteCountOffset = UInt64(output.count + 8)
+        output.append(contentsOf: streamDataTag)
+        appendUInt64(0, to: &output)
+        return StreamingPrefix(
+            data: output,
+            extensionMetadataOffset: extensionMetadataOffset,
+            accessUnitCountOffset: accessUnitCountOffset,
+            streamByteCountOffset: streamByteCountOffset
+        )
+    }
+
+    private static func containerChannelPairMask(
+        format: PCMFormat,
+        streamKind: DTSHDMAStreamKind
+    ) throws -> Int {
+        guard format.sampleRate == 48_000, format.bitDepth == 24 else {
+            throw DTSError.unsupported("DTSHD product container requires 48 kHz/24-bit PCM")
+        }
+        guard streamKind == .dtsHDMA || streamKind == .dtsxHDMA else {
+            throw DTSError.invalidArgument("DTSHD product container requires a final HDMA stream")
+        }
+        if streamKind == .dtsxHDMA {
+            guard format.layout == .sevenOne else {
+                throw DTSError.unsupported("DTS:X product container requires a 7.1 compatibility bed")
+            }
+            return 0x886b
+        }
+        switch format.layout {
+        case .fiveOneSide:
+            return 0x000f
+        case .sevenOne:
+            return 0x084b
+        case .stereo:
+            throw DTSError.unsupported(
+                "DTS HDMA product container requires 5.1(side) or 7.1 PCM"
+            )
+        }
+    }
+
+    private static func extensionMetadata(
+        metrics: HDMAMetrics,
+        sourceSampleCount: Int
+    ) throws -> Data {
+        guard metrics.accessUnitCount > 0,
+              metrics.accessUnitCount <= Int(UInt32.max),
+              sourceSampleCount > 0 else {
+            throw DTSError.malformed("DTSHD progressive output has invalid program metrics")
+        }
+        let averageExtensionKbps = Int(
+            (Double(metrics.totalExSSByteCount) * 8.0 * 48_000.0
+                / Double(sourceSampleCount) / 1_000.0).rounded()
+        )
+        let peakExtensionKbps = Int(
+            (Double(metrics.maximumExSSByteCount) * 8.0 * 48_000.0
+                / Double(XLLSyntax.frameSampleCount) / 1_000.0).rounded()
+        )
+        guard averageExtensionKbps <= 0xff_ffff, peakExtensionKbps <= Int(UInt16.max) else {
+            throw DTSError.valueOutOfRange(
+                field: "DTSHD extension bitrate",
+                value: "average \(averageExtensionKbps), peak \(peakExtensionKbps) kbps"
+            )
+        }
+        var metadata = Data()
+        appendUInt24(averageExtensionKbps, to: &metadata)
+        metadata.append(0x00)
+        appendUInt16(peakExtensionKbps, to: &metadata)
+        metadata.append(contentsOf: [0x00, 0x80])
+        return metadata
+    }
+
+    private static func makeContainerFooter(
+        metrics: HDMAMetrics,
+        frameRate: DTSFrameRate,
+        blackoutAccessUnit: Data
+    ) throws -> Data {
+        guard metrics.firstAccessUnitByteCount > 0,
+              blackoutAccessUnit.count == metrics.firstAccessUnitByteCount else {
+            throw DTSError.malformed("DTSHD blackout access unit is unavailable")
+        }
+        var output = Data()
+        var navigation = Data()
+        appendUInt32(metrics.accessUnitCount, to: &navigation)
+        appendUInt32(0x0001_0400, to: &navigation)
+        for offset in metrics.accessUnitOffsets {
+            guard offset >= 0, offset <= Int(UInt32.max) else {
+                throw DTSError.valueOutOfRange(
+                    field: "DTSHD navigation offset",
+                    value: String(offset)
+                )
+            }
+            let value = UInt32(offset)
+            let packed = (value << 8) | (value >> 24)
+            appendUInt32(Int(packed), to: &navigation)
+        }
+        appendChunk(tag: "NAVI-TBL", payload: navigation, to: &output)
+
+        var timecode = Data()
+        appendUInt32(48_000, to: &timecode)
+        timecode.append(frameRate.containerCode)
+        timecode.append(contentsOf: Array(repeating: 0, count: 27))
+        appendChunk(tag: "TIMECODE", payload: timecode, to: &output)
+
+        var buildVersion = Data(
+            "BUILD DATE = Jul 23 2026\\nBUILD TIME = 00:00:00\\nVERSION = 1\\nREVISION = 0\\n\\0".utf8
+        )
+        if buildVersion.count < 76 {
+            buildVersion.append(contentsOf: Array(repeating: 0, count: 76 - buildVersion.count))
+        } else if buildVersion.count > 76 {
+            buildVersion = Data(buildVersion.prefix(76))
+        }
+        appendChunk(tag: "BUILDVER", payload: buildVersion, to: &output)
+        appendChunk(tag: "BLACKOUT", payload: blackoutAccessUnit, to: &output)
+        return output
+    }
+
     static func authoringFrameRate(at url: URL) throws -> DTSFrameRate? {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -284,15 +638,7 @@ enum DTSHDFileContainer {
         return value
     }
 
-    private static func hdmaMetrics(
-        _ stream: Data
-    ) throws -> (
-        accessUnitCount: Int,
-        totalExSSByteCount: Int,
-        maximumExSSByteCount: Int,
-        accessUnitOffsets: [Int],
-        firstAccessUnitByteCount: Int
-    ) {
+    private static func hdmaMetrics(_ stream: Data) throws -> HDMAMetrics {
         var offset = 0
         var accessUnitCount = 0
         var totalExSSByteCount = 0
@@ -347,12 +693,12 @@ enum DTSHDFileContainer {
         guard accessUnitCount > 0, offset == stream.count else {
             throw DTSError.malformed("DTSHD elementary stream has no complete access units")
         }
-        return (
-            accessUnitCount,
-            totalExSSByteCount,
-            maximumExSSByteCount,
-            accessUnitOffsets,
-            firstAccessUnitByteCount
+        return HDMAMetrics(
+            accessUnitCount: accessUnitCount,
+            totalExSSByteCount: totalExSSByteCount,
+            maximumExSSByteCount: maximumExSSByteCount,
+            accessUnitOffsets: accessUnitOffsets,
+            firstAccessUnitByteCount: firstAccessUnitByteCount
         )
     }
 

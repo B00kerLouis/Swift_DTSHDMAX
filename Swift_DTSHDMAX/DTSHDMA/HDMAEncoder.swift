@@ -98,7 +98,7 @@ public struct DTSHDMAEncoder: Sendable {
     }
 
     private struct InternalEncodedResult: Sendable {
-        let stream: Data
+        let stream: Data?
         let privateStream: DTSXPrivateEncodedStream?
         let segmentationPlans: [XLLSegmentationPlan]
     }
@@ -111,7 +111,30 @@ public struct DTSHDMAEncoder: Sendable {
         _ pcm: PCMBuffer,
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Data {
-        try encodeInternal(pcm, privateXLLXSource: nil, progress: progress).stream
+        guard let stream = try encodeInternal(
+            pcm,
+            privateXLLXSource: nil,
+            progress: progress
+        ).stream else {
+            throw DTSError.malformed("in-memory DTS HDMA encoding produced no stream")
+        }
+        return stream
+    }
+
+    /// Emits each completed Core+ExSS access unit immediately. The callback is
+    /// invoked on the serial output path, after the parallel XLL batch has been
+    /// assembled, so callers can append directly to one output file safely.
+    public func encode(
+        _ pcm: PCMBuffer,
+        writingAccessUnitsTo output: @escaping (Data) throws -> Void,
+        progress: ((Int, Int) -> Void)? = nil
+    ) throws {
+        _ = try encodeInternal(
+            pcm,
+            privateXLLXSource: nil,
+            accessUnitOutput: output,
+            progress: progress
+        )
     }
 
     /// Encodes the public Core+XLL compatibility bed while placing one native
@@ -121,15 +144,18 @@ public struct DTSHDMAEncoder: Sendable {
     public func encode(
         _ pcm: PCMBuffer,
         privateXLLXFrames: [Data],
-        coreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
+        coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Data {
-        try encodeInternal(
+        guard let stream = try encodeInternal(
             pcm,
             privateXLLXSource: .frames(privateXLLXFrames),
             privateCoreAssociationPolicy: coreAssociationPolicy,
             progress: progress
-        ).stream
+        ).stream else {
+            throw DTSError.malformed("in-memory DTS:X compatibility encoding produced no stream")
+        }
+        return stream
     }
 
     /// Couples every private XLL-X frame to the final dynamic segmentation of
@@ -138,7 +164,7 @@ public struct DTSHDMAEncoder: Sendable {
     public func encode(
         _ pcm: PCMBuffer,
         privateXLLXSession: DTSXPrivateStreamEncodingSession,
-        coreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
+        coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> DTSHDMADTSXEncodedStream {
         let result = try encodeInternal(
@@ -151,16 +177,40 @@ public struct DTSHDMAEncoder: Sendable {
             throw DTSError.malformed("DTS:X encoding did not finalize its private stream")
         }
         return DTSHDMADTSXEncodedStream(
-            stream: result.stream,
+            stream: try requiredInMemoryStream(result.stream),
             privateStream: privateStream,
             segmentationPlans: result.segmentationPlans
         )
+    }
+
+    /// Streaming counterpart of the DTS:X coupling path. The XLL-X session is
+    /// still finalized after the final public access unit, while the enclosing
+    /// DTS-HD access units are delivered as they are encoded.
+    public func encode(
+        _ pcm: PCMBuffer,
+        privateXLLXSession: DTSXPrivateStreamEncodingSession,
+        coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
+        writingAccessUnitsTo output: @escaping (Data) throws -> Void,
+        progress: ((Int, Int) -> Void)? = nil
+    ) throws -> DTSXPrivateEncodedStream {
+        let result = try encodeInternal(
+            pcm,
+            privateXLLXSource: .session(privateXLLXSession),
+            privateCoreAssociationPolicy: coreAssociationPolicy,
+            accessUnitOutput: output,
+            progress: progress
+        )
+        guard let privateStream = result.privateStream else {
+            throw DTSError.malformed("DTS:X streaming encode did not finalize its private stream")
+        }
+        return privateStream
     }
 
     private func encodeInternal(
         _ pcm: PCMBuffer,
         privateXLLXSource: PrivateXLLXSource?,
         privateCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
+        accessUnitOutput: ((Data) throws -> Void)? = nil,
         progress: ((Int, Int) -> Void)?
     ) throws -> InternalEncodedResult {
         let progressTotal = 1_000
@@ -235,7 +285,7 @@ public struct DTSHDMAEncoder: Sendable {
         let batchCapacity = max(1, parallelWorkerCount * 2)
         var pendingWorkItems: [FrameWorkItem] = []
         pendingWorkItems.reserveCapacity(batchCapacity)
-        var stream = Data()
+        var stream = accessUnitOutput == nil ? Data() : nil
         var segmentationPlans: [XLLSegmentationPlan] = []
         segmentationPlans.reserveCapacity(totalFrameCount)
         var completedAccessUnitCount = 0
@@ -346,7 +396,11 @@ public struct DTSHDMAEncoder: Sendable {
             if pendingWorkItems.count == batchCapacity || frameIndex + 1 == totalFrameCount {
                 let accessUnits = try encodeBatch(pendingWorkItems)
                 for accessUnit in accessUnits {
-                    stream.append(accessUnit.data)
+                    if let accessUnitOutput {
+                        try accessUnitOutput(accessUnit.data)
+                    } else {
+                        stream!.append(accessUnit.data)
+                    }
                     segmentationPlans.append(accessUnit.segmentationPlan)
                 }
                 completedAccessUnitCount += accessUnits.count
@@ -365,6 +419,13 @@ public struct DTSHDMAEncoder: Sendable {
             privateStream: privateStream,
             segmentationPlans: segmentationPlans
         )
+    }
+
+    private func requiredInMemoryStream(_ stream: Data?) throws -> Data {
+        guard let stream else {
+            throw DTSError.malformed("in-memory DTS HDMA encoding produced no stream")
+        }
+        return stream
     }
 
     private func sourceFrame(

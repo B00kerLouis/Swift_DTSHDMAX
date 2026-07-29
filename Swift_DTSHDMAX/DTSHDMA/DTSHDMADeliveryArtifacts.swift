@@ -67,6 +67,70 @@ public enum DTSHDMADeliveryArtifactWriter {
             throw DTSError.invalidArgument("delivery artifact paths must be distinct")
         }
 
+        do {
+            try stream.write(to: output, options: .atomic)
+        } catch {
+            throw DTSError.io("cannot write delivery stream to \(output.path): \(error.localizedDescription)")
+        }
+        return try writeSidecars(
+            stream: stream,
+            pcm: pcm,
+            input: input,
+            output: output,
+            pbrURL: pbrURL,
+            logURL: logURL,
+            frameRate: frameRate,
+            now: now
+        )
+    }
+
+    /// Finishes the `.dtspbr` and job-log artifacts for a stream that has
+    /// already been written progressively to its final destination.
+    public static func writeCompleted(
+        pcm: PCMBuffer,
+        input: DTSHDMADeliveryInput,
+        outputURL: URL,
+        frameRate: DTSFrameRate,
+        now: Date = Date()
+    ) throws -> DTSHDMADeliveryArtifactReport {
+        let output = outputURL.standardizedFileURL
+        guard output.pathExtension.lowercased() == "dtshd" else {
+            throw DTSError.invalidArgument("delivery stream output must use the .dtshd extension")
+        }
+        let pbrURL = output.deletingPathExtension().appendingPathExtension("dtspbr")
+        let logURL = URL(fileURLWithPath: output.path + "_log.txt")
+        guard Set([output.path, pbrURL.path, logURL.path]).count == 3 else {
+            throw DTSError.invalidArgument("delivery artifact paths must be distinct")
+        }
+        let stream: Data
+        do {
+            stream = try Data(contentsOf: output, options: .mappedIfSafe)
+        } catch {
+            throw DTSError.io("cannot read completed delivery stream \(output.path): \(error.localizedDescription)")
+        }
+        return try writeSidecars(
+            stream: stream,
+            pcm: pcm,
+            input: input,
+            output: output,
+            pbrURL: pbrURL,
+            logURL: logURL,
+            frameRate: frameRate,
+            now: now
+        )
+    }
+
+    private static func writeSidecars(
+        stream: Data,
+        pcm: PCMBuffer,
+        input: DTSHDMADeliveryInput,
+        output: URL,
+        pbrURL: URL,
+        logURL: URL,
+        frameRate: DTSFrameRate,
+        now: Date
+    ) throws -> DTSHDMADeliveryArtifactReport {
+
         let analysis = try analyze(
             stream: stream,
             sourceSampleCount: pcm.sampleCount,
@@ -86,13 +150,12 @@ public enum DTSHDMADeliveryArtifactWriter {
         try validatePBR(pbr, expected: analysis, frameRate: frameRate)
 
         do {
-            try stream.write(to: output, options: .atomic)
             try Data(pbr.utf8).write(to: pbrURL, options: .atomic)
             try Data(log.utf8).write(to: logURL, options: .atomic)
         } catch {
             try? FileManager.default.removeItem(at: pbrURL)
             try? FileManager.default.removeItem(at: logURL)
-            throw DTSError.io("cannot write delivery artifacts beside \(output.path): \(error.localizedDescription)")
+            throw DTSError.io("cannot write delivery sidecars beside \(output.path): \(error.localizedDescription)")
         }
 
         return DTSHDMADeliveryArtifactReport(
@@ -245,7 +308,7 @@ public enum DTSHDMADeliveryArtifactWriter {
             ? "7.1 - L, R, C, LFE, Lss, Rss, Lsr, Rsr"
             : "5.1 - L, R, C, LFE, Ls, Rs"
         let streamType = input.renderedFromAtmos
-            ? "DTS HD Master Audio (Atmos rendered to 7.1 bed)"
+            ? "DTS HD Master Audio with DTS:X"
             : "DTS HD Master Audio"
         let fullScaleSamples = pcm.planes.reduce(0) { count, plane in
             count + plane.lazy.filter { $0 == -8_388_608 || $0 == 8_388_607 }.count
@@ -253,8 +316,8 @@ public enum DTSHDMADeliveryArtifactWriter {
 
         var lines = [
             "****************************************",
-            "Swift DTS HDMA Encoder",
-            field("Version", "1.0 native"),
+            "libHDMAX",
+            field("Version", "1.0"),
             "",
             "",
             "INPUT FILES",

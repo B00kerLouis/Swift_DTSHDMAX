@@ -158,15 +158,14 @@ public enum DTSHDMACommandLine {
                 sourceDescription: "PCM WAVE"
             )
             let progress = makeEncodingProgressReporter()
-            let stream = try HDMAEncoder(
+            try HDMAEncoder(
                 format: pcm.format,
                 tailPolicy: .zeroPad,
                 frameRate: frameRate
-            ).encode(pcm, progress: { completed, total in
+            ).encode(pcm, to: outputURL, progress: { completed, total in
                 progress(900 * completed / max(1, total), 1_000)
             })
-            let artifacts = try DTSHDMADeliveryArtifactWriter.write(
-                stream: stream,
+            let artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
                 pcm: pcm,
                 input: DTSHDMADeliveryInput(
                     inputURL: inputURL,
@@ -214,15 +213,14 @@ public enum DTSHDMACommandLine {
                 sourceDescription: "HDMA source-directory PCM"
             )
             let progress = makeEncodingProgressReporter()
-            let stream = try HDMAEncoder(
+            try HDMAEncoder(
                 format: pcm.format,
                 tailPolicy: .zeroPad,
                 frameRate: frameRate
-            ).encode(pcm, progress: { completed, total in
+            ).encode(pcm, to: outputURL, progress: { completed, total in
                 progress(900 * completed / max(1, total), 1_000)
             })
-            let artifacts = try DTSHDMADeliveryArtifactWriter.write(
-                stream: stream,
+            let artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
                 pcm: pcm,
                 input: DTSHDMADeliveryInput(
                     inputURL: URL(fileURLWithPath: arguments[0]),
@@ -741,13 +739,13 @@ public enum DTSHDMACommandLine {
             print(try jsonString(DTSXPrivateEncoderVerifier.verify()))
 
         case "verify-xllx-official-inverse":
-            guard (3...4).contains(values.count) else {
+            guard (3...5).contains(values.count) else {
                 throw DTSError.invalidArgument(
-                    "verify-xllx-official-inverse requires INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES]"
+                    "verify-xllx-official-inverse requires INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]"
                 )
             }
             let maximumFrameCount: Int?
-            if values.count == 4 {
+            if values.count >= 4 {
                 guard let parsed = Int(values[3]), parsed > 0 else {
                     throw DTSError.invalidArgument("MAX_FRAMES must be positive")
                 }
@@ -755,11 +753,21 @@ public enum DTSHDMACommandLine {
             } else {
                 maximumFrameCount = nil
             }
+            let frameOffset: Int
+            if values.count == 5 {
+                guard let parsed = Int(values[4]), parsed >= 0 else {
+                    throw DTSError.invalidArgument("FRAME_OFFSET must not be negative")
+                }
+                frameOffset = parsed
+            } else {
+                frameOffset = 0
+            }
             let report = try DTSXPrivateOfficialInverseVerifier.verify(
                 indexURL: URL(fileURLWithPath: values[0]),
                 payloadURL: URL(fileURLWithPath: values[1]),
                 outputURL: URL(fileURLWithPath: values[2]),
-                maximumFrameCount: maximumFrameCount
+                maximumFrameCount: maximumFrameCount,
+                frameOffset: frameOffset
             )
             print(try jsonString(report))
             guard report.reencodedFrameCount > 0,
@@ -1837,7 +1845,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
-          hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES]
+          hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60

@@ -95,7 +95,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
-        publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual
+        publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels
     ) {
         self.verificationPolicy = verificationPolicy
         self.publicXLLCoreAssociationPolicy = publicXLLCoreAssociationPolicy
@@ -202,44 +202,132 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("native DTS:X output must use the .dtshd extension")
         }
-        let result = try encode(
-            source: source,
-            frameRate: frameRate,
-            maximumSourceFrameCount: maximumSourceFrameCount,
-            progress: { completed, total in
-                progress?(850 * completed / max(1, total), 1_000)
-            }
+        let progressTotal = 1_000
+        progress?(0, progressTotal)
+        let effectiveSource = try truncated(
+            source,
+            maximumSourceFrameCount: maximumSourceFrameCount
         )
-        do {
-            try result.stream.write(to: output, options: .atomic)
-        } catch {
-            throw DTSError.io("cannot write \(output.path): \(error.localizedDescription)")
-        }
-        progress?(900, 1_000)
+        let privateSession = try DTSXPrivateStreamEncodingSession(source: effectiveSource)
+        let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
+        let writer = try DTSHDFileContainer.StreamingWriter(
+            outputURL: output,
+            format: compatibilityBed.format,
+            sourceSampleCount: effectiveSource.sampleCount,
+            frameRate: frameRate,
+            streamKind: .dtsxHDMA
+        )
         var verified = false
         defer {
-            if !verified { try? FileManager.default.removeItem(at: output) }
+            if !verified {
+                writer.cancel()
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
+        progress?(100, progressTotal)
+        let privateStream: DTSXPrivateEncodedStream
+        do {
+            privateStream = try DTSHDMAEncoder(configuration: DTSHDMAEncoderConfiguration(
+                format: compatibilityBed.format,
+                profile: .dtsHDMA,
+                deterministic: true,
+                tailPolicy: .zeroPad
+            )).encode(
+                compatibilityBed,
+                privateXLLXSession: privateSession,
+                coreAssociationPolicy: publicXLLCoreAssociationPolicy,
+                writingAccessUnitsTo: { accessUnit in
+                    try writer.append(accessUnit: accessUnit)
+                },
+                progress: { completed, total in
+                    progress?(100 + (750 * completed / max(1, total)), progressTotal)
+                }
+            )
+            try writer.finish()
+        } catch {
+            writer.cancel()
+            throw error
+        }
+        progress?(900, 1_000)
+        let bedComparison: PCMPaddedComparison?
+        let compatibilitySafety: DTSXXLLCompatibilitySafetyReport?
+        if verificationPolicy == .integrated {
+            let stream: Data
+            do {
+                stream = try Data(contentsOf: output, options: .mappedIfSafe)
+            } catch {
+                throw DTSError.io("cannot read progressive DTS:X output \(output.path): \(error.localizedDescription)")
+            }
+            let decodedBed = try DTSHDMADecoder().decode(stream)
+            bedComparison = try PCMComparator.compareWithZeroPadding(
+                expected: compatibilityBed,
+                paddedActual: decodedBed
+            )
+            compatibilitySafety = try makeCompatibilitySafetyReport(
+                elementaryStream: try DTSHDFileContainer.elementaryStream(in: stream),
+                input: compatibilityBed,
+                decoded: decodedBed,
+                coreAssociationPolicy: publicXLLCoreAssociationPolicy
+            )
+        } else {
+            bedComparison = nil
+            compatibilitySafety = nil
+        }
+        let streamByteCount: Int
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
+            guard let byteCount = attributes[.size] as? NSNumber else {
+                throw DTSError.io("cannot determine \(output.path) size")
+            }
+            streamByteCount = byteCount.intValue
+        } catch let error as DTSError {
+            throw error
+        } catch {
+            throw DTSError.io("cannot determine \(output.path) size: \(error.localizedDescription)")
+        }
+        let encoding = DTSXNativeEncodingReport(
+            streamKind: .dtsxHDMA,
+            frameRate: frameRate,
+            publicXLLCoreAssociationPolicy: publicXLLCoreAssociationPolicy,
+            sourceSampleCount: effectiveSource.sampleCount,
+            encodedSampleCount: privateStream.report.encodedSourceSampleCount,
+            accessUnitCount: privateStream.frames.count,
+            streamByteCount: streamByteCount,
+            streamSHA256: try SHA256Hasher.hash(fileAt: output),
+            privateEncoding: privateStream.report,
+            compatibilityBedComparison: bedComparison,
+            compatibilitySafety: compatibilitySafety,
+            isNativePrivateEncoding: true,
+            isInternallyBitExact: privateStream.report.isBitExact
+                && (verificationPolicy == .none
+                    || (bedComparison?.isBitExact == true
+                        && compatibilitySafety?.isCompatible == true))
+        )
+        guard encoding.isInternallyBitExact else {
+            throw DTSError.malformed(
+                "native DTS:X Core/XLL/XLL-X encode-decode round-trip is not sample-exact"
+            )
         }
         let structural = try DTSXObjectExtractor.verify(inputURL: output)
         progress?(980, 1_000)
         let publicCompatibilityBedPCMVerified =
-            result.report.compatibilityBedComparison?.isBitExact == true
-            && result.report.compatibilitySafety?.isCompatible == true
-        let privateXLLXPCMVerified = result.report.privateEncoding.isBitExact
+            encoding.compatibilityBedComparison?.isBitExact == true
+            && encoding.compatibilitySafety?.isCompatible == true
+        let privateXLLXPCMVerified = encoding.privateEncoding.isBitExact
         let structuralVerificationPassed = structural.isStructurallyValid
-            && structural.privateFrameCount == result.report.accessUnitCount
+            && structural.privateFrameCount == encoding.accessUnitCount
         let verificationScope: DTSXNativeFileVerificationScope = verificationPolicy == .integrated
             ? .integratedPublicAndPrivatePCM
             : .structureAndPrivateXLLXPCM
         let report = DTSXNativeFileEncodingReport(
             outputPath: output.path,
-            encoding: result.report,
+            encoding: encoding,
             structuralVerification: structural,
             verificationScope: verificationScope,
             publicCompatibilityBedPCMVerified: publicCompatibilityBedPCMVerified,
             privateXLLXPCMVerified: privateXLLXPCMVerified,
             structuralVerificationPassed: structuralVerificationPassed,
-            isVerified: result.report.isInternallyBitExact
+            isVerified: encoding.isInternallyBitExact
                 && privateXLLXPCMVerified
                 && structuralVerificationPassed
                 && (verificationPolicy == .none || publicCompatibilityBedPCMVerified)

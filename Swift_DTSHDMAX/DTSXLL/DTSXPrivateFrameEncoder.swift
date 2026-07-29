@@ -100,16 +100,47 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         routing: DTSXPrivateRouting,
         prediction: DTSXPrivatePredictionHeaderCandidate,
         navigation: DTSXPrivateNavigation?,
+        entropySegments: [DTSXPrivateEntropySegmentSyntax]? = nil,
+        noNavigationZeroSideInfo: DTSXPrivateNoNavigationZeroSideInfo? = nil,
         segmentationPlan: XLLSegmentationPlan = Self.defaultSegmentationPlan
     ) throws -> Data {
-        try validate(codedPlanes: codedPlanes, routing: routing)
-        guard prediction.decorrelation.branchCode == 0,
-              prediction.decorrelation.rawCoefficientCodes.isEmpty,
+        try validate(
+            codedPlanes: codedPlanes,
+            routing: routing,
+            allowsQualifiedDecorrelation: true
+        )
+        let branchCode = prediction.decorrelation.branchCode
+        let rawCoefficientCount = prediction.decorrelation.rawCoefficientCodes.count
+        let hasExpectedCoefficientCount: Bool
+        switch branchCode {
+        case 0:
+            hasExpectedCoefficientCount = rawCoefficientCount == 0
+        case 1:
+            hasExpectedCoefficientCount = rawCoefficientCount == 1
+        case 2:
+            hasExpectedCoefficientCount = (1...2).contains(rawCoefficientCount)
+        case 3:
+            hasExpectedCoefficientCount = rawCoefficientCount == 2
+        default:
+            hasExpectedCoefficientCount = false
+        }
+        guard branchCode == routing.branchCode,
+              (0...3).contains(branchCode),
+              hasExpectedCoefficientCount,
               prediction.matchesObservedGenericProfile else {
             throw DTSError.unsupported(
-                "official XLL-X inverse verification requires a qualified branch-zero prediction"
+                "official XLL-X inverse verification requires a qualified recovered decorrelation branch"
             )
         }
+
+        // Entropy and temporal prediction operate on the plane pair before
+        // branch-two lifting. `codedPlanes` are the rendered planes after its
+        // inverse, so regenerate that reversible pre-lift representation from
+        // the parsed coefficient rather than accepting reference payload data.
+        let entropyInputPlanes = try forwardPairwiseDecorrelation(
+            codedPlanes,
+            decorrelation: prediction.decorrelation
+        )
 
         var residualPlanes: [[Int32]] = []
         var fixedOrders: [Int] = []
@@ -119,7 +150,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             let adaptiveOrder = prediction.adaptivePredictionOrders[channel]
             if adaptiveOrder > 0 {
                 guard let residuals = adaptivePredictionResiduals(
-                    codedPlanes[channel],
+                    entropyInputPlanes[channel],
                     reflectionIndices: prediction.reflectionCoefficientSignedIndices[channel]
                 ) else {
                     throw DTSError.malformed(
@@ -131,7 +162,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             } else {
                 let fixedOrder = prediction.fixedPredictionOrders[channel] ?? 0
                 guard let residuals = fixedPredictionResiduals(
-                    codedPlanes[channel],
+                    entropyInputPlanes[channel],
                     order: fixedOrder
                 ) else {
                     throw DTSError.malformed(
@@ -146,9 +177,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             codedPlanes: codedPlanes,
             effectiveRouting: routing,
             decorrelation: DecorrelationSelection(
-                planes: codedPlanes,
-                branchCode: 0,
-                rawCoefficientCodes: []
+                planes: entropyInputPlanes,
+                branchCode: prediction.decorrelation.branchCode,
+                rawCoefficientCodes: prediction.decorrelation.rawCoefficientCodes
             ),
             selectedPrediction: PredictionSelection(
                 residualPlanes: residualPlanes,
@@ -159,6 +190,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             ),
             navigationTemplate: navigation,
             predictionBoundaryByteCount: prediction.boundaryByteOffset,
+            qualifiedEntropySegments: entropySegments,
+            noNavigationZeroSideInfo: noNavigationZeroSideInfo,
             segmentationPlan: segmentationPlan
         )
     }
@@ -170,21 +203,69 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         selectedPrediction: PredictionSelection,
         navigationTemplate: DTSXPrivateNavigation? = nil,
         predictionBoundaryByteCount: Int? = nil,
+        qualifiedEntropySegments: [DTSXPrivateEntropySegmentSyntax]? = nil,
+        noNavigationZeroSideInfo: DTSXPrivateNoNavigationZeroSideInfo? = nil,
         segmentationPlan: XLLSegmentationPlan
     ) throws -> Data {
+        if let qualifiedEntropySegments,
+           qualifiedEntropySegments.count != segmentationPlan.segmentCount {
+            throw DTSError.malformed(
+                "XLL-X qualified entropy syntax does not match the segmentation plan"
+            )
+        }
         let isSilent = codedPlanes.allSatisfy { plane in
             plane.allSatisfy { $0 == 0 }
+        }
+        if let noNavigationZeroSideInfo {
+            guard isSilent,
+                  navigationTemplate == nil else {
+                throw DTSError.malformed(
+                    "XLL-X qualified no-NAVI side-info requires a silent frame without NAVI"
+                )
+            }
+            return try encodeQualifiedNoNavigationZeroSilence(
+                codedPlanes: codedPlanes,
+                routing: effectiveRouting,
+                selectedPrediction: selectedPrediction,
+                predictionBoundaryByteCount: predictionBoundaryByteCount,
+                sideInfo: noNavigationZeroSideInfo,
+                segmentationPlan: segmentationPlan
+            )
+        }
+        // A public XLL frame can choose a finer 4x128 partition even while
+        // the private height planes are silent.  The DTS:X reference stream
+        // uses a compact, explicitly navigated zero-code form in that case;
+        // emitting four ordinary entropy headers creates a different private
+        // grammar at the first non-priming DTS:X frame.
+        if isSilent,
+           segmentationPlan.segmentCount == 4,
+           segmentationPlan.segmentSampleCount == 128,
+           // The compact form is an explicitly navigated grammar.  Qualified
+           // inverse verification must not replace an un-navigated official
+           // silence form merely because its decoded PCM is also zero.
+           (qualifiedEntropySegments == nil || navigationTemplate != nil) {
+            return try encodeCanonicalFourSegmentSilence(
+                codedPlanes: codedPlanes,
+                routing: effectiveRouting,
+                segmentationPlan: segmentationPlan
+            )
         }
         // The recovered compact no-NAVI suffix is specific to 2x256. Dynamic
         // 4/8-segment silence uses explicit generalized NAVI so the partition is
         // unambiguous to a decoder.
         let usesNavigation = !isSilent || segmentationPlan.segmentCount != Self.segmentCount
+        // The no-NAVI zero form is a complete compact grammar, including its
+        // suffix; do not substitute ordinary qualified entropy syntax there.
+        let effectiveQualifiedEntropySegments = usesNavigation
+            ? qualifiedEntropySegments
+            : nil
         let segments = try (0..<segmentationPlan.segmentCount).map {
             try encodeEntropySegment(
                 residualPlanes: selectedPrediction.residualPlanes,
                 adaptiveOrders: selectedPrediction.adaptiveOrders,
                 segment: $0,
-                segmentSampleCount: segmentationPlan.segmentSampleCount
+                segmentSampleCount: segmentationPlan.segmentSampleCount,
+                qualifiedSyntax: effectiveQualifiedEntropySegments?[$0]
             )
         }
         let prediction = try encodePredictionHeader(
@@ -241,11 +322,164 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             body: body
         )
         let serialized = try ast.serializeRebuildingPredictionCRC()
+        if effectiveQualifiedEntropySegments == nil {
+            try verify(
+                serialized,
+                expectedPlanes: codedPlanes,
+                expectedRouting: effectiveRouting,
+                expectsNavigation: usesNavigation,
+                segmentationPlan: segmentationPlan
+            )
+        }
+        return serialized
+    }
+
+    /// Canonical compact private silence for a public-XLL 4x128 partition.
+    ///
+    /// This is derived from the independently CRC-verified DTS:X grammar:
+    /// an eight-byte zero prediction declaration, a four-entry 8-bit NAVI
+    /// table, and the compact `2,1,1,1` zero-code segment layout.  It is not
+    /// an oracle payload copy; the routing and both CRCs are regenerated for
+    /// the encoded frame.
+    private func encodeCanonicalFourSegmentSilence(
+        codedPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> Data {
+        guard codedPlanes.count == Self.channelCount,
+              codedPlanes.allSatisfy({ $0.count == Self.frameSampleCount }),
+              codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }),
+              segmentationPlan.segmentCount == 4,
+              segmentationPlan.segmentSampleCount == 128 else {
+            throw DTSError.malformed("XLL-X compact four-segment silence received non-silent input")
+        }
+        let prediction = try encodePredictionHeader(
+            decorrelationRawCoefficientCodes: [],
+            adaptiveOrders: [0, 0, 0, 0],
+            reflectionCoefficientIndices: [[], [], [], []],
+            fixedOrders: [0, 0, 0, 0],
+            usesNavigation: true,
+            forcedBoundaryByteCount: Self.predictionBoundaryByteCount
+        )
+        let navigation = try DTSXPrivateNavigation(
+            bitWidth: 8,
+            segmentByteCounts: [2, 1, 1, 1],
+            trailingFrameByteCount: 3
+        )
+        var body = Data()
+        body.append(prediction)
+        body.append(contentsOf: [0, 0]) // prediction CRC, rebuilt below
+        body.append(try navigation.serialize())
+        // First segment carries the compact zero-state declaration.  The
+        // remaining segments carry the one-byte state continuation code.
+        body.append(contentsOf: [0x80, 0x00, 0x40, 0x40, 0x40])
+        body.append(contentsOf: [0, 0, 0])
+        guard 28 + body.count == 52 else {
+            throw DTSError.malformed("XLL-X compact four-segment silence did not close at 52 bytes")
+        }
+        let ast = DTSXPrivateFrameAST(
+            fixedHeaderBytes: Self.fixedHeaderBytes,
+            headerCRC16: Self.fixedHeaderCRC16,
+            packetType: 0x02,
+            reservedHighFourBits: 0,
+            primarySixBitCode: UInt8(prediction.count + 7),
+            separatorSixBits: 0x0f,
+            secondarySyncWord: 0xef7c,
+            secondaryPrefixSixBits: 0x01,
+            secondaryTenBitCode: routing.packedTenBitCode,
+            body: body
+        )
+        let serialized = try ast.serializeRebuildingPredictionCRC()
         try verify(
             serialized,
             expectedPlanes: codedPlanes,
-            expectedRouting: effectiveRouting,
-            expectsNavigation: usesNavigation,
+            expectedRouting: routing,
+            expectsNavigation: true,
+            segmentationPlan: segmentationPlan
+        )
+        return serialized
+    }
+
+    /// Regenerates the observed CRC-closed no-NAVI zero-code grammar from its
+    /// parsed control field. This is restricted to the offline official-inverse
+    /// verifier; the product path chooses its own syntax and never consumes a
+    /// reference-derived control value.
+    private func encodeQualifiedNoNavigationZeroSilence(
+        codedPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        selectedPrediction: PredictionSelection,
+        predictionBoundaryByteCount: Int?,
+        sideInfo: DTSXPrivateNoNavigationZeroSideInfo,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> Data {
+        guard codedPlanes.count == Self.channelCount,
+              codedPlanes.allSatisfy({ $0.count == Self.frameSampleCount }),
+              codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }),
+              selectedPrediction.adaptiveOrders == [0, 0, 0, 0],
+              selectedPrediction.fixedOrders == [0, 0, 0, 0] else {
+            throw DTSError.malformed("XLL-X qualified no-NAVI syntax requires four zero planes")
+        }
+        let expectedSideInfoByteCount: Int
+        let entropy: Data
+        let trailingByteCount: Int
+        switch (segmentationPlan.segmentCount, segmentationPlan.segmentSampleCount) {
+        case (2, 256):
+            expectedSideInfoByteCount = 3
+            entropy = Data([0x80, 0x00, 0x40])
+            trailingByteCount = 5
+        case (4, 128):
+            expectedSideInfoByteCount = sideInfo.controlCode == 0x80 ? 5 : 6
+            entropy = Data([0x80, 0x00, 0x40, 0x40, 0x40])
+            trailingByteCount = sideInfo.controlCode == 0x80 ? 5 : 4
+        default:
+            throw DTSError.unsupported("XLL-X qualified no-NAVI zero grammar does not cover this segmentation")
+        }
+        guard sideInfo.dataByteCount == expectedSideInfoByteCount else {
+            throw DTSError.malformed("XLL-X qualified no-NAVI side-info size does not match segmentation")
+        }
+        let prediction = try encodePredictionHeader(
+            decorrelationRawCoefficientCodes: [],
+            adaptiveOrders: selectedPrediction.adaptiveOrders,
+            reflectionCoefficientIndices: selectedPrediction.reflectionCoefficientIndices,
+            fixedOrders: selectedPrediction.fixedOrders,
+            usesNavigation: false,
+            forcedBoundaryByteCount: predictionBoundaryByteCount
+        )
+        guard prediction.count == 9 else {
+            throw DTSError.malformed("XLL-X qualified no-NAVI zero grammar requires a nine-byte prediction boundary")
+        }
+        let sideInfoData = sideInfo.serializedData()
+        var body = Data()
+        body.append(prediction)
+        body.append(contentsOf: [0, 0]) // prediction CRC, rebuilt below
+        body.append(sideInfoData)
+        let sideInfoCRC = DTSCRC16.checksum(sideInfoData)
+        body.append(UInt8(truncatingIfNeeded: sideInfoCRC >> 8))
+        body.append(UInt8(truncatingIfNeeded: sideInfoCRC))
+        body.append(entropy)
+        body.append(contentsOf: repeatElement(0, count: trailingByteCount))
+        let expectedFrameByteCount = segmentationPlan.segmentCount == 2 ? 52 : 56
+        guard body.count + 28 == expectedFrameByteCount else {
+            throw DTSError.malformed("XLL-X qualified no-NAVI zero frame did not close")
+        }
+        let ast = DTSXPrivateFrameAST(
+            fixedHeaderBytes: Self.fixedHeaderBytes,
+            headerCRC16: Self.fixedHeaderCRC16,
+            packetType: 0x02,
+            reservedHighFourBits: 0,
+            primarySixBitCode: UInt8(prediction.count + 7),
+            separatorSixBits: 0x0f,
+            secondarySyncWord: 0xef7c,
+            secondaryPrefixSixBits: 0x01,
+            secondaryTenBitCode: routing.packedTenBitCode,
+            body: body
+        )
+        let serialized = try ast.serializeRebuildingPredictionCRC()
+        try verify(
+            serialized,
+            expectedPlanes: codedPlanes,
+            expectedRouting: routing,
+            expectsNavigation: false,
             segmentationPlan: segmentationPlan
         )
         return serialized
@@ -345,11 +579,13 @@ public struct DTSXPrivateFrameEncoder: Sendable {
 
     private func validate(
         codedPlanes: [[Int32]],
-        routing: DTSXPrivateRouting
+        routing: DTSXPrivateRouting,
+        allowsQualifiedDecorrelation: Bool = false
     ) throws {
-        guard routing.branchCode == 0 else {
+        guard routing.branchCode == 0
+                || (allowsQualifiedDecorrelation && (1...3).contains(routing.branchCode)) else {
             throw DTSError.unsupported(
-                "the first native XLL-X encoder profile supports private branch zero only"
+                "the native XLL-X encoder profile supports private branch zero only"
             )
         }
         guard codedPlanes.count == Self.channelCount,
@@ -366,6 +602,34 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 )
             }
         }
+    }
+
+    private func forwardPairwiseDecorrelation(
+        _ planes: [[Int32]],
+        decorrelation: DTSXPrivateDecorrelationCandidate
+    ) throws -> [[Int32]] {
+        guard decorrelation.signedCoefficientCodes.count == planes.count / 2 else {
+            throw DTSError.malformed("XLL-X qualified decorrelation pair count is invalid")
+        }
+        var transformed = planes
+        for pair in decorrelation.signedCoefficientCodes.indices {
+            let coefficient = decorrelation.signedCoefficientCodes[pair]
+            guard coefficient != 0 else { continue }
+            let source = pair * 2
+            let destination = source + 1
+            for sample in transformed[destination].indices {
+                let delta = (Int64(transformed[source][sample]) * Int64(coefficient) + 4) >> 3
+                let value = Int64(transformed[destination][sample]) - delta
+                guard value >= Int64(Int32.min), value <= Int64(Int32.max) else {
+                    throw DTSError.valueOutOfRange(
+                        field: "XLL-X qualified decorrelation plane[\(destination)]",
+                        value: String(value)
+                    )
+                }
+                transformed[destination][sample] = Int32(value)
+            }
+        }
+        return transformed
     }
 
     /// Searches only branch 2, whose two-pair transform has a controlled,
@@ -653,8 +917,17 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         residualPlanes: [[Int32]],
         adaptiveOrders: [Int],
         segment: Int,
-        segmentSampleCount: Int
+        segmentSampleCount: Int,
+        qualifiedSyntax: DTSXPrivateEntropySegmentSyntax? = nil
     ) throws -> Data {
+        if let qualifiedSyntax {
+            return try encodeQualifiedEntropySegment(
+                residualPlanes: residualPlanes,
+                segment: segment,
+                segmentSampleCount: segmentSampleCount,
+                syntax: qualifiedSyntax
+            )
+        }
         let start = segment * segmentSampleCount
         let end = start + segmentSampleCount
         let modes = residualPlanes.enumerated().map { channel, plane in
@@ -792,6 +1065,227 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                             field: "XLL-X Hybrid Rice sample[\(segment)][\(channel)][\(offset)]"
                         )
                     }
+                }
+            }
+        }
+        writer.alignToByte()
+        return writer.data()
+    }
+
+    /// Rebuilds a qualified entropy declaration from decoded samples and its
+    /// parsed syntax fields.  This is used only by the offline official-inverse
+    /// verifier: it regenerates allocation bits and Rice payloads from PCM and
+    /// never copies a source entropy payload.  Product encoding continues to
+    /// select its own entropy plan through the ordinary path above.
+    private func encodeQualifiedEntropySegment(
+        residualPlanes: [[Int32]],
+        segment: Int,
+        segmentSampleCount: Int,
+        syntax: DTSXPrivateEntropySegmentSyntax
+    ) throws -> Data {
+        guard syntax.segmentIndex == segment,
+              residualPlanes.count == Self.channelCount,
+              residualPlanes.allSatisfy({ $0.count == Self.frameSampleCount }),
+              syntax.riceCoding.count == Self.channelCount,
+              syntax.hybridLinearWidths.count == Self.channelCount,
+              syntax.hybridIsolatedSampleOffsets.count == Self.channelCount,
+              syntax.partABitAllocations.count == Self.channelCount,
+              syntax.partBBitAllocations.count == Self.channelCount,
+              syntax.partASampleCounts.count == Self.channelCount else {
+            throw DTSError.malformed("XLL-X qualified entropy syntax is malformed")
+        }
+
+        let start = segment * segmentSampleCount
+        let end = start + segmentSampleCount
+        let parameterCount = syntax.commonParameters ? 1 : Self.channelCount
+        func parameter(for channel: Int) -> Int {
+            syntax.commonParameters ? 0 : channel
+        }
+        func mode(
+            rice: Bool,
+            allocation: Int,
+            hybridLinearWidth: Int = 0,
+            isolatedSampleOffsets: [Int] = []
+        ) throws -> EntropyMode {
+            guard (0...31).contains(allocation) else {
+                throw DTSError.valueOutOfRange(
+                    field: "XLL-X qualified entropy allocation",
+                    value: String(allocation)
+                )
+            }
+            guard hybridLinearWidth >= 0,
+                  hybridLinearWidth <= 32 else {
+                throw DTSError.valueOutOfRange(
+                    field: "XLL-X qualified hybrid linear width",
+                    value: String(hybridLinearWidth)
+                )
+            }
+            if hybridLinearWidth > 0 {
+                guard rice,
+                      !syntax.commonParameters,
+                      isolatedSampleOffsets.allSatisfy({
+                          (0..<segmentSampleCount).contains($0)
+                      }) else {
+                    throw DTSError.malformed("XLL-X qualified Hybrid Rice syntax is malformed")
+                }
+                return .hybridRice(
+                    parameter: allocation,
+                    linearWidth: hybridLinearWidth,
+                    isolatedSampleOffsets: isolatedSampleOffsets
+                )
+            }
+            return rice ? .rice(parameter: allocation) : .linear(width: allocation)
+        }
+
+        var writer = BitWriter(
+            reservingCapacity: max(64, Self.channelCount * segmentSampleCount * 3 + 128)
+        )
+        if segment > 0 {
+            try writer.write(
+                syntax.reusesPreviousParameters ? 1 : 0,
+                bitCount: 1,
+                field: "XLL-X qualified bUseSegStateCodeParm[\(segment)]"
+            )
+        } else if syntax.reusesPreviousParameters {
+            throw DTSError.malformed("XLL-X first entropy segment cannot reuse state")
+        }
+
+        if !syntax.reusesPreviousParameters {
+            try writer.write(
+                syntax.commonParameters ? 1 : 0,
+                bitCount: 1,
+                field: "XLL-X qualified ncSegType[\(segment)]"
+            )
+            for parameter in 0..<parameterCount {
+                if syntax.riceCoding[parameter] {
+                    try writer.write(
+                        1,
+                        bitCount: 1,
+                        field: "XLL-X qualified bRiceCodeFlag[\(segment)][\(parameter)]"
+                    )
+                    if !syntax.commonParameters {
+                        try writer.write(
+                            syntax.hybridLinearWidths[parameter] > 0 ? 1 : 0,
+                            bitCount: 1,
+                            field: "XLL-X qualified bHybridRiceCode[\(segment)][\(parameter)]"
+                        )
+                        if syntax.hybridLinearWidths[parameter] > 0 {
+                            try writer.write(
+                                UInt64(syntax.hybridLinearWidths[parameter] - 1),
+                                bitCount: Self.bitAllocationWidth,
+                                field: "XLL-X qualified nHybridLinearWidth[\(segment)][\(parameter)]"
+                            )
+                        }
+                    }
+                } else {
+                    try writer.write(
+                        0,
+                        bitCount: 1,
+                        field: "XLL-X qualified bRiceCodeFlag[\(segment)][\(parameter)]"
+                    )
+                }
+            }
+            for parameter in 0..<parameterCount {
+                if segment == 0 {
+                    try writeEntropyAllocation(
+                        try mode(
+                            rice: syntax.riceCoding[parameter],
+                            allocation: syntax.partABitAllocations[parameter]
+                        ),
+                        to: &writer,
+                        field: "XLL-X qualified ABIT0[\(parameter)]"
+                    )
+                }
+                try writeEntropyAllocation(
+                    try mode(
+                        rice: syntax.riceCoding[parameter],
+                        allocation: syntax.partBBitAllocations[parameter]
+                    ),
+                    to: &writer,
+                    field: "XLL-X qualified ABIT[\(segment)][\(parameter)]"
+                )
+            }
+        }
+
+        for channel in 0..<Self.channelCount {
+            let parameter = parameter(for: channel)
+            let partASampleCount = syntax.partASampleCounts[parameter]
+            guard partASampleCount >= 0,
+                  partASampleCount <= segmentSampleCount else {
+                throw DTSError.valueOutOfRange(
+                    field: "XLL-X qualified part-A sample count",
+                    value: String(partASampleCount)
+                )
+            }
+            let partAMode = try mode(
+                rice: syntax.riceCoding[parameter],
+                allocation: syntax.partABitAllocations[parameter]
+            )
+            let partBMode = try mode(
+                rice: syntax.riceCoding[parameter],
+                allocation: syntax.partBBitAllocations[parameter],
+                hybridLinearWidth: syntax.hybridLinearWidths[parameter],
+                isolatedSampleOffsets: syntax.hybridIsolatedSampleOffsets[channel]
+            )
+            for sample in start..<(start + partASampleCount) {
+                try writeEntropySample(
+                    residualPlanes[channel][sample],
+                    mode: partAMode,
+                    writer: &writer,
+                    field: "XLL-X qualified part A sample[\(segment)][\(channel)][\(sample - start)]"
+                )
+            }
+            let partBStart = start + partASampleCount
+            switch partBMode {
+            case .hybridRice(let parameter, let linearWidth, let isolatedOffsets):
+                // The declarations retain their observed order, whereas the
+                // decoder selects the linear form by location.  Both details
+                // are required for a byte-exact inverse and avoid treating the
+                // parsed list as opaque reference data.
+                guard isolatedOffsets.count <= Int(UInt8.max) else {
+                    throw DTSError.valueOutOfRange(
+                        field: "XLL-X qualified isolated sample count",
+                        value: String(isolatedOffsets.count)
+                    )
+                }
+                try writer.write(
+                    UInt64(isolatedOffsets.count),
+                    bitCount: 8,
+                    field: "XLL-X qualified nIsolatedSamples[\(segment)][\(channel)]"
+                )
+                for offset in isolatedOffsets {
+                    try writer.write(
+                        UInt64(offset),
+                        bitCount: 8,
+                        field: "XLL-X qualified nIsolatedSampleLocation[\(segment)][\(channel)]"
+                    )
+                }
+                let isolated = Set(isolatedOffsets)
+                for sample in partBStart..<end {
+                    let offset = sample - partBStart
+                    if isolated.contains(offset) {
+                        try writer.writeSignedZigZag(
+                            residualPlanes[channel][sample],
+                            bitCount: linearWidth,
+                            field: "XLL-X qualified Hybrid Rice linear sample[\(segment)][\(channel)][\(offset)]"
+                        )
+                    } else {
+                        try writeRice(
+                            residualPlanes[channel][sample],
+                            parameter: parameter,
+                            writer: &writer,
+                            field: "XLL-X qualified Hybrid Rice sample[\(segment)][\(channel)][\(offset)]"
+                        )
+                    }
+                }
+            default:
+                for sample in partBStart..<end {
+                    try writeEntropySample(
+                        residualPlanes[channel][sample],
+                        mode: partBMode,
+                        writer: &writer,
+                        field: "XLL-X qualified part B sample[\(segment)][\(channel)][\(sample - partBStart)]"
+                    )
                 }
             }
         }
@@ -1389,7 +1883,13 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             }
         } else if (try? parsed.parseNavigation(
             segmentCount: segmentationPlan.segmentCount
-        )) != nil {
+        )) != nil,
+                  (try? DTSXPrivateNoNavigationZeroSideInfo.parse(
+                      parsed,
+                      prediction: parsed.parsePredictionHeaderCandidate(),
+                      segmentCount: segmentationPlan.segmentCount,
+                      segmentSampleCount: segmentationPlan.segmentSampleCount
+                  )) == nil {
             throw DTSError.malformed(
                 "XLL-X canonical no-NAVI silence was misclassified as navigation"
             )

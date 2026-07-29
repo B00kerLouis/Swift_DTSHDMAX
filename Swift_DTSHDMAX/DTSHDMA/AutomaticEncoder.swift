@@ -121,18 +121,17 @@ public enum DTSAutomaticEncoder {
         let artifacts: DTSHDMADeliveryArtifactReport
         switch source.source {
         case .hdma(let pcm):
-            let stream = try HDMAEncoder(
+            try HDMAEncoder(
                 format: pcm.format,
                 tailPolicy: .zeroPad,
                 frameRate: source.frameRate
-            ).encode(pcm, progress: { completed, total in
+            ).encode(pcm, to: output, progress: { completed, total in
                 progress?(
                     250 + Int64(600 * completed / max(1, total)),
                     progressTotal
                 )
             })
-            artifacts = try DTSHDMADeliveryArtifactWriter.write(
-                stream: stream,
+            artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
                 pcm: pcm,
                 input: source.deliveryInput,
                 outputURL: output,
@@ -141,8 +140,9 @@ public enum DTSAutomaticEncoder {
             progress?(980, progressTotal)
 
         case .dtsx(let rendered, let compatibilityBed):
-            let result = try DTSXNativeHDMAEncoder().encode(
+            _ = try DTSXNativeHDMAEncoder().encode(
                 source: rendered,
+                to: output,
                 frameRate: source.frameRate,
                 progress: { completed, total in
                     progress?(
@@ -151,8 +151,7 @@ public enum DTSAutomaticEncoder {
                     )
                 }
             )
-            artifacts = try DTSHDMADeliveryArtifactWriter.write(
-                stream: result.stream,
+            artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
                 pcm: compatibilityBed,
                 input: source.deliveryInput,
                 outputURL: output,
