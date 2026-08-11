@@ -10,6 +10,31 @@ public enum XLLCoreAssociationPolicy: String, Sendable, Equatable, Codable {
     case coreResidual
 }
 
+/// Restricts the emitted public XLL syntax when validating terminal
+/// interoperability. The conservative form keeps the mandatory channel-set
+/// and residual declarations but removes locally selected prediction,
+/// decorrelation, Rice/Hybrid entropy, shared allocation, and state reuse from
+/// the terminal-facing DTS:X path.
+public enum XLLCodingMode: Sendable, Equatable, Codable {
+    case research
+    case terminalConservative
+    /// Fixed-order-zero, Linear terminal gate that preserves the reference
+    /// channel-order declaration while keeping entropy parameters explicit.
+    /// This isolates the ordering syntax from prediction and entropy state.
+    case terminalOrderedConservative
+    /// Reproduces the terminal-clean legacy public-XLL control: reference
+    /// channel order, fixed-order-zero Linear entropy, shared parameters/state,
+    /// and the full 2/4/8-segment cost search. This remains a diagnostic mode.
+    case terminalLegacyLinear
+    /// Terminal-facing prediction and Rice coding with the recovered fixed
+    /// channel order. Dynamic pairwise decorrelation and Hybrid Rice remain
+    /// confined to the research profile.
+    case terminalPredictive
+    /// Experimental fixed-segmentation Rice syntax. It is retained for
+    /// reference-stream experiments and is not a product default.
+    case terminalRice
+}
+
 struct XLLEncoder: Sendable {
     private enum EntropyMode: Equatable {
         case linear(width: Int)
@@ -47,13 +72,20 @@ struct XLLEncoder: Sendable {
         let scalableLSBPlanes: [[Int32]]
     }
 
+    private let codingMode: XLLCodingMode
+
+    init(codingMode: XLLCodingMode = .research) {
+        self.codingMode = codingMode
+    }
+
     func encode(
         frame pcm: PCMBuffer,
         useSevenOneHierarchy: Bool = false,
         coreReconstruction: PCMBuffer? = nil,
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         privateExtension: Data = Data(),
-        privateExtensionProvider: ((XLLSegmentationPlan) throws -> Data)? = nil
+        privateExtensionProvider: ((XLLSegmentationPlan) throws -> Data)? = nil,
+        forcedSegmentCount: Int? = nil
     ) throws -> XLLEncodedFrame {
         guard pcm.sampleCount == XLLSyntax.frameSampleCount else {
             throw DTSError.unsupported(
@@ -85,7 +117,54 @@ struct XLLEncoder: Sendable {
                 value: "outside declared signed 24-bit storage"
             )
         }
-        let segmentationCandidates = [(count: 2, samples: 256), (count: 4, samples: 128), (count: 8, samples: 64)]
+        let segmentationCandidates: [(count: Int, samples: Int)]
+        if let forcedSegmentCount {
+            guard [2, 4, 8].contains(forcedSegmentCount) else {
+                throw DTSError.invalidArgument(
+                    "XLL forced segment count must be 2, 4, or 8"
+                )
+            }
+            segmentationCandidates = [
+                (count: forcedSegmentCount,
+                 samples: XLLSyntax.frameSampleCount / forcedSegmentCount)
+            ]
+        } else {
+            switch codingMode {
+            case .research:
+                segmentationCandidates = [
+                    (count: 2, samples: 256),
+                    (count: 4, samples: 128),
+                    (count: 8, samples: 64)
+                ]
+            case .terminalConservative:
+                // Official DTS:X uses both 2x256 and 4x128 partitions, including
+                // the four-segment compact form for the first silent source frame.
+                // Both forms remain independently parameterized below; transform
+                // and entropy-state features remain disabled for terminal output.
+                segmentationCandidates = [
+                    (count: 2, samples: 256),
+                    (count: 4, samples: 128)
+                ]
+            case .terminalOrderedConservative:
+                segmentationCandidates = [
+                    (count: 2, samples: 256),
+                    (count: 4, samples: 128)
+                ]
+            case .terminalLegacyLinear:
+                segmentationCandidates = [
+                    (count: 2, samples: 256),
+                    (count: 4, samples: 128),
+                    (count: 8, samples: 64)
+                ]
+            case .terminalPredictive:
+                segmentationCandidates = [
+                    (count: 2, samples: 256),
+                    (count: 4, samples: 128)
+                ]
+            case .terminalRice:
+                segmentationCandidates = [(count: 2, samples: 256)]
+            }
+        }
         // Modes are selected independently for every channel.  The previous
         // implementation forced one Rice/linear allocation over all channels;
         // that is legal, but produces unnecessarily large XLL segments and
@@ -296,11 +375,20 @@ struct XLLEncoder: Sendable {
                 )
             }
 
+            // A full-channel DTS:X delivery must not carry the 7.1-to-5.1
+            // hierarchy matrix.  That matrix is meaningful only when primary
+            // channels are reconstructed from Core; retaining it beside a full
+            // primary set leaves hardware free to apply the rear contribution
+            // twice.  Keep the two-set layout, but encode the eight speaker
+            // signals directly and omit downmix side information entirely.
+            if coreAssociationPolicy == .fullPrimaryChannels {
+                return applyingPrediction(to: directSevenOneChannelSets(pcm: pcm))
+            }
+
             // The recovered 7.1 syntax uses a 6+2 hierarchy. The Core carries
             // an equal-power 7.1-to-5.1 fold, while the hierarchical matrix
-            // reconstructs the original side/rear split. Product mode stores
-            // the complete primary targets; the residual form remains an
-            // explicit research policy below.
+            // reconstructs the original side/rear split. This form is reserved
+            // for the explicit Core-residual research policy below.
             let scaleCode = 473
             let zeroCoefficientCode = 256
             let surroundCoefficientCode = 473
@@ -488,8 +576,159 @@ struct XLLEncoder: Sendable {
         )])
     }
 
+    private func directSevenOneChannelSets(pcm: PCMBuffer) -> [ChannelSetInput] {
+        // Keep conservative delivery in native speaker-mask order. No pairwise
+        // decorrelation is performed here, so emitting an identity transform
+        // with a non-identity original-order map only exercises an unnecessary
+        // decoder path on a terminal. The secondary set carries Lrs/Rrs
+        // independently; no primary value contains a rear contribution.
+        let primary = [
+            pcm.planes[2],
+            pcm.planes[0],
+            pcm.planes[1],
+            pcm.planes[3],
+            pcm.planes[6],
+            pcm.planes[7]
+        ]
+        let rearPlanes = [pcm.planes[4], pcm.planes[5]]
+
+        return [
+            ChannelSetInput(
+                planes: primary,
+                speakerMask: 0x627,
+                residualChannelMask: 0x3f,
+                primary: true,
+                hierarchical: true,
+                downmixScaleCodes: [],
+                downmixCoefficientCodes: [],
+                decorrelationEnabled: false,
+                originalOrder: [],
+                decorrelationCoefficients: [],
+                adaptivePredictionOrders: Array(repeating: 0, count: 6),
+                adaptiveReflectionCoefficientIndices: Array(repeating: [], count: 6),
+                fixedPredictionOrders: Array(repeating: 0, count: 6),
+                scalableLSBWidths: Array(repeating: 0, count: 6),
+                scalableLSBPlanes: Array(
+                    repeating: Array(repeating: 0, count: pcm.sampleCount),
+                    count: 6
+                )
+            ),
+            ChannelSetInput(
+                planes: rearPlanes,
+                speakerMask: 0x180,
+                residualChannelMask: 0x03,
+                primary: false,
+                hierarchical: true,
+                downmixScaleCodes: [],
+                downmixCoefficientCodes: [],
+                decorrelationEnabled: false,
+                originalOrder: [],
+                decorrelationCoefficients: [],
+                adaptivePredictionOrders: [0, 0],
+                adaptiveReflectionCoefficientIndices: [[], []],
+                fixedPredictionOrders: [0, 0],
+                scalableLSBWidths: [0, 0],
+                scalableLSBPlanes: Array(
+                    repeating: Array(repeating: 0, count: pcm.sampleCount),
+                    count: 2
+                )
+            )
+        ]
+    }
+
     private func applyingPrediction(to inputs: [ChannelSetInput]) -> [ChannelSetInput] {
-        inputs.map { input in
+        if codingMode == .terminalOrderedConservative
+            || codingMode == .terminalLegacyLinear {
+            // The channel-set constructors already place the planes in the
+            // coded order declared by `originalOrder`. Coefficients and all
+            // predictor orders are zero, so retaining the declaration changes
+            // syntax only and the decoder reconstructs the same direct PCM.
+            return inputs
+        }
+        if codingMode == .terminalConservative || codingMode == .terminalRice {
+            // Terminal delivery keeps the channel-set syntax explicit and
+            // independently invertible.  Do not ask a hardware decoder to
+            // reproduce a locally selected prediction/decorrelation transform
+            // before the terminal corpus has certified those choices.
+            return inputs.map { input in
+                var directPlanes = input.planes
+                if input.decorrelationEnabled {
+                    // Existing channel-set constructors arrange planes in the
+                    // coded order declared by `originalOrder`.  With the
+                    // transform omitted, restore the decoder's natural
+                    // speaker order before clearing that declaration.
+                    for codedChannel in input.planes.indices {
+                        directPlanes[input.originalOrder[codedChannel]] = input.planes[codedChannel]
+                    }
+                }
+                return ChannelSetInput(
+                    planes: directPlanes,
+                    speakerMask: input.speakerMask,
+                    residualChannelMask: input.residualChannelMask,
+                    primary: input.primary,
+                    hierarchical: input.hierarchical,
+                    downmixScaleCodes: input.downmixScaleCodes,
+                    downmixCoefficientCodes: input.downmixCoefficientCodes,
+                    decorrelationEnabled: false,
+                    originalOrder: Array(0..<directPlanes.count),
+                    decorrelationCoefficients: Array(
+                        repeating: 0,
+                        count: directPlanes.count / 2
+                    ),
+                    adaptivePredictionOrders: Array(
+                        repeating: 0,
+                        count: directPlanes.count
+                    ),
+                    adaptiveReflectionCoefficientIndices: Array(
+                        repeating: [],
+                        count: directPlanes.count
+                    ),
+                    fixedPredictionOrders: Array(
+                        repeating: 0,
+                        count: directPlanes.count
+                    ),
+                    scalableLSBWidths: input.scalableLSBWidths,
+                    scalableLSBPlanes: input.scalableLSBPlanes
+                )
+            }
+        }
+        if codingMode == .terminalPredictive {
+            return inputs.map { input in
+                var predictedPlanes: [[Int32]] = []
+                var adaptiveOrders: [Int] = []
+                var reflectionIndices: [[Int32]] = []
+                var fixedOrders: [Int] = []
+                predictedPlanes.reserveCapacity(input.planes.count)
+                adaptiveOrders.reserveCapacity(input.planes.count)
+                reflectionIndices.reserveCapacity(input.planes.count)
+                fixedOrders.reserveCapacity(input.planes.count)
+                for plane in input.planes {
+                    let selected = selectPrediction(plane)
+                    predictedPlanes.append(selected.residuals)
+                    adaptiveOrders.append(selected.adaptiveOrder)
+                    reflectionIndices.append(selected.reflectionIndices)
+                    fixedOrders.append(selected.fixedOrder)
+                }
+                return ChannelSetInput(
+                    planes: predictedPlanes,
+                    speakerMask: input.speakerMask,
+                    residualChannelMask: input.residualChannelMask,
+                    primary: input.primary,
+                    hierarchical: input.hierarchical,
+                    downmixScaleCodes: input.downmixScaleCodes,
+                    downmixCoefficientCodes: input.downmixCoefficientCodes,
+                    decorrelationEnabled: input.decorrelationEnabled,
+                    originalOrder: input.originalOrder,
+                    decorrelationCoefficients: input.decorrelationCoefficients,
+                    adaptivePredictionOrders: adaptiveOrders,
+                    adaptiveReflectionCoefficientIndices: reflectionIndices,
+                    fixedPredictionOrders: fixedOrders,
+                    scalableLSBWidths: input.scalableLSBWidths,
+                    scalableLSBPlanes: input.scalableLSBPlanes
+                )
+            }
+        }
+        return inputs.map { input in
             let decorrelated = selectPairwiseDecorrelation(input)
             var predictedPlanes: [[Int32]] = []
             var adaptiveOrders: [Int] = []
@@ -501,45 +740,11 @@ struct XLLEncoder: Sendable {
             orders.reserveCapacity(input.planes.count)
 
             for plane in decorrelated.planes {
-                var bestPlane = plane
-                var bestOrder = 0
-                var bestAdaptiveOrder = 0
-                var bestReflectionIndices: [Int32] = []
-                var bestBits = estimatedEntropyBits(plane) + 2
-                for order in 1...3 {
-                    guard let candidate = fixedPredictionResiduals(plane, order: order) else {
-                        continue
-                    }
-                    let bits = estimatedEntropyBits(candidate) + 2
-                    if bits < bestBits {
-                        bestBits = bits
-                        bestOrder = order
-                        bestAdaptiveOrder = 0
-                        bestReflectionIndices = []
-                        bestPlane = candidate
-                    }
-                }
-                if let reflectionCandidates = levinsonReflectionCandidates(plane) {
-                    for (offset, indices) in reflectionCandidates.enumerated() {
-                        let order = offset + 1
-                        guard let candidate = adaptivePredictionResiduals(
-                            plane,
-                            reflectionIndices: indices
-                        ) else { continue }
-                        let bits = estimatedEntropyBits(candidate) + indices.count * 8
-                        if bits < bestBits {
-                            bestBits = bits
-                            bestOrder = 0
-                            bestAdaptiveOrder = order
-                            bestReflectionIndices = indices
-                            bestPlane = candidate
-                        }
-                    }
-                }
-                predictedPlanes.append(bestPlane)
-                adaptiveOrders.append(bestAdaptiveOrder)
-                reflectionIndices.append(bestReflectionIndices)
-                orders.append(bestOrder)
+                let selected = selectPrediction(plane)
+                predictedPlanes.append(selected.residuals)
+                adaptiveOrders.append(selected.adaptiveOrder)
+                reflectionIndices.append(selected.reflectionIndices)
+                orders.append(selected.fixedOrder)
             }
 
             return ChannelSetInput(
@@ -560,6 +765,55 @@ struct XLLEncoder: Sendable {
                 scalableLSBPlanes: decorrelated.scalableLSBPlanes
             )
         }
+    }
+
+    private func selectPrediction(_ plane: [Int32]) -> (
+        residuals: [Int32],
+        adaptiveOrder: Int,
+        reflectionIndices: [Int32],
+        fixedOrder: Int
+    ) {
+        var bestPlane = plane
+        var bestFixedOrder = 0
+        var bestAdaptiveOrder = 0
+        var bestReflectionIndices: [Int32] = []
+        var bestBits = estimatedEntropyBits(plane) + 2
+        for order in 1...3 {
+            guard let candidate = fixedPredictionResiduals(plane, order: order) else {
+                continue
+            }
+            let bits = estimatedEntropyBits(candidate) + 2
+            if bits < bestBits {
+                bestBits = bits
+                bestFixedOrder = order
+                bestAdaptiveOrder = 0
+                bestReflectionIndices = []
+                bestPlane = candidate
+            }
+        }
+        if let reflectionCandidates = levinsonReflectionCandidates(plane) {
+            for (offset, indices) in reflectionCandidates.enumerated() {
+                let order = offset + 1
+                guard let candidate = adaptivePredictionResiduals(
+                    plane,
+                    reflectionIndices: indices
+                ) else { continue }
+                let bits = estimatedEntropyBits(candidate) + indices.count * 8
+                if bits < bestBits {
+                    bestBits = bits
+                    bestFixedOrder = 0
+                    bestAdaptiveOrder = order
+                    bestReflectionIndices = indices
+                    bestPlane = candidate
+                }
+            }
+        }
+        return (
+            residuals: bestPlane,
+            adaptiveOrder: bestAdaptiveOrder,
+            reflectionIndices: bestReflectionIndices,
+            fixedOrder: bestFixedOrder
+        )
     }
 
     /// Choose a signed Q3 pair coefficient from the legal seven-bit table.
@@ -1188,6 +1442,26 @@ struct XLLEncoder: Sendable {
         segmentCount: Int,
         segmentSampleCount: Int
     ) -> [[EntropyMode]] {
+        if codingMode == .terminalConservative
+            || codingMode == .terminalOrderedConservative
+            || codingMode == .terminalLegacyLinear {
+            return (0..<segmentCount).map { segment in
+                let start = segment * segmentSampleCount
+                let end = start + segmentSampleCount
+                return dtsPlanes.map { plane in
+                    .linear(width: minimumLinearBitCount(plane[start..<end]))
+                }
+            }
+        }
+        if codingMode == .terminalRice || codingMode == .terminalPredictive {
+            return (0..<segmentCount).map { segment in
+                let start = segment * segmentSampleCount
+                let end = start + segmentSampleCount
+                return dtsPlanes.map { plane in
+                    terminalRiceMode(plane[start..<end])
+                }
+            }
+        }
         let channelPaths = dtsPlanes.enumerated().map { channel, plane in
             selectEntropyModesForPlane(
                 plane,
@@ -1273,6 +1547,28 @@ struct XLLEncoder: Sendable {
             return Array(repeating: .linear(width: 24), count: segmentCount)
         }
         return paths[bestIndex]
+    }
+
+    /// Restrict the delivery profile to standard Rice without state reuse,
+    /// hybrid exceptions, prediction, or channel transforms. Search the legal
+    /// parameter range because active reference XLL frames use ordinary Rice
+    /// even when a linear representation would also fit.
+    private func terminalRiceMode(_ samples: ArraySlice<Int32>) -> EntropyMode {
+        // Preserve the compact zero-width form used by the qualified first
+        // XLL frame. Active terminal frames use Rice below.
+        guard samples.contains(where: { $0 != 0 }) else {
+            return .linear(width: 0)
+        }
+        var selectedParameter = 0
+        var selectedBitCount = Int.max
+        for parameter in 0..<XLLSyntax.linearSampleBitCount {
+            let bitCount = ricePayloadBitCount(samples, parameter: parameter)
+            if bitCount < selectedBitCount {
+                selectedParameter = parameter
+                selectedBitCount = bitCount
+            }
+        }
+        return .rice(parameter: selectedParameter)
     }
 
     private func entropyCandidates(
@@ -1615,7 +1911,23 @@ struct XLLEncoder: Sendable {
         )
         var writer = BitWriter(reservingCapacity: estimatedByteCapacity)
 
-        let reuseParameters = index > 0
+        // Terminal-conservative output never asks a decoder to retain entropy
+        // allocation state. This makes every segment independently decodable
+        // and avoids both shared-parameter and state-reuse branches.
+        // A terminal experiment must change only the feature under test.  In
+        // particular, Rice and predictive delivery modes must not quietly add
+        // shared allocation state when all channel parameters happen to
+        // coincide.  State reuse and common parameters therefore remain
+        // research-only syntax.
+        let permitsLegacySharedParameters = codingMode == .research
+            || codingMode == .terminalLegacyLinear
+        let requiresExplicitParameters = !permitsLegacySharedParameters
+        // The recovered reference stream uses explicit allocation state in
+        // every observed active delivery segment. Keep state reuse confined to
+        // the research profile so a terminal never has to carry local entropy
+        // state across a public XLL segment boundary.
+        let reuseParameters = permitsLegacySharedParameters
+            && index > 0
             && !(index == 1 && adaptivePredictionOrders.contains(where: { $0 > 0 }))
             && previousModes == modes
             && modes.allSatisfy(canReuse)
@@ -1631,7 +1943,8 @@ struct XLLEncoder: Sendable {
             // each predictor order maps to the exact number of raw seed samples.
             let hasAdaptivePartA = index == 0
                 && adaptivePredictionOrders.contains(where: { $0 > 0 })
-            let commonParameters = !hasAdaptivePartA
+            let commonParameters = !requiresExplicitParameters
+                && !hasAdaptivePartA
                 && !modes.contains(where: {
                     if case .hybridRice = $0 { return true }
                     return false

@@ -234,6 +234,78 @@ public enum DTSHDMACommandLine {
             progress(1_000, 1_000)
             print(try jsonString(artifacts))
 
+        case "encode-dtsx-public-xll-control":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard (3...4).contains(arguments.count) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-public-xll-control requires full-primary|core-residual SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate VALUE"
+                )
+            }
+            let coreAssociationPolicy: XLLCoreAssociationPolicy
+            switch arguments[0].lowercased() {
+            case "full-primary":
+                coreAssociationPolicy = .fullPrimaryChannels
+            case "core-residual":
+                coreAssociationPolicy = .coreResidual
+            default:
+                throw DTSError.invalidArgument(
+                    "XLL association must be full-primary or core-residual"
+                )
+            }
+            let outputURL = try productOutputURL(arguments[2])
+            let completeSource = try DTS714SourceSet.loadLegacySevenOne(
+                directory: URL(fileURLWithPath: arguments[1])
+            )
+            let pcm: PCMBuffer
+            if arguments.count == 4 {
+                guard let frameCount = Int(arguments[3]), frameCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                let (sampleCount, overflow) = frameCount.multipliedReportingOverflow(
+                    by: XLLSyntax.frameSampleCount
+                )
+                guard !overflow, sampleCount <= completeSource.sampleCount else {
+                    throw DTSError.valueOutOfRange(
+                        field: "DTS:X public-XLL control source frame count",
+                        value: String(frameCount)
+                    )
+                }
+                pcm = try completeSource.frame(at: 0, count: sampleCount)
+            } else {
+                pcm = completeSource
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "DTS:X compatibility-bed PCM"
+            )
+            let progress = makeEncodingProgressReporter()
+            try HDMAEncoder(
+                format: pcm.format,
+                tailPolicy: .zeroPad,
+                frameRate: frameRate,
+                xllCodingMode: .terminalConservative,
+                coreAssociationPolicy: coreAssociationPolicy,
+                compactXLLPriming: coreAssociationPolicy == .coreResidual,
+                forcedXLLSegmentCount: 2
+            ).encode(pcm, to: outputURL, progress: { completed, total in
+                progress(900 * completed / max(1, total), 1_000)
+            })
+            let artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
+                pcm: pcm,
+                input: DTSHDMADeliveryInput(
+                    inputURL: URL(fileURLWithPath: arguments[1]),
+                    resolvedInputURL: URL(fileURLWithPath: arguments[1]),
+                    detectedInput: .sevenOnePCM,
+                    sourceChannelCount: pcm.format.layout.channelCount
+                ),
+                outputURL: outputURL,
+                frameRate: frameRate
+            )
+            progress(1_000, 1_000)
+            print(try jsonString(artifacts))
+
         case "decode-xll":
             guard values.count == 2 else {
                 throw DTSError.invalidArgument("decode-xll requires INPUT.dts OUTPUT.wav")
@@ -318,6 +390,32 @@ public enum DTSHDMACommandLine {
             let pcm = try SyntheticPCM.deterministic(layout: layout, frameCount: frameCount)
             try WaveFile.write(pcm, to: URL(fileURLWithPath: values[2]))
             print("generated \(pcm.sampleCount) samples, \(layout.rawValue)")
+
+        case "encode-dtsx-control":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard arguments.count == 3, let frameCount = Int(arguments[2]) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-control requires PATTERN OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate VALUE"
+                )
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "direct 7.1.4 PCM control vector"
+            )
+            let source = try SyntheticPCM.controlledDTS714(
+                pattern: arguments[0],
+                frameCount: frameCount
+            )
+            let report = try DTSXNativeHDMAEncoder(
+                verificationPolicy: .integrated
+            ).encode(
+                source: source,
+                to: try productOutputURL(arguments[1]),
+                frameRate: frameRate
+            )
+            print(try jsonString(report))
 
         case "compare":
             guard values.count == 2 else {
@@ -511,6 +609,35 @@ public enum DTSHDMACommandLine {
                 directory: URL(fileURLWithPath: values[0])
             )))
 
+        case "diagnose-dtsx-compatibility-bed":
+            guard (1...2).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "diagnose-dtsx-compatibility-bed requires SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]"
+                )
+            }
+            let source = try DTS714SourceSet.load(
+                directory: URL(fileURLWithPath: values[0])
+            )
+            let inspected: DTS714PCMBuffer
+            if values.count == 2 {
+                guard let frameCount = Int(values[1]), frameCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                let sampleCount = frameCount * XLLSyntax.frameSampleCount
+                guard sampleCount <= source.sampleCount else {
+                    throw DTSError.valueOutOfRange(
+                        field: "DTS:X compatibility diagnostic frame count",
+                        value: String(frameCount)
+                    )
+                }
+                inspected = try DTS714PCMBuffer(
+                    planes: source.planes.map { Array($0.prefix(sampleCount)) }
+                )
+            } else {
+                inspected = source
+            }
+            print(try jsonString(DTS714CompatibilityBedRenderer.diagnose(inspected)))
+
         case "verify-dtsx":
             guard (1...2).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -576,6 +703,26 @@ public enum DTSHDMACommandLine {
             print(try jsonString(XLLFrameDecodeInspector.inspect(
                 inputURL: URL(fileURLWithPath: values[0]),
                 frameIndex: frameIndex
+            )))
+
+        case "compare-public-xll-decoded":
+            guard values.count == 2 else {
+                throw DTSError.invalidArgument(
+                    "compare-public-xll-decoded requires BASELINE.dtshd CANDIDATE.dtshd"
+                )
+            }
+            print(try jsonString(XLLPublicDecodedComparator.compare(
+                baselineURL: URL(fileURLWithPath: values[0]),
+                candidateURL: URL(fileURLWithPath: values[1])
+            )))
+
+        case "inspect-dtsx-frame":
+            guard values.count == 2, let accessUnitCount = Int(values[1]) else {
+                throw DTSError.invalidArgument("inspect-dtsx-frame requires INPUT.dtshd ACCESS_UNIT_COUNT")
+            }
+            print(try jsonString(DTSXTerminalFrameInspector.inspect(
+                inputURL: URL(fileURLWithPath: values[0]),
+                accessUnitCount: accessUnitCount
             )))
 
         case "verify-xll-decode":
@@ -701,6 +848,33 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-714-native":
+            guard (2...3).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-714-native requires INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]"
+                )
+            }
+            let maximumFrames: Int?
+            if values.count == 3 {
+                guard let parsedCount = Int(values[2]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                maximumFrames = parsedCount
+            } else {
+                maximumFrames = nil
+            }
+            let report = try DTSX714NativeClosedLoopVerifier.verify(
+                inputURL: URL(fileURLWithPath: values[0]),
+                sourceDirectory: URL(fileURLWithPath: values[1]),
+                maximumSourceFrameCount: maximumFrames
+            )
+            print(try jsonString(report))
+            guard report.isBitExactSevenOneFour else {
+                throw DTSError.malformed(
+                    "native Core + public XLL + XLL-X differs from the explicit 7.1.4 source"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -814,6 +988,164 @@ public enum DTSHDMACommandLine {
             let report = try DTSXNativeHDMAEncoder().encode(
                 source: source,
                 to: try productOutputURL(arguments[1]),
+                frameRate: frameRate,
+                maximumSourceFrameCount: maximumFrames,
+                progress: makeEncodingProgressReporter()
+            )
+            print(try jsonString(report))
+
+        case "encode-dtsx-native-source-mode":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard (3...4).contains(arguments.count) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-native-source-mode requires conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate VALUE"
+                )
+            }
+            let codingModes = try dtsxCodingModes(arguments[0])
+            let maximumFrames: Int?
+            if arguments.count == 4 {
+                guard let parsedCount = Int(arguments[3]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                maximumFrames = parsedCount
+            } else {
+                maximumFrames = nil
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "DTS:X source-directory PCM"
+            )
+            let source = try DTS714SourceSet.load(
+                directory: URL(fileURLWithPath: arguments[1])
+            )
+            let report = try DTSXNativeHDMAEncoder(
+                publicXLLCodingMode: codingModes.publicXLL,
+                privateXLLXCodingMode: codingModes.privateXLLX
+            ).encode(
+                source: source,
+                to: try productOutputURL(arguments[2]),
+                frameRate: frameRate,
+                maximumSourceFrameCount: maximumFrames,
+                progress: makeEncodingProgressReporter()
+            )
+            print(try jsonString(report))
+
+        case "encode-dtsx-native-source-layer-modes":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard (4...5).contains(arguments.count) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-native-source-layer-modes requires PUBLIC_MODE PRIVATE_MODE SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate VALUE"
+                )
+            }
+            let publicMode = try dtsxPublicXLLCodingMode(arguments[0])
+            let privateMode = try dtsxPrivateXLLXCodingMode(arguments[1])
+            let maximumFrames: Int?
+            if arguments.count == 5 {
+                guard let parsedCount = Int(arguments[4]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                maximumFrames = parsedCount
+            } else {
+                maximumFrames = nil
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "DTS:X source-directory PCM"
+            )
+            let source = try DTS714SourceSet.load(
+                directory: URL(fileURLWithPath: arguments[2])
+            )
+            let report = try DTSXNativeHDMAEncoder(
+                publicXLLCodingMode: publicMode,
+                privateXLLXCodingMode: privateMode
+            ).encode(
+                source: source,
+                to: try productOutputURL(arguments[3]),
+                frameRate: frameRate,
+                maximumSourceFrameCount: maximumFrames,
+                progress: makeEncodingProgressReporter()
+            )
+            print(try jsonString(report))
+
+        case "encode-dtsx-native-source-layer-modes-forced-segments":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard (5...6).contains(arguments.count) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-native-source-layer-modes-forced-segments requires PUBLIC_MODE PRIVATE_MODE SEGMENT_COUNT SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate VALUE"
+                )
+            }
+            let publicMode = try dtsxPublicXLLCodingMode(arguments[0])
+            let privateMode = try dtsxPrivateXLLXCodingMode(arguments[1])
+            guard let forcedSegmentCount = Int(arguments[2]),
+                  [2, 4, 8].contains(forcedSegmentCount) else {
+                throw DTSError.invalidArgument("SEGMENT_COUNT must be 2, 4, or 8")
+            }
+            let maximumFrames: Int?
+            if arguments.count == 6 {
+                guard let parsedCount = Int(arguments[5]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                maximumFrames = parsedCount
+            } else {
+                maximumFrames = nil
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "DTS:X source-directory PCM"
+            )
+            let source = try DTS714SourceSet.load(
+                directory: URL(fileURLWithPath: arguments[3])
+            )
+            let report = try DTSXNativeHDMAEncoder(
+                publicXLLCodingMode: publicMode,
+                publicXLLForcedSegmentCount: forcedSegmentCount,
+                privateXLLXCodingMode: privateMode
+            ).encode(
+                source: source,
+                to: try productOutputURL(arguments[4]),
+                frameRate: frameRate,
+                maximumSourceFrameCount: maximumFrames,
+                progress: makeEncodingProgressReporter()
+            )
+            print(try jsonString(report))
+
+        case "encode-dtsx-native-source-association":
+            let parsed = try parseFrameRateOption(values)
+            let arguments = parsed.arguments
+            guard (3...4).contains(arguments.count) else {
+                throw DTSError.invalidArgument(
+                    "encode-dtsx-native-source-association requires core-residual|full-primary SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate VALUE"
+                )
+            }
+            let associationPolicy = try dtsxCoreAssociationPolicy(arguments[0])
+            let maximumFrames: Int?
+            if arguments.count == 4 {
+                guard let parsedCount = Int(arguments[3]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("SOURCE_FRAME_COUNT must be positive")
+                }
+                maximumFrames = parsedCount
+            } else {
+                maximumFrames = nil
+            }
+            let frameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "DTS:X source-directory PCM"
+            )
+            let source = try DTS714SourceSet.load(
+                directory: URL(fileURLWithPath: arguments[1])
+            )
+            let report = try DTSXNativeHDMAEncoder(
+                publicXLLCoreAssociationPolicy: associationPolicy
+            ).encode(
+                source: source,
+                to: try productOutputURL(arguments[2]),
                 frameRate: frameRate,
                 maximumSourceFrameCount: maximumFrames,
                 progress: makeEncodingProgressReporter()
@@ -1377,6 +1709,64 @@ public enum DTSHDMACommandLine {
             )
             print(try jsonString(report.summary))
 
+        case "compare-xllx-entropy":
+            guard (5...7).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "compare-xllx-entropy requires BASE.json BASE.xllx VARIANT.json VARIANT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]"
+                )
+            }
+            let maximumFrameCount: Int?
+            if values.count >= 6 {
+                guard let parsed = Int(values[5]), parsed > 0 else {
+                    throw DTSError.invalidArgument("MAX_FRAMES must be positive")
+                }
+                maximumFrameCount = parsed
+            } else {
+                maximumFrameCount = nil
+            }
+            let frameOffset: Int
+            if values.count == 7 {
+                guard let parsed = Int(values[6]), parsed >= 0 else {
+                    throw DTSError.invalidArgument("FRAME_OFFSET must not be negative")
+                }
+                frameOffset = parsed
+            } else {
+                frameOffset = 0
+            }
+            let report = try DTSXPrivateEntropyDifferential.compare(
+                baselineIndexURL: URL(fileURLWithPath: values[0]),
+                baselinePayloadURL: URL(fileURLWithPath: values[1]),
+                variantIndexURL: URL(fileURLWithPath: values[2]),
+                variantPayloadURL: URL(fileURLWithPath: values[3]),
+                outputURL: URL(fileURLWithPath: values[4]),
+                maximumFrameCount: maximumFrameCount,
+                frameOffset: frameOffset
+            )
+            print(try jsonString(report.summary))
+
+        case "analyze-xllx-entropy-safety":
+            guard (3...4).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "analyze-xllx-entropy-safety requires INPUT.json INPUT.xllx OUTPUT.json [MAX_FRAMES]"
+                )
+            }
+            let maximumFrameCount: Int?
+            if values.count == 4 {
+                guard let parsed = Int(values[3]), parsed > 0 else {
+                    throw DTSError.invalidArgument("MAX_FRAMES must be positive")
+                }
+                maximumFrameCount = parsed
+            } else {
+                maximumFrameCount = nil
+            }
+            let report = try DTSXPrivateEntropySafetyAnalyzer.analyze(
+                indexURL: URL(fileURLWithPath: values[0]),
+                payloadURL: URL(fileURLWithPath: values[1]),
+                outputURL: URL(fileURLWithPath: values[2]),
+                maximumFrameCount: maximumFrameCount
+            )
+            print(try jsonString(report))
+
         case "verify-xllx-routing-remap":
             guard values.count == 6 else {
                 throw DTSError.invalidArgument(
@@ -1716,6 +2106,84 @@ public enum DTSHDMACommandLine {
         return (remaining, frameRate)
     }
 
+    private static func dtsxCodingModes(
+        _ argument: String
+    ) throws -> (publicXLL: XLLCodingMode, privateXLLX: DTSXPrivateCodingMode) {
+        (
+            publicXLL: try dtsxPublicXLLCodingMode(argument),
+            privateXLLX: try dtsxPrivateXLLXCodingMode(argument)
+        )
+    }
+
+    private static func dtsxPublicXLLCodingMode(
+        _ argument: String
+    ) throws -> XLLCodingMode {
+        switch argument.lowercased() {
+        case "conservative":
+            return .terminalConservative
+        case "ordered":
+            return .terminalOrderedConservative
+        case "legacy-linear":
+            return .terminalLegacyLinear
+        case "rice":
+            return .terminalRice
+        case "predictive":
+            return .terminalPredictive
+        case "research":
+            return .research
+        default:
+            throw DTSError.invalidArgument(
+                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, predictive, or research"
+            )
+        }
+    }
+
+    private static func dtsxPrivateXLLXCodingMode(
+        _ argument: String
+    ) throws -> DTSXPrivateCodingMode {
+        switch argument.lowercased() {
+        case "conservative":
+            return .terminalConservative
+        case "branch2-conservative":
+            return .terminalBranchTwoConservative
+        case "branch2-predictive-linear":
+            return .terminalBranchTwoPredictiveLinear
+        case "branch2-rice":
+            return .terminalBranchTwoRice
+        case "rice":
+            return .terminalRice
+        case "rice-mean":
+            return .terminalRiceMeanMagnitude
+        case "rice-bounded22":
+            return .terminalRiceBoundedUnary
+        case "predictive":
+            return .terminalPredictive
+        case "research":
+            return .research
+        default:
+            throw DTSError.invalidArgument(
+                "private XLL-X coding mode must be conservative, branch2-conservative, "
+                    + "branch2-predictive-linear, branch2-rice, rice, rice-mean, "
+                    + "rice-bounded22, predictive, or research"
+            )
+        }
+    }
+
+    private static func dtsxCoreAssociationPolicy(
+        _ argument: String
+    ) throws -> XLLCoreAssociationPolicy {
+        switch argument.lowercased() {
+        case "core-residual":
+            return .coreResidual
+        case "full-primary":
+            return .fullPrimaryChannels
+        default:
+            throw DTSError.invalidArgument(
+                "DTS:X Core association must be core-residual or full-primary"
+            )
+        }
+    }
+
     private static func parseAutomaticOptions(
         _ arguments: [String]
     ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?) {
@@ -1811,12 +2279,14 @@ public enum DTSHDMACommandLine {
           hdmax analyze-core-quality SOURCE_5.1.wav INPUT.dts|INPUT.dtshd [ALIGNMENT_SAMPLES]
           hdmax encode-hdma INPUT_5.1.wav|INPUT_7.1.wav OUTPUT.dtshd --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-hdma-source SOURCE_HDMA_DIRECTORY OUTPUT.dtshd [FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-public-xll-control full-primary|core-residual SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax decode-xll INPUT.dts OUTPUT.wav
           hdmax verify-hdma INPUT.wav OUTPUT.dtshd [OUTPUT_DECODED.wav] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax hash-pcm INPUT.wav
           hdmax sha256 INPUT
           hdmax md5 INPUT
           hdmax generate stereo|5.1|7.1 FRAME_COUNT OUTPUT.wav
+          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax compare EXPECTED.wav ACTUAL.wav
           hdmax compare-padded EXPECTED.wav PADDED_ACTUAL.wav
           hdmax render-7.1-to-5.1 INPUT.wav OUTPUT.wav
@@ -1837,18 +2307,25 @@ public enum DTSHDMACommandLine {
           hdmax verify-xll-pbr INPUT.dtshd
           hdmax verify-xll-channel-set-pcm INPUT.dtshd CHANNEL_SET_INDEX EXPECTED_CHANNEL_0.wav EXPECTED_CHANNEL_1.wav [...]
           hdmax inspect-xll-frame-decode INPUT.dtshd FRAME_INDEX
+          hdmax compare-public-xll-decoded BASELINE.dtshd CANDIDATE.dtshd
+          hdmax inspect-dtsx-frame INPUT.dtshd ACCESS_UNIT_COUNT
           hdmax verify-xll-decode INPUT.dtshd
           hdmax verify-xll-core-oracle INPUT.dtshd CORE_ORACLE_5.1.wav SOURCE_HDMA_DIRECTORY
           hdmax verify-xll-core-native INPUT.dtshd SOURCE_HDMA_DIRECTORY
           hdmax verify-dtsx-compatibility-bed-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-compatibility-bed-oracle INPUT.dtshd CORE_ORACLE_5.1.wav SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
+          hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-native-source-mode conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-native-source-layer-modes PUBLIC_MODE PRIVATE_MODE SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-native-source-layer-modes-forced-segments PUBLIC_MODE PRIVATE_MODE SEGMENT_COUNT SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-native-source-association core-residual|full-primary SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native INPUT.atmos|ADM.wav|IAB.mxf OUTPUT.dtshd [SOURCE_FRAME_COUNT] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
           hdmax encode-dtsx MODE INPUT.atmos|ADM.wav|IAB.mxf OUTPUT.dtshd SOURCE_DTSX_DIRECTORY DTSX_REFERENCE_DIRECTORY [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
           hdmax encode-dtsx-source MODE SOURCE_DTSX_DIRECTORY OUTPUT.dtshd DTSX_REFERENCE_DIRECTORY --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
@@ -1870,6 +2347,8 @@ public enum DTSHDMACommandLine {
           hdmax analyze-xllx-generic-decode INPUT_INDEX.json INPUT.xllx SOURCE_DTSX_DIRECTORY OUTPUT.json
           hdmax survey-xllx INPUT.json INPUT.xllx OUTPUT.json
           hdmax compare-xllx BASE.json BASE.xllx VARIANT.json VARIANT.xllx OUTPUT.json
+          hdmax compare-xllx-entropy BASE.json BASE.xllx VARIANT.json VARIANT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
+          hdmax analyze-xllx-entropy-safety INPUT.json INPUT.xllx OUTPUT.json [MAX_FRAMES]
           hdmax verify-xllx-routing-remap BASE.json BASE.xllx VARIANT.json VARIANT.xllx OLD_TO_NEW OUTPUT.json
           hdmax analyze-xllx-controlled-pair BASE.json BASE.xllx VARIANT.json VARIANT.xllx OUTPUT.json
           hdmax inspect-xllx-private-frame INPUT.json INPUT.xllx FRAME_INDEX OUTPUT.json

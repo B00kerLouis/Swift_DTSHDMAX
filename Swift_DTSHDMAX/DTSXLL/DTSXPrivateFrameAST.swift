@@ -230,17 +230,21 @@ public extension DTSXPrivateFrameAST {
                     7,
                     field: "XLL-X pair decorrelation coefficient[\(pair)]"
                 ))
-                // Even codes are direct non-negative coefficients (`raw / 2`).
-                // Branch one applies ordinary zigzag to the complete seven-
-                // bit value. Branches two/three apply signed zigzag to the
-                // upper six bits plus their branch-qualified extension bit.
+                // Pair one applies ordinary ZigZag to the complete seven-bit
+                // value. Pair zero applies ZigZag to the upper six bits plus
+                // the branch-qualified extension bit. The raw low bit remains
+                // an alias/form discriminator; it does not bypass the branch
+                // extension for even raw values.
                 let coefficientCode = raw >> 1
                 let signedValue: Int
-                if branchCode == 1 || (branchCode == 3 && destinationPair == 1) {
+                // The second destination pair always uses ordinary seven-bit
+                // ZigZag. Only pair zero is branch-qualified: branch two uses
+                // a zero extension and branch three a one extension for every
+                // raw-code form. Official branch-two frame 613 carries raw 7 for
+                // pair one, which must decode to -4 (not the extended -34).
+                if destinationPair == 1 {
                     signedValue = (raw & 1) == 0
                         ? coefficientCode : -coefficientCode - 1
-                } else if (raw & 1) == 0 {
-                    signedValue = coefficientCode
                 } else {
                     let extensionBit = (branchCode >> destinationPair) & 1
                     let extendedCode = (extensionBit << 6) | coefficientCode
@@ -312,28 +316,51 @@ public extension DTSXPrivateFrameAST {
     /// callers must apply an evidence-qualified profile before treating these
     /// fields as semantic audio syntax.
     func parsePredictionHeaderCandidate() throws -> DTSXPrivatePredictionHeaderCandidate {
+        try parsePredictionHeaderCandidates()[0]
+    }
+
+    /// Returns every CRC-bounded prediction interpretation that satisfies the
+    /// recovered generic grammar. Branch two has both one- and two-coefficient
+    /// forms; some official frames make both headers locally plausible, so the
+    /// entropy decoder must select between them by complete NAVI closure.
+    func parsePredictionHeaderCandidates() throws -> [DTSXPrivatePredictionHeaderCandidate] {
         var primary: DTSXPrivatePredictionHeaderCandidate?
         var primaryError: Error?
         do {
             primary = try parsePredictionHeaderCandidate(
                 decorrelation: parseDecorrelationCandidate()
             )
-            if primary?.matchesObservedGenericProfile == true {
-                return primary!
-            }
         } catch {
             primaryError = error
         }
 
+        var candidates: [DTSXPrivatePredictionHeaderCandidate] = []
+        if let primary, primary.matchesObservedGenericProfile {
+            candidates.append(primary)
+        }
+
         if candidateSecondaryBranchCode == 2 {
-            let fallback = try parsePredictionHeaderCandidate(
+            if let fallback = try? parsePredictionHeaderCandidate(
                 decorrelation: parseBranchTwoSinglePairDecorrelationCandidate()
-            )
-            if fallback.matchesObservedGenericProfile {
-                return fallback
+            ), fallback.matchesObservedGenericProfile,
+               !candidates.contains(fallback) {
+                candidates.append(fallback)
             }
         }
-        if let primary { return primary }
+        if candidateSecondaryBranchCode == 3 {
+            for destinationPair in 0..<2 {
+                if let fallback = try? parsePredictionHeaderCandidate(
+                    decorrelation: parseBranchThreeSinglePairDecorrelationCandidate(
+                        destinationPair: destinationPair
+                    )
+                ), fallback.matchesObservedGenericProfile,
+                   !candidates.contains(fallback) {
+                    candidates.append(fallback)
+                }
+            }
+        }
+        if !candidates.isEmpty { return candidates }
+        if let primary { return [primary] }
         throw primaryError ?? DTSError.malformed(
             "XLL-X candidate prediction header has no recoverable branch form"
         )
@@ -353,6 +380,41 @@ public extension DTSXPrivateFrameAST {
             branchCode: candidateSecondaryBranchCode,
             rawCoefficientCodes: [raw],
             signedCoefficientCodes: [Int32(signedValue), 0],
+            syntaxBitCount: reader.bitOffset
+        )
+    }
+
+    private func parseBranchThreeSinglePairDecorrelationCandidate(
+        destinationPair: Int
+    ) throws -> DTSXPrivateDecorrelationCandidate {
+        guard (0..<2).contains(destinationPair) else {
+            throw DTSError.valueOutOfRange(
+                field: "XLL-X branch-three single-pair destination",
+                value: String(destinationPair)
+            )
+        }
+        var reader = try BitReader(data: body)
+        let raw = Int(try reader.read(
+            7,
+            field: "XLL-X branch-three single-pair decorrelation coefficient"
+        ))
+        let coefficientCode = raw >> 1
+        let signedValue: Int
+        if destinationPair == 1 {
+            signedValue = (raw & 1) == 0
+                ? coefficientCode : -coefficientCode - 1
+        } else {
+            let extendedCode = (1 << 6) | coefficientCode
+            let magnitude = extendedCode >> 1
+            signedValue = (extendedCode & 1) == 0
+                ? magnitude : -magnitude - 1
+        }
+        var signedCodes = Array(repeating: Int32(0), count: 2)
+        signedCodes[destinationPair] = Int32(signedValue)
+        return DTSXPrivateDecorrelationCandidate(
+            branchCode: candidateSecondaryBranchCode,
+            rawCoefficientCodes: [raw],
+            signedCoefficientCodes: signedCodes,
             syntaxBitCount: reader.bitOffset
         )
     }
@@ -678,6 +740,10 @@ public struct DTSXPrivateIsolatedDecodedFrame: Sendable, Equatable {
     /// legacy evidence decoder is used.
     public let segmentBoundaryBitOffsets: [Int]
     public let entropySegments: [DTSXPrivateEntropySegmentSyntax]
+    /// True only for the recovered compact 4x128 all-zero form.  Its
+    /// continuation bytes do not carry the ordinary entropy-state flag, so
+    /// diagnostics must not count them as normal state reuse.
+    public var usesCompactZeroEntropySyntax: Bool = false
     /// Present only for the recovered no-NAVI all-zero form.
     public var noNavigationZeroSideInfo: DTSXPrivateNoNavigationZeroSideInfo? = nil
     public let hybridRiceParameterCount: Int
@@ -756,15 +822,9 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         collectEntropyDiagnostics: Bool = false
     ) throws -> DTSXPrivateIsolatedDecodedFrame {
         if let navigation = try? ast.parseNavigation(segmentCount: segmentCount) {
-            let prediction = try ast.parsePredictionHeaderCandidate()
-            guard prediction.matchesObservedGenericProfile else {
-                throw DTSError.unsupported(
-                    "XLL-X private prediction header is outside the generic profile"
-                )
-            }
-            return try decodeWithPrediction(
+            return try decodeWithPredictionCandidates(
                 ast,
-                prediction: prediction,
+                predictions: try ast.parsePredictionHeaderCandidates(),
                 entropyPrefixByteCount: 2 + navigation.serializedByteCount,
                 segmentByteCounts: navigation.segmentByteCounts,
                 requireTrailingBitsToBeZero: true,
@@ -776,28 +836,11 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         if ast.candidateSecondaryBranchCode == 1
             || ast.candidateSecondaryBranchCode == 2
             || ast.candidateSecondaryBranchCode == 3 {
-            // The controlled branch-2 profile carries a five-byte NAVI block
-            // and therefore starts entropy seven bytes after the prediction
-            // boundary. Try the two dominant reference layouts before the
-            // complete structural scan below.
-            if let decoded = try? decodeGeneric(
-                ast,
-                entropyPrefixByteCount: 8,
-                segmentCount: segmentCount,
-                segmentSampleCount: segmentSampleCount,
-                collectEntropyDiagnostics: collectEntropyDiagnostics
-            ), decoded.trailingBitsAreAllZero {
-                return decoded
-            }
-            if let decoded = try? decodeGeneric(
-                ast,
-                entropyPrefixByteCount: 7,
-                segmentCount: segmentCount,
-                segmentSampleCount: segmentSampleCount,
-                collectEntropyDiagnostics: collectEntropyDiagnostics
-            ), decoded.trailingBitsAreAllZero {
-                return decoded
-            }
+            // Do not fast-path the primary prediction header at the dominant
+            // seven/eight-byte prefixes. Official even-first single-
+            // coefficient frames can make the false two-coefficient header
+            // close at the same prefix (frame 2867), so every branch form must
+            // pass through the complete candidate selector.
             return try decodeGenericAutodetected(
                 ast,
                 segmentCount: segmentCount,
@@ -855,6 +898,33 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         )
     }
 
+    /// Diagnostic entry point for comparing CRC-valid prediction-header
+    /// interpretations without changing the production selector.
+    public static func decodeGeneric(
+        _ ast: DTSXPrivateFrameAST,
+        prediction: DTSXPrivatePredictionHeaderCandidate,
+        entropyPrefixByteCount: Int,
+        segmentCount: Int = 2,
+        segmentSampleCount: Int = 256,
+        collectEntropyDiagnostics: Bool = false
+    ) throws -> DTSXPrivateIsolatedDecodedFrame {
+        guard prediction.matchesObservedGenericProfile else {
+            throw DTSError.unsupported(
+                "XLL-X diagnostic prediction header is outside the generic profile"
+            )
+        }
+        return try decodeWithPrediction(
+            ast,
+            prediction: prediction,
+            entropyPrefixByteCount: entropyPrefixByteCount,
+            segmentByteCounts: nil,
+            requireTrailingBitsToBeZero: false,
+            segmentCount: segmentCount,
+            segmentSampleCount: segmentSampleCount,
+            collectEntropyDiagnostics: collectEntropyDiagnostics
+        )
+    }
+
     /// Selects the recovered private entropy boundary using only the
     /// bitstream. A candidate is accepted when both segments decode and every
     /// remaining bit is zero. Ambiguous and unclosed private forms are rejected
@@ -866,11 +936,10 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         collectEntropyDiagnostics: Bool = false
     ) throws -> DTSXPrivateIsolatedDecodedFrame {
         if let navigation = try? ast.parseNavigation(segmentCount: segmentCount),
-           let prediction = try? ast.parsePredictionHeaderCandidate(),
-           prediction.matchesObservedGenericProfile,
-           let decoded = try? decodeWithPrediction(
+           let predictions = try? ast.parsePredictionHeaderCandidates(),
+           let decoded = try? decodeWithPredictionCandidates(
                ast,
-               prediction: prediction,
+               predictions: predictions,
                entropyPrefixByteCount: 2 + navigation.serializedByteCount,
                segmentByteCounts: navigation.segmentByteCounts,
                requireTrailingBitsToBeZero: true,
@@ -885,25 +954,175 @@ public enum DTSXPrivateIsolatedFrameDecoder {
                 "XLL-X automatic entropy-boundary detection found an unsupported private branch"
             )
         }
+        let predictions = try ast.parsePredictionHeaderCandidates()
         var candidates: [DTSXPrivateIsolatedDecodedFrame] = []
-        candidates.reserveCapacity(2)
-        for prefixByteCount in 2...15 {
-            guard let decoded = try? decodeGeneric(
-                ast,
-                entropyPrefixByteCount: prefixByteCount,
-                segmentCount: segmentCount,
-                segmentSampleCount: segmentSampleCount,
-                collectEntropyDiagnostics: collectEntropyDiagnostics
-            ), decoded.trailingBitsAreAllZero else { continue }
-            candidates.append(decoded)
+        candidates.reserveCapacity(predictions.count)
+        // Generalized 8/16-segment frames can carry substantially longer
+        // side information than the dominant two-segment profile. Thirty-one
+        // bytes covers the maximum recovered NAVI/CRC/alignment envelope.
+        for prefixByteCount in 2...31 {
+            for prediction in predictions where prediction.matchesObservedGenericProfile {
+                do {
+                    let decoded = try decodeWithPrediction(
+                        ast,
+                        prediction: prediction,
+                        entropyPrefixByteCount: prefixByteCount,
+                        segmentByteCounts: nil,
+                        requireTrailingBitsToBeZero: true,
+                        segmentCount: segmentCount,
+                        segmentSampleCount: segmentSampleCount,
+                        collectEntropyDiagnostics: collectEntropyDiagnostics
+                    )
+                    if decoded.trailingBitsAreAllZero {
+                        candidates.append(decoded)
+                    }
+                } catch {}
+            }
         }
-        guard candidates.count == 1 else {
-            let reason = candidates.isEmpty ? "no" : "multiple"
+        if candidates.isEmpty {
             throw DTSError.unsupported(
-                "XLL-X private frame has \(reason) structurally unique entropy boundary"
+                "XLL-X private frame has no structurally unique entropy boundary"
             )
         }
-        return candidates[0]
+        return try selectDecodedPredictionCandidate(
+            ast,
+            decodedCandidates: candidates,
+            permitsPrimaryFallback: false
+        )
+    }
+
+    private static func decodeWithPredictionCandidates(
+        _ ast: DTSXPrivateFrameAST,
+        predictions: [DTSXPrivatePredictionHeaderCandidate],
+        entropyPrefixByteCount: Int,
+        segmentByteCounts: [Int]?,
+        requireTrailingBitsToBeZero: Bool,
+        segmentCount: Int,
+        segmentSampleCount: Int,
+        collectEntropyDiagnostics: Bool
+    ) throws -> DTSXPrivateIsolatedDecodedFrame {
+        var decodedCandidates: [DTSXPrivateIsolatedDecodedFrame] = []
+        var firstError: Error?
+        for prediction in predictions where prediction.matchesObservedGenericProfile {
+            do {
+                decodedCandidates.append(try decodeWithPrediction(
+                    ast,
+                    prediction: prediction,
+                    entropyPrefixByteCount: entropyPrefixByteCount,
+                    segmentByteCounts: segmentByteCounts,
+                    requireTrailingBitsToBeZero: requireTrailingBitsToBeZero,
+                    segmentCount: segmentCount,
+                    segmentSampleCount: segmentSampleCount,
+                    collectEntropyDiagnostics: collectEntropyDiagnostics
+                ))
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if decodedCandidates.count == 1 { return decodedCandidates[0] }
+        if decodedCandidates.isEmpty {
+            throw firstError ?? DTSError.unsupported(
+                "XLL-X private prediction header is outside the generic profile"
+            )
+        }
+        return try selectDecodedPredictionCandidate(
+            ast,
+            decodedCandidates: decodedCandidates,
+            permitsPrimaryFallback: true
+        )
+    }
+
+    private static func selectDecodedPredictionCandidate(
+        _ ast: DTSXPrivateFrameAST,
+        decodedCandidates: [DTSXPrivateIsolatedDecodedFrame],
+        permitsPrimaryFallback: Bool
+    ) throws -> DTSXPrivateIsolatedDecodedFrame {
+        guard !decodedCandidates.isEmpty else {
+            throw DTSError.unsupported(
+                "XLL-X private frame has no decoded prediction candidate"
+            )
+        }
+        if decodedCandidates.count == 1 { return decodedCandidates[0] }
+        var eligibleCandidates = decodedCandidates
+        // In official branch-two/three frames the canonical two-coefficient form
+        // uses an odd first raw code. This distinguishes it from the locally
+        // plausible single-coefficient reinterpretation in startup vectors.
+        // If no unique canonical form exists, preserve the primary parser's
+        // deterministic ordering; later PCM/oracle checks still audit it.
+        let canonicalTwoCoefficient = eligibleCandidates.filter {
+            let raw = $0.predictionHeader.decorrelation.rawCoefficientCodes
+            return raw.count == 2 && !raw[0].isMultiple(of: 2)
+        }
+        if canonicalTwoCoefficient.count == 1 {
+            return canonicalTwoCoefficient[0]
+        }
+        if !canonicalTwoCoefficient.isEmpty {
+            eligibleCandidates = canonicalTwoCoefficient
+        }
+        // Branches two and three use a one-coefficient pair-zero form when the
+        // first raw code is even in the official corpus. Interpreting the
+        // following prediction bits as
+        // a second coefficient can still consume exactly to every NAVI
+        // boundary, but reconstructs entirely different LPC orders and PCM
+        // (official frame 798 is the minimal counterexample). Prefer the
+        // unique one-coefficient closure when no odd-first canonical pair is
+        // present.
+        if canonicalTwoCoefficient.isEmpty
+            && (ast.candidateSecondaryBranchCode == 2
+                || ast.candidateSecondaryBranchCode == 3) {
+            let singleCoefficient = decodedCandidates.filter {
+                let decorrelation = $0.predictionHeader.decorrelation
+                return decorrelation.rawCoefficientCodes.count == 1
+                    && decorrelation.signedCoefficientCodes.count == 2
+                    && decorrelation.signedCoefficientCodes[1] == 0
+            }
+            if singleCoefficient.count == 1 {
+                return singleCoefficient[0]
+            }
+            if !singleCoefficient.isEmpty {
+                eligibleCandidates = singleCoefficient
+            }
+        }
+        if !permitsPrimaryFallback {
+            let signed24Candidates = eligibleCandidates.filter { decoded in
+                decoded.codedPlanes.allSatisfy { plane in
+                    plane.allSatisfy { sample in
+                        sample >= -8_388_608 && sample <= 8_388_607
+                    }
+                }
+            }
+            if signed24Candidates.count == 1 { return signed24Candidates[0] }
+            if !signed24Candidates.isEmpty {
+                eligibleCandidates = signed24Candidates
+            }
+        }
+        // Prediction-header shape is selected before side-info CRC. A false
+        // two-coefficient interpretation can otherwise expose coincidental
+        // CRC-zero bytes at a different entropy boundary (official frame
+        // 2867). CRC only disambiguates boundaries within the selected shape.
+        if !permitsPrimaryFallback,
+           let predictionCRC = try? ast.parsePredictionCRC() {
+            let sideInfoStart = predictionCRC.bodyByteOffset + 2
+            let crcQualified = eligibleCandidates.filter { decoded in
+                guard decoded.entropyStartBitOffset.isMultiple(of: 8) else {
+                    return false
+                }
+                let sideInfoEnd = decoded.entropyStartBitOffset / 8
+                guard sideInfoEnd - sideInfoStart >= 2,
+                      sideInfoStart >= 0,
+                      sideInfoEnd <= ast.body.count else {
+                    return false
+                }
+                return DTSCRC16.checksum(ast.body[sideInfoStart..<sideInfoEnd]) == 0
+            }
+            if crcQualified.count == 1 { return crcQualified[0] }
+            if !crcQualified.isEmpty { eligibleCandidates = crcQualified }
+        }
+        if eligibleCandidates.count == 1 { return eligibleCandidates[0] }
+        if permitsPrimaryFallback { return eligibleCandidates[0] }
+        throw DTSError.unsupported(
+            "XLL-X private frame has multiple structurally unique entropy boundaries"
+        )
     }
 
     private static func decodeWithPrediction(
@@ -974,7 +1193,16 @@ public enum DTSXPrivateIsolatedFrameDecoder {
             if let segmentEndBitOffset {
                 guard reader.bitOffset <= segmentEndBitOffset else {
                     throw DTSError.malformed(
-                        "XLL-X private entropy segment exceeds its NAVI boundary"
+                        "XLL-X private entropy segment \(segment) ends at bit "
+                            + "\(reader.bitOffset), beyond NAVI boundary "
+                            + "\(segmentEndBitOffset) by "
+                            + "\(reader.bitOffset - segmentEndBitOffset) bits; "
+                            + "common=\(state.commonParameters), "
+                            + "rice=\(state.riceCoding), "
+                            + "hybrid=\(state.hybridLinearWidths), "
+                            + "partA=\(state.partABitAllocations), "
+                            + "partB=\(state.partBBitAllocations), "
+                            + "partACount=\(state.partASampleCounts)"
                     )
                 }
                 try reader.seek(
@@ -1090,6 +1318,13 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         let sampleDataStartBitOffset = reader.bitOffset
 
         let segmentOffset = segment * segmentSampleCount
+        let isolatedLocationBitCount = segmentSampleCount.trailingZeroBitCount
+        guard isolatedLocationBitCount > 0,
+              1 << isolatedLocationBitCount == segmentSampleCount else {
+            throw DTSError.unsupported(
+                "XLL-X Hybrid Rice requires a power-of-two segment sample count"
+            )
+        }
         var hybridIsolatedSampleOffsets = Array(
             repeating: [Int](),
             count: channelCount
@@ -1111,7 +1346,7 @@ public enum DTSXPrivateIsolatedFrameDecoder {
                 }
                 if state.hybridLinearWidths[parameter] > 0 {
                     let isolatedCount = Int(try reader.read(
-                        8,
+                        isolatedLocationBitCount,
                         field: "XLL-X nIsolatedSamples[\(segment)][\(channel)]"
                     ))
                     hybridIsolatedSampleCount += isolatedCount
@@ -1121,7 +1356,7 @@ public enum DTSXPrivateIsolatedFrameDecoder {
                     offsets.reserveCapacity(isolatedCount)
                     for _ in 0..<isolatedCount {
                         let location = Int(try reader.read(
-                            8,
+                            isolatedLocationBitCount,
                             field: "XLL-X nIsolatedSampleLocation[\(segment)][\(channel)]"
                         ))
                         guard location < partBSamples else {
@@ -1535,6 +1770,7 @@ private enum DTSXPrivateCompactSilenceDecoder {
             segmentDataEndBitOffsets: segmentDataEnds,
             segmentBoundaryBitOffsets: segmentBoundaries,
             entropySegments: entropySegments,
+            usesCompactZeroEntropySyntax: true,
             hybridRiceParameterCount: 0,
             hybridIsolatedSampleCount: 0,
             trailingZeroBitCount: ast.body.count * 8 - bitOffset,
@@ -1589,6 +1825,7 @@ public enum DTSXPrivateASTVerifier {
         for record in loaded.records {
             let bytes = loaded.frameBytes(record)
             let ast = try DTSXPrivateFrameAST.parse(bytes)
+            let segmentCount = record.xllSyntax?.segmentCount
             if try ast.serialize() == Data(bytes) { exact += 1 }
             if ast.headerCRCIsValid { crcValid += 1 }
             if try ast.parsePredictionCRC().isValid { predictionCRCValid += 1 }
@@ -1601,7 +1838,9 @@ public enum DTSXPrivateASTVerifier {
                     }
                 }
             }
-            if let navigation = try? ast.parseNavigation() {
+            if let segmentCount,
+               segmentCount > 0,
+               let navigation = try? ast.parseNavigation(segmentCount: segmentCount) {
                 navigationParsed += 1
                 if try ast.serializeReplacingNavigation(navigation) == Data(bytes) {
                     navigationRebuiltByteExact += 1

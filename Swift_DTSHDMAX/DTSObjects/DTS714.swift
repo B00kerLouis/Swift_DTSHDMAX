@@ -477,38 +477,137 @@ public enum DTS714SourceSet {
 /// layers of the supplied 7.1.4 DTS:X profile. The four height feeds remain
 /// independently available to XLL-X; this renderer only applies the logged
 /// Q15 legacy fold used by non-DTS:X decoders.
+public struct DTS714CompatibilityBedChannelDiagnostics: Sendable, Equatable, Codable {
+    public let outputChannel: DTS714Channel
+    public let sampleCount: Int
+    public let maximumAbsoluteUnclippedSample: Int64
+    public let positiveHardClipCount: Int
+    public let negativeHardClipCount: Int
+    public let firstHardClipSample: Int?
+    public let maximumPositiveExcess: Int64
+    public let maximumNegativeExcess: Int64
+
+    public var hardClipCount: Int { positiveHardClipCount + negativeHardClipCount }
+}
+
+public struct DTS714CompatibilityBedDiagnostics: Sendable, Equatable, Codable {
+    public let channels: [DTS714CompatibilityBedChannelDiagnostics]
+
+    public var hardClipCount: Int {
+        channels.reduce(0) { $0 + $1.hardClipCount }
+    }
+
+    public var hasHardClipping: Bool { hardClipCount != 0 }
+}
+
 public enum DTS714CompatibilityBedRenderer {
     public static func render(_ source: DTS714PCMBuffer) throws -> PCMBuffer {
         let format = try PCMFormat(sampleRate: 48_000, bitDepth: 24, layout: .sevenOne)
         return try PCMBuffer(
             format: format,
             planes: [
-                mixLegacyHeight(source[.left], source[.leftFrontHeight]),
-                mixLegacyHeight(source[.right], source[.rightFrontHeight]),
+                mixLegacyHeight(source[.left], source[.leftFrontHeight]).plane,
+                mixLegacyHeight(source[.right], source[.rightFrontHeight]).plane,
                 source[.center],
                 source[.lfe],
-                mixLegacyHeight(source[.leftRearSurround], source[.leftRearHeight]),
-                mixLegacyHeight(source[.rightRearSurround], source[.rightRearHeight]),
+                mixLegacyHeight(source[.leftRearSurround], source[.leftRearHeight]).plane,
+                mixLegacyHeight(source[.rightRearSurround], source[.rightRearHeight]).plane,
                 source[.leftSideSurround],
                 source[.rightSideSurround]
             ]
         )
     }
 
-    private static func mixLegacyHeight(_ bed: [Int32], _ height: [Int32]) -> [Int32] {
+    /// Reports every hard clamp that the fixed Q15 legacy-height fold would
+    /// apply. The production render remains unchanged; this is deliberately a
+    /// measurement surface rather than an implicit limiter.
+    public static func diagnose(_ source: DTS714PCMBuffer) -> DTS714CompatibilityBedDiagnostics {
+        let channels = [
+            (DTS714Channel.left, source[.left], source[.leftFrontHeight]),
+            (DTS714Channel.right, source[.right], source[.rightFrontHeight]),
+            (DTS714Channel.leftRearSurround, source[.leftRearSurround], source[.leftRearHeight]),
+            (DTS714Channel.rightRearSurround, source[.rightRearSurround], source[.rightRearHeight])
+        ].map { outputChannel, bed, height in
+            mixLegacyHeight(bed, height).diagnostics(outputChannel: outputChannel)
+        }
+        return DTS714CompatibilityBedDiagnostics(channels: channels)
+    }
+
+    private static func mixLegacyHeight(
+        _ bed: [Int32],
+        _ height: [Int32]
+    ) -> LegacyHeightMix {
         precondition(bed.count == height.count)
         // round(2^15 / sqrt(2)); the encoder UI displays this as 3.0 dB.
         // The Q15 quantization is observable in the lossless 7.1 bed: using
         // a higher-precision coefficient changes millions of samples by 1 LSB.
         let heightGainQ15: Int64 = 23_170
         let halfQ15: Int64 = 1 << 14
-        return zip(bed, height).map { bedSample, heightSample in
+        var plane: [Int32] = []
+        plane.reserveCapacity(bed.count)
+        var maximumAbsoluteUnclippedSample: Int64 = 0
+        var positiveHardClipCount = 0
+        var negativeHardClipCount = 0
+        var firstHardClipSample: Int?
+        var maximumPositiveExcess: Int64 = 0
+        var maximumNegativeExcess: Int64 = 0
+        for sample in bed.indices {
+            let bedSample = bed[sample]
+            let heightSample = height[sample]
             let product = Int64(heightSample) * heightGainQ15
             let contribution = (product + halfQ15) >> 15
-            return Int32(clamping: min(
+            let unclipped = Int64(bedSample) + contribution
+            maximumAbsoluteUnclippedSample = max(
+                maximumAbsoluteUnclippedSample,
+                Swift.abs(unclipped)
+            )
+            if unclipped > 8_388_607 {
+                positiveHardClipCount += 1
+                firstHardClipSample = firstHardClipSample ?? sample
+                maximumPositiveExcess = max(maximumPositiveExcess, unclipped - 8_388_607)
+            } else if unclipped < -8_388_608 {
+                negativeHardClipCount += 1
+                firstHardClipSample = firstHardClipSample ?? sample
+                maximumNegativeExcess = max(maximumNegativeExcess, -8_388_608 - unclipped)
+            }
+            plane.append(Int32(clamping: min(
                 Int64(8_388_607),
-                max(Int64(-8_388_608), Int64(bedSample) + contribution)
-            ))
+                max(Int64(-8_388_608), unclipped)
+            )))
+        }
+        return LegacyHeightMix(
+            plane: plane,
+            maximumAbsoluteUnclippedSample: maximumAbsoluteUnclippedSample,
+            positiveHardClipCount: positiveHardClipCount,
+            negativeHardClipCount: negativeHardClipCount,
+            firstHardClipSample: firstHardClipSample,
+            maximumPositiveExcess: maximumPositiveExcess,
+            maximumNegativeExcess: maximumNegativeExcess
+        )
+    }
+
+    private struct LegacyHeightMix {
+        let plane: [Int32]
+        let maximumAbsoluteUnclippedSample: Int64
+        let positiveHardClipCount: Int
+        let negativeHardClipCount: Int
+        let firstHardClipSample: Int?
+        let maximumPositiveExcess: Int64
+        let maximumNegativeExcess: Int64
+
+        func diagnostics(
+            outputChannel: DTS714Channel
+        ) -> DTS714CompatibilityBedChannelDiagnostics {
+            DTS714CompatibilityBedChannelDiagnostics(
+                outputChannel: outputChannel,
+                sampleCount: plane.count,
+                maximumAbsoluteUnclippedSample: maximumAbsoluteUnclippedSample,
+                positiveHardClipCount: positiveHardClipCount,
+                negativeHardClipCount: negativeHardClipCount,
+                firstHardClipSample: firstHardClipSample,
+                maximumPositiveExcess: maximumPositiveExcess,
+                maximumNegativeExcess: maximumNegativeExcess
+            )
         }
     }
 

@@ -31,6 +31,9 @@ public struct XLLDecodedChannelSetFrame: Sendable, Equatable {
     public let frameByteCount: Int
     public let sampleCount: Int
     public let fixedLSBWidth: Int
+    public let entropyStateReuseSegmentCount: Int
+    public let entropyCommonParameterSegmentCount: Int
+    public let entropyRiceParameterCount: Int
     public let hybridRiceParameterCount: Int
     public let hybridIsolatedSampleCount: Int
     public let channelSets: [XLLDecodedChannelSet]
@@ -278,6 +281,9 @@ private struct XLLFrameDecoderParser {
     var bandCRCMode = 0
     var scalableLSBs = false
     var fixedLSBWidth = 0
+    var entropyStateReuseSegmentCount = 0
+    var entropyCommonParameterSegmentCount = 0
+    var entropyRiceParameterCount = 0
     var hybridRiceParameterCount = 0
     var hybridIsolatedSampleCount = 0
     var channelMaskBitCount = 0
@@ -297,6 +303,9 @@ private struct XLLFrameDecoderParser {
             frameByteCount: frameByteCount,
             sampleCount: segmentCount * segmentSampleCount,
             fixedLSBWidth: fixedLSBWidth,
+            entropyStateReuseSegmentCount: entropyStateReuseSegmentCount,
+            entropyCommonParameterSegmentCount: entropyCommonParameterSegmentCount,
+            entropyRiceParameterCount: entropyRiceParameterCount,
             hybridRiceParameterCount: hybridRiceParameterCount,
             hybridIsolatedSampleCount: hybridIsolatedSampleCount,
             channelSets: zip(channelSets, planes).map { configuration, decodedPlanes in
@@ -605,14 +614,23 @@ private struct XLLFrameDecoderParser {
         let reuseParameters = segment > 0
             ? try reader.read(1, field: "bUseSegStateCodeParm[\(configuration.index)][\(segment)]") == 1
             : false
+        if reuseParameters {
+            entropyStateReuseSegmentCount += 1
+        }
         if !reuseParameters {
             state.commonParameters = try reader.read(1, field: "ncSegType[\(configuration.index)][\(segment)]") == 1
+            if state.commonParameters {
+                entropyCommonParameterSegmentCount += 1
+            }
             let parameterCount = state.commonParameters ? 1 : configuration.channelCount
             for parameter in 0..<parameterCount {
                 state.riceCoding[parameter] = try reader.read(
                     1,
                     field: "bRiceCodeFlag[\(configuration.index)][\(segment)][\(parameter)]"
                 ) == 1
+                if state.riceCoding[parameter] {
+                    entropyRiceParameterCount += 1
+                }
                 if !state.commonParameters, state.riceCoding[parameter],
                    try reader.read(1, field: "bHybridRiceCode[\(configuration.index)][\(segment)][\(parameter)]") == 1 {
                     state.hybridLinearWidths[parameter] = Int(try reader.read(

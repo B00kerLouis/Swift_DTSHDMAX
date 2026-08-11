@@ -32,6 +32,12 @@ public struct DTSXPrivateSideInfoNavigationCandidate: Sendable, Equatable, Codab
     public let unusedDataBitCount: Int
 }
 
+public struct DTSXPrivatePredictionEntropyInspection: Sendable, Equatable, Codable {
+    public let predictionCandidateIndex: Int
+    public let predictionHeader: DTSXPrivatePredictionHeaderCandidate
+    public let entropy: DTSXPrivateEntropyCandidateInspection
+}
+
 public struct DTSXPrivateFrameInspectionReport: Sendable, Equatable, Codable {
     public let indexPath: String
     public let payloadPath: String
@@ -42,6 +48,7 @@ public struct DTSXPrivateFrameInspectionReport: Sendable, Equatable, Codable {
     public let routing: DTSXPrivateRouting
     public let predictionCRC: DTSXPrivatePredictionCRCObservation
     public let predictionHeader: DTSXPrivatePredictionHeaderCandidate
+    public let predictionHeaderCandidates: [DTSXPrivatePredictionHeaderCandidate]
     public let navigation: DTSXPrivateNavigation?
     public let sideInfoHex: String
     public let sideInfoCRC16Remainder: UInt16
@@ -51,6 +58,7 @@ public struct DTSXPrivateFrameInspectionReport: Sendable, Equatable, Codable {
     public let navigatedEntropy: DTSXPrivateEntropyCandidateInspection?
     public let bodyPrefixHex: String
     public let entropyCandidates: [DTSXPrivateEntropyCandidateInspection]
+    public let predictionEntropyCandidates: [DTSXPrivatePredictionEntropyInspection]
 }
 
 public enum DTSXPrivateFrameInspector {
@@ -72,7 +80,8 @@ public enum DTSXPrivateFrameInspector {
         let bytes = Data(loaded.frameBytes(record))
         let ast = try DTSXPrivateFrameAST.parse(bytes[...])
         let crc = try ast.parsePredictionCRC()
-        let prediction = try ast.parsePredictionHeaderCandidate()
+        let predictionCandidates = try ast.parsePredictionHeaderCandidates()
+        let prediction = predictionCandidates[0]
         let segmentCount = record.xllSyntax?.segmentCount ?? 2
         let segmentSampleCount = record.xllSyntax?.segmentSampleCount ?? 256
         let navigation = try? ast.parseNavigation(segmentCount: segmentCount)
@@ -127,6 +136,23 @@ public enum DTSXPrivateFrameInspector {
                 ))
             }
         }
+        var predictionEntropyCandidates: [DTSXPrivatePredictionEntropyInspection] = []
+        for (predictionIndex, candidatePrediction) in predictionCandidates.enumerated() {
+            for prefix in 2...31 {
+                guard let decoded = try? DTSXPrivateIsolatedFrameDecoder.decodeGeneric(
+                    ast,
+                    prediction: candidatePrediction,
+                    entropyPrefixByteCount: prefix,
+                    segmentCount: segmentCount,
+                    segmentSampleCount: segmentSampleCount
+                ) else { continue }
+                predictionEntropyCandidates.append(DTSXPrivatePredictionEntropyInspection(
+                    predictionCandidateIndex: predictionIndex,
+                    predictionHeader: candidatePrediction,
+                    entropy: entropyInspection(prefix: prefix, decoded: decoded)
+                ))
+            }
+        }
         let report = DTSXPrivateFrameInspectionReport(
             indexPath: indexURL.standardizedFileURL.path,
             payloadPath: payloadURL.standardizedFileURL.path,
@@ -137,6 +163,7 @@ public enum DTSXPrivateFrameInspector {
             routing: try ast.routing,
             predictionCRC: crc,
             predictionHeader: prediction,
+            predictionHeaderCandidates: predictionCandidates,
             navigation: navigation,
             sideInfoHex: hex(sideInfo),
             sideInfoCRC16Remainder: DTSCRC16.checksum(sideInfo),
@@ -155,7 +182,8 @@ public enum DTSXPrivateFrameInspector {
                 entropyInspection(prefix: 7, decoded: $0)
             },
             bodyPrefixHex: hex(ast.body.prefix(min(32, ast.body.count))),
-            entropyCandidates: entropyCandidates
+            entropyCandidates: entropyCandidates,
+            predictionEntropyCandidates: predictionEntropyCandidates
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -215,23 +243,32 @@ public enum DTSXPrivateFrameInspector {
         _ sideInfo: Data
     ) -> [DTSXPrivateSideInfoNavigationCandidate] {
         guard sideInfo.count >= 5 else { return [] }
-        let dataWord = (UInt32(sideInfo[0]) << 16)
-            | (UInt32(sideInfo[1]) << 8)
-            | UInt32(sideInfo[2])
         var result: [DTSXPrivateSideInfoNavigationCandidate] = []
-        for width in 8...12 {
-            let mask = UInt32((1 << width) - 1)
-            let first = Int((dataWord >> UInt32(24 - width)) & mask)
-            let secondShift = 24 - width * 2
-            guard secondShift >= 0 else { continue }
-            let second = Int((dataWord >> UInt32(secondShift)) & mask)
+        for width in DTSXPrivateNavigation.supportedBitWidths {
+            let dataBitCount = max(24, ((width * 2 + 7) / 8) * 8)
+            let dataByteCount = dataBitCount / 8
+            guard sideInfo.count >= dataByteCount + 2,
+                  let readerData = try? BitReader(
+                      data: Data(sideInfo.prefix(dataByteCount))
+                  ) else { continue }
+            var reader = readerData
+            guard let firstValue = try? reader.read(
+                width,
+                field: "XLL-X diagnostic NAVI[0]"
+            ),
+                let secondValue = try? reader.read(
+                    width,
+                    field: "XLL-X diagnostic NAVI[1]"
+                ) else { continue }
+            let first = Int(firstValue)
+            let second = Int(secondValue)
             result.append(DTSXPrivateSideInfoNavigationCandidate(
                 bitWidth: width,
                 firstRawValue: first,
                 secondRawValue: second,
                 firstValuePlusOne: first + 1,
                 secondValuePlusOne: second + 1,
-                unusedDataBitCount: 24 - width * 2
+                unusedDataBitCount: dataBitCount - width * 2
             ))
         }
         return result

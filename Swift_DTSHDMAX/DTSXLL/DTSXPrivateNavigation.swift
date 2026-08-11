@@ -7,6 +7,7 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
     /// Legacy two-segment profile used by the specialized parser below.
     public static let segmentCount = 2
     public static let byteCount = 5
+    public static let supportedBitWidths = 8...16
 
     public let bitWidth: Int
     public let segmentByteCounts: [Int]
@@ -16,10 +17,10 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
     public let crcIsValid: Bool
 
     public var serializedByteCount: Int {
-        let dataByteCount = segmentByteCounts.count == Self.segmentCount
-            ? 3
-            : (bitWidth * segmentByteCounts.count + 7) / 8
-        return dataByteCount + 2
+        Self.navigationDataBitCount(
+            bitWidth: bitWidth,
+            segmentCount: segmentByteCounts.count
+        ) / 8 + 2
     }
 
     public init(
@@ -27,7 +28,7 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
         segmentByteCounts: [Int],
         trailingFrameByteCount: Int
     ) throws {
-        guard (8...12).contains(bitWidth) else {
+        guard Self.supportedBitWidths.contains(bitWidth) else {
             throw DTSError.valueOutOfRange(
                 field: "XLL-X navigation bit width",
                 value: String(bitWidth)
@@ -93,6 +94,25 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
         entropyStartByteOffset: Int,
         frameBodyByteCount: Int
     ) throws -> DTSXPrivateNavigation {
+        let candidates = try parseCandidates(
+            data,
+            entropyStartByteOffset: entropyStartByteOffset,
+            frameBodyByteCount: frameBodyByteCount
+        )
+        guard candidates.count == 1 else {
+            let reason = candidates.isEmpty ? "no" : "multiple"
+            throw DTSError.malformed(
+                "XLL-X private navigation has \(reason) frame-size-consistent bit width"
+            )
+        }
+        return candidates[0]
+    }
+
+    static func parseCandidates(
+        _ data: Data,
+        entropyStartByteOffset: Int,
+        frameBodyByteCount: Int
+    ) throws -> [DTSXPrivateNavigation] {
         guard data.count == byteCount else {
             throw DTSError.truncated(
                 field: "XLL-X private navigation",
@@ -132,13 +152,7 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
                 crcIsValid: crcIsValid
             ))
         }
-        guard candidates.count == 1 else {
-            let reason = candidates.isEmpty ? "no" : "multiple"
-            throw DTSError.malformed(
-                "XLL-X private navigation has \(reason) frame-size-consistent bit width"
-            )
-        }
-        return candidates[0]
+        return candidates
     }
 
     static func parse(
@@ -146,6 +160,25 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
         navigationStartByteOffset: Int,
         segmentCount: Int
     ) throws -> DTSXPrivateNavigation {
+        let candidates = try parseCandidates(
+            body: body,
+            navigationStartByteOffset: navigationStartByteOffset,
+            segmentCount: segmentCount
+        )
+        guard candidates.count == 1 else {
+            let reason = candidates.isEmpty ? "no" : "multiple"
+            throw DTSError.malformed(
+                "XLL-X private navigation has \(reason) frame-size-consistent generalized form"
+            )
+        }
+        return candidates[0]
+    }
+
+    static func parseCandidates(
+        body: Data,
+        navigationStartByteOffset: Int,
+        segmentCount: Int
+    ) throws -> [DTSXPrivateNavigation] {
         guard segmentCount > 0, segmentCount <= 16 else {
             throw DTSError.valueOutOfRange(
                 field: "XLL-X private navigation segment count",
@@ -153,9 +186,12 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
             )
         }
         var candidates: [DTSXPrivateNavigation] = []
-        for width in 8...12 {
-            let dataBitCount = width * segmentCount
-            let dataByteCount = (dataBitCount + 7) / 8
+        for width in supportedBitWidths {
+            let dataBitCount = navigationDataBitCount(
+                bitWidth: width,
+                segmentCount: segmentCount
+            )
+            let dataByteCount = dataBitCount / 8
             let navigationByteCount = dataByteCount + 2
             let navigationEnd = navigationStartByteOffset + navigationByteCount
             guard navigationStartByteOffset >= 0, navigationEnd <= body.count else { continue }
@@ -192,20 +228,14 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
                 crcIsValid: true
             ))
         }
-        guard candidates.count == 1 else {
-            let reason = candidates.isEmpty ? "no" : "multiple"
-            throw DTSError.malformed(
-                "XLL-X private navigation has \(reason) frame-size-consistent generalized form"
-            )
-        }
-        return candidates[0]
+        return candidates
     }
 
     private static func serializeFields(
         bitWidth: Int,
         segmentByteCounts: [Int]
     ) throws -> Data {
-        guard (8...12).contains(bitWidth),
+        guard supportedBitWidths.contains(bitWidth),
               !segmentByteCounts.isEmpty,
               segmentByteCounts.count <= 16,
               segmentByteCounts.allSatisfy({ $0 > 0 && $0 <= (1 << bitWidth) }) else {
@@ -253,9 +283,13 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
     }
 
     private static func navigationDataBitCount(bitWidth: Int, segmentCount: Int) -> Int {
-        segmentCount == Self.segmentCount
-            ? 24
-            : ((bitWidth * segmentCount + 7) / 8) * 8
+        let alignedBitCount = ((bitWidth * segmentCount + 7) / 8) * 8
+        // The recovered two-segment form reserves at least three data bytes,
+        // but it is not fixed at three bytes. Official active frames grow to
+        // four bytes for 13/14-bit segment extents before the trailing CRC16.
+        return segmentCount == Self.segmentCount
+            ? max(24, alignedBitCount)
+            : alignedBitCount
     }
 }
 
@@ -264,25 +298,62 @@ public extension DTSXPrivateFrameAST {
         throws -> DTSXPrivateNavigation {
         let predictionCRC = try parsePredictionCRC()
         let navigationStart = predictionCRC.bodyByteOffset + 2
-        if segmentCount != DTSXPrivateNavigation.segmentCount {
-            return try DTSXPrivateNavigation.parse(
-                body: body,
-                navigationStartByteOffset: navigationStart,
-                segmentCount: segmentCount
-            )
-        }
-        let navigationEnd = navigationStart + DTSXPrivateNavigation.byteCount
-        guard navigationEnd <= body.count else {
-            throw DTSError.truncated(
-                field: "XLL-X private navigation",
-                bitOffset: navigationStart * 8
-            )
-        }
         return try DTSXPrivateNavigation.parse(
-            Data(body[navigationStart..<navigationEnd]),
-            entropyStartByteOffset: navigationEnd,
-            frameBodyByteCount: body.count
+            body: body,
+            navigationStartByteOffset: navigationStart,
+            segmentCount: segmentCount
         )
+    }
+
+    /// Resolves a CRC-valid but frame-size-ambiguous NAVI word using entropy
+    /// segment boundaries already closed by the generic decoder. This does not
+    /// guess from PCM: the chosen widths must reproduce every byte-aligned
+    /// segment extent and the exact entropy start offset.
+    func parseNavigation(
+        segmentCount: Int,
+        matching decoded: DTSXPrivateIsolatedDecodedFrame
+    ) throws -> DTSXPrivateNavigation {
+        guard decoded.segmentBoundaryBitOffsets.count == segmentCount,
+              decoded.entropyStartBitOffset.isMultiple(of: 8) else {
+            throw DTSError.malformed(
+                "XLL-X decoded segment boundaries cannot qualify navigation"
+            )
+        }
+        var segmentByteCounts: [Int] = []
+        segmentByteCounts.reserveCapacity(segmentCount)
+        var segmentStartBitOffset = decoded.entropyStartBitOffset
+        for boundary in decoded.segmentBoundaryBitOffsets {
+            guard boundary >= segmentStartBitOffset else {
+                throw DTSError.malformed(
+                    "XLL-X decoded segment boundary precedes its start"
+                )
+            }
+            let bitCount = boundary - segmentStartBitOffset
+            let byteCount = (bitCount + 7) / 8
+            segmentByteCounts.append(byteCount)
+            segmentStartBitOffset += byteCount * 8
+        }
+
+        let predictionCRC = try parsePredictionCRC()
+        let navigationStart = predictionCRC.bodyByteOffset + 2
+        let candidates: [DTSXPrivateNavigation]
+        candidates = try DTSXPrivateNavigation.parseCandidates(
+            body: body,
+            navigationStartByteOffset: navigationStart,
+            segmentCount: segmentCount
+        )
+        let matches = candidates.filter {
+            $0.segmentByteCounts == segmentByteCounts
+                && navigationStart + $0.serializedByteCount
+                    == decoded.entropyStartBitOffset / 8
+        }
+        guard matches.count == 1 else {
+            let reason = matches.isEmpty ? "no" : "multiple"
+            throw DTSError.malformed(
+                "XLL-X private navigation has \(reason) entropy-boundary-qualified form"
+            )
+        }
+        return matches[0]
     }
 
     func serializeReplacingNavigation(

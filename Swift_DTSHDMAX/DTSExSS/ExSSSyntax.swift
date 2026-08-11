@@ -85,6 +85,8 @@ struct ExSSFrameInfo: Sendable, Equatable, Codable {
     let xllByteCount: Int
     let xllByteOffset: Int
     let codingMode: Int
+    let peakBitRateSmoothingBufferSizeCode: Int
+    let xllInitialDecodingDelayBitCount: Int
     let xllInitialDecodingDelayFrames: Int
     let xllSyncByteOffset: Int
     let backwardCompatibleCorePresent: Bool

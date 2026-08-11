@@ -113,6 +113,8 @@ struct ExSSParser: Sendable {
 
         let codingMode = Int(try reader.read(2, field: "nuCodingMode"))
         var xllByteCount: Int?
+        var peakBitRateSmoothingBufferSizeCode = 0
+        var xllInitialDecodingDelayBitCount = 0
         var xllInitialDecodingDelayFrames = 0
         var xllSyncByteOffset = 0
         switch codingMode {
@@ -147,8 +149,11 @@ struct ExSSParser: Sendable {
             guard try reader.read(1, field: "bExSSXLLSyncPresent") == 1 else {
                 throw DTSError.unsupported("XLL component without per-frame sync")
             }
-            _ = try reader.read(4, field: "nuPeakBRCntrlBuffSzkB")
+            peakBitRateSmoothingBufferSizeCode = Int(
+                try reader.read(4, field: "nuPeakBRCntrlBuffSzkB")
+            )
             let delayBitCount = Int(try reader.read(5, field: "nuBitsInitDecDly")) + 1
+            xllInitialDecodingDelayBitCount = delayBitCount
             xllInitialDecodingDelayFrames = Int(try reader.read(delayBitCount, field: "nuInitLLDecDlyFrames"))
             xllSyncByteOffset = Int(try reader.read(16, field: "nuExSSXLLSyncOffset"))
         case 1:
@@ -156,8 +161,11 @@ struct ExSSParser: Sendable {
             guard try reader.read(1, field: "bXLLSyncPresent") == 1 else {
                 throw DTSError.unsupported("XLL component without per-frame sync")
             }
-            _ = try reader.read(4, field: "nuPeakBRSmoothingBufSize")
+            peakBitRateSmoothingBufferSizeCode = Int(
+                try reader.read(4, field: "nuPeakBRSmoothingBufSize")
+            )
             let delayBitCount = Int(try reader.read(5, field: "nuBits4XLLDelay")) + 1
+            xllInitialDecodingDelayBitCount = delayBitCount
             xllInitialDecodingDelayFrames = Int(try reader.read(delayBitCount, field: "nuInitialXLLDecodingDelay"))
             xllSyncByteOffset = Int(try reader.read(16, field: "nuXLLSyncOffset"))
         default:
@@ -256,6 +264,8 @@ struct ExSSParser: Sendable {
             xllByteCount: xllByteCount,
             xllByteOffset: xllByteOffset,
             codingMode: codingMode,
+            peakBitRateSmoothingBufferSizeCode: peakBitRateSmoothingBufferSizeCode,
+            xllInitialDecodingDelayBitCount: xllInitialDecodingDelayBitCount,
             xllInitialDecodingDelayFrames: xllInitialDecodingDelayFrames,
             xllSyncByteOffset: xllSyncByteOffset,
             backwardCompatibleCorePresent: backwardCompatibleCorePresent,

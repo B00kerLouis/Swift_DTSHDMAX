@@ -2,11 +2,10 @@ import Foundation
 
 /// Product-level guard for the public 7.1 Core/XLL compatibility bed.
 ///
-/// Native product mode encodes the six-channel primary set in full (`0x3f`),
-/// keeping lossless output independent of implementation-specific Core PCM.
-/// The reference residual form (`0x00`) remains an explicit research policy.
-/// The two-channel rear set is full XLL (`0x03`) in both forms. PCM statistics
-/// additionally enforce signed 24-bit range and frame-boundary continuity.
+/// DTS:X delivery uses the reference 6+2 Core-residual XLL hierarchy. The
+/// public XLL channel masks and downmix matrix must agree with the embedded
+/// Core, rather than substituting a full-primary experimental layout. PCM
+/// statistics enforce signed 24-bit range and frame-boundary continuity.
 public struct DTSXXLLCompatibilitySafetyReport: Sendable, Equatable, Codable {
     public let coreAssociationPolicy: XLLCoreAssociationPolicy
     public let xllFrameCount: Int
@@ -31,6 +30,9 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let streamKind: DTSHDMAStreamKind
     public let frameRate: DTSFrameRate
     public let publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy
+    public let publicXLLCodingMode: XLLCodingMode
+    public let publicXLLForcedSegmentCount: Int?
+    public let privateXLLXCodingMode: DTSXPrivateCodingMode
     public let sourceSampleCount: Int
     public let encodedSampleCount: Int
     public let accessUnitCount: Int
@@ -92,13 +94,31 @@ public struct DTSXNativeFileEncodingReport: Sendable, Equatable, Codable {
 public struct DTSXNativeHDMAEncoder: Sendable {
     public let verificationPolicy: DTSXNativeVerificationPolicy
     public let publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy
+    public let publicXLLCodingMode: XLLCodingMode
+    /// Test-only public XLL segmentation override. Nil preserves the
+    /// production per-frame search.
+    public let publicXLLForcedSegmentCount: Int?
+    public let privateXLLXCodingMode: DTSXPrivateCodingMode
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
-        publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels
+        publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
+        // Keep the public XLL residual path direct as well. Terminal playback
+        // has not yet certified locally selected predictor/Rice state, and a
+        // single malformed state transition can present as a full-scale pop.
+        publicXLLCodingMode: XLLCodingMode = .terminalConservative,
+        publicXLLForcedSegmentCount: Int? = nil,
+        // Hardware accepted the Branch-0 Straight-Rice controls while Linear
+        // controls were not recognized and Branch-2 controls clicked. Keep the
+        // product default on fixed-order-zero Branch-0 Rice until the repaired
+        // predictive profile independently clears the terminal gate.
+        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRice
     ) {
         self.verificationPolicy = verificationPolicy
         self.publicXLLCoreAssociationPolicy = publicXLLCoreAssociationPolicy
+        self.publicXLLCodingMode = publicXLLCodingMode
+        self.publicXLLForcedSegmentCount = publicXLLForcedSegmentCount
+        self.privateXLLXCodingMode = privateXLLXCodingMode
     }
 
     public func encode(
@@ -114,7 +134,8 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             maximumSourceFrameCount: maximumSourceFrameCount
         )
         let privateSession = try DTSXPrivateStreamEncodingSession(
-            source: effectiveSource
+            source: effectiveSource,
+            codingMode: privateXLLXCodingMode
         )
         let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
         progress?(100, progressTotal)
@@ -122,7 +143,9 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             format: compatibilityBed.format,
             profile: .dtsHDMA,
             deterministic: true,
-            tailPolicy: .zeroPad
+            tailPolicy: .zeroPad,
+            xllCodingMode: publicXLLCodingMode,
+            forcedXLLSegmentCount: publicXLLForcedSegmentCount
         ))
         let coupledStream = try publicEncoder.encode(
             compatibilityBed,
@@ -165,6 +188,9 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             streamKind: .dtsxHDMA,
             frameRate: frameRate,
             publicXLLCoreAssociationPolicy: publicXLLCoreAssociationPolicy,
+            publicXLLCodingMode: publicXLLCodingMode,
+            publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
+            privateXLLXCodingMode: privateXLLXCodingMode,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: encodedSampleCount,
             accessUnitCount: privateStream.frames.count,
@@ -208,7 +234,10 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             source,
             maximumSourceFrameCount: maximumSourceFrameCount
         )
-        let privateSession = try DTSXPrivateStreamEncodingSession(source: effectiveSource)
+        let privateSession = try DTSXPrivateStreamEncodingSession(
+            source: effectiveSource,
+            codingMode: privateXLLXCodingMode
+        )
         let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
         let writer = try DTSHDFileContainer.StreamingWriter(
             outputURL: output,
@@ -231,7 +260,9 @@ public struct DTSXNativeHDMAEncoder: Sendable {
                 format: compatibilityBed.format,
                 profile: .dtsHDMA,
                 deterministic: true,
-                tailPolicy: .zeroPad
+                tailPolicy: .zeroPad,
+                xllCodingMode: publicXLLCodingMode,
+                forcedXLLSegmentCount: publicXLLForcedSegmentCount
             )).encode(
                 compatibilityBed,
                 privateXLLXSession: privateSession,
@@ -289,6 +320,9 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             streamKind: .dtsxHDMA,
             frameRate: frameRate,
             publicXLLCoreAssociationPolicy: publicXLLCoreAssociationPolicy,
+            publicXLLCodingMode: publicXLLCodingMode,
+            publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
+            privateXLLXCodingMode: privateXLLXCodingMode,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: privateStream.report.encodedSourceSampleCount,
             accessUnitCount: privateStream.frames.count,

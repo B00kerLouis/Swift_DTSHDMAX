@@ -81,7 +81,10 @@ public enum XLLCoreOracleVerifier {
             corePlanes: core.planes,
             coreSampleCount: core.sampleCount,
             source: source,
-            sourceDirectory: sourceDirectory
+            sourceDirectory: sourceDirectory,
+            maximumAlignedSourceSampleCount: maximumSourceFrameCount == nil
+                ? nil
+                : source.sampleCount
         )
     }
 
@@ -109,7 +112,8 @@ public enum XLLCoreOracleVerifier {
         corePlanes: [[Int32]],
         coreSampleCount: Int,
         source: PCMBuffer,
-        sourceDirectory: URL
+        sourceDirectory: URL,
+        maximumAlignedSourceSampleCount: Int? = nil
     ) throws -> XLLCoreOracleVerificationReport {
         let input = inputURL.standardizedFileURL
         guard source.format.sampleRate == 48_000,
@@ -121,17 +125,53 @@ public enum XLLCoreOracleVerifier {
             throw DTSError.malformed("Core reconstruction PCM must contain six equal-length planes")
         }
         let stream = try XLLPBRStreamReader.read(inputURL: input)
-        let totalXLLSamples = try stream.frames.reduce(0) { count, frame in
-            count + (try XLLFrameASTParser.parse(frame.frame)).segmentCount
-                * (try XLLFrameASTParser.parse(frame.frame)).segmentSampleCount
+        let frameSampleCounts = try stream.frames.map { frame in
+            let ast = try XLLFrameASTParser.parse(frame.frame)
+            return ast.segmentCount * ast.segmentSampleCount
         }
-        guard coreSampleCount == totalXLLSamples else {
+        let leadingTrim = stream.coreCompatiblePrimingSampleCount
+            + stream.initialDecodingDelayFrames * XLLSyntax.frameSampleCount
+        let selectedFrameCount: Int
+        let totalXLLSamples: Int
+        if let maximumAlignedSourceSampleCount {
+            guard maximumAlignedSourceSampleCount == source.sampleCount else {
+                throw DTSError.invalidArgument(
+                    "maximum aligned source sample count must match the comparison source"
+                )
+            }
+            let (targetSampleCount, overflow) = leadingTrim.addingReportingOverflow(
+                maximumAlignedSourceSampleCount
+            )
+            guard !overflow else {
+                throw DTSError.valueOutOfRange(
+                    field: "Core + XLL verification sample prefix",
+                    value: String(maximumAlignedSourceSampleCount)
+                )
+            }
+            var accumulated = 0
+            var count = 0
+            while count < frameSampleCounts.count, accumulated < targetSampleCount {
+                accumulated += frameSampleCounts[count]
+                count += 1
+            }
+            guard accumulated == targetSampleCount else {
+                throw DTSError.malformed(
+                    "requested Core + XLL verification prefix is not XLL-frame aligned"
+                )
+            }
+            selectedFrameCount = count
+            totalXLLSamples = accumulated
+        } else {
+            selectedFrameCount = stream.frames.count
+            totalXLLSamples = frameSampleCounts.reduce(0, +)
+        }
+        let selectedFrames = stream.frames.prefix(selectedFrameCount)
+        guard coreSampleCount >= totalXLLSamples,
+              maximumAlignedSourceSampleCount != nil || coreSampleCount == totalXLLSamples else {
             throw DTSError.invalidArgument(
                 "Core PCM sample count \(coreSampleCount) differs from XLL timeline \(totalXLLSamples)"
             )
         }
-        let leadingTrim = stream.coreCompatiblePrimingSampleCount
-            + stream.initialDecodingDelayFrames * XLLSyntax.frameSampleCount
         let decodedAlignedSampleCount = totalXLLSamples - leadingTrim
         guard decodedAlignedSampleCount >= source.sampleCount else {
             throw DTSError.truncated(field: "Core + XLL PCM", bitOffset: decodedAlignedSampleCount * 24)
@@ -144,7 +184,7 @@ public enum XLLCoreOracleVerifier {
         var nonzeroTail = Array(repeating: 0, count: 8)
         var globalSample = 0
 
-        for frame in stream.frames {
+        for frame in selectedFrames {
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
             guard decoded.channelSets.count == 2,
                   decoded.channelSets[0].planes.count == 6,
@@ -267,8 +307,8 @@ public enum XLLCoreOracleVerifier {
             coreOraclePCMPath: corePCMSource,
             sourceDirectory: sourceDirectory.standardizedFileURL.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
-            xllFrameCount: stream.frames.count,
-            coreSampleCount: coreSampleCount,
+            xllFrameCount: selectedFrameCount,
+            coreSampleCount: totalXLLSamples,
             sourceSampleCount: source.sampleCount,
             leadingPrimingSampleCount: leadingTrim,
             comparisons: comparisons,

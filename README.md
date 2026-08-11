@@ -100,6 +100,12 @@ parsers, writers, validation, Core decoding, XLL decoding, XLL encoding, and
 the Core plus XLL HDMA delivery path. DTS:X authoring renders supported Atmos
 inputs to a 7.1.4 PCM representation before native encoding.
 
+Atmos object gains are sample-continuous. The 7.1.4 renderer keeps per-object
+Q30 gain history, ramps ordinary automation over one pan sub-block, and limits
+large moves to at most `1/480` full-scale gain per sample. A target that arrives
+mid-ramp starts from the exact current gain, preventing zipper steps across the
+four height feeds without inserting a limiter into the lossless PCM path.
+
 The DTS:X private profile preserves rendered height PCM but does not yet retain
 independent object identifiers or object trajectories. Hardware playback and
 formal DTS certification remain external acceptance requirements.

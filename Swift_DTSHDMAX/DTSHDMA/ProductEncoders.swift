@@ -7,15 +7,27 @@ public struct HDMAEncoder: Sendable {
     public let format: PCMFormat
     public let tailPolicy: DTSTailPolicy
     public let frameRate: DTSFrameRate
+    public let xllCodingMode: XLLCodingMode
+    public let coreAssociationPolicy: XLLCoreAssociationPolicy
+    public let compactXLLPriming: Bool
+    public let forcedXLLSegmentCount: Int?
 
     public init(
         format: PCMFormat,
         tailPolicy: DTSTailPolicy = .reject,
-        frameRate: DTSFrameRate = .fps24
+        frameRate: DTSFrameRate = .fps24,
+        xllCodingMode: XLLCodingMode = .terminalConservative,
+        coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
+        compactXLLPriming: Bool = false,
+        forcedXLLSegmentCount: Int? = nil
     ) {
         self.format = format
         self.tailPolicy = tailPolicy
         self.frameRate = frameRate
+        self.xllCodingMode = xllCodingMode
+        self.coreAssociationPolicy = coreAssociationPolicy
+        self.compactXLLPriming = compactXLLPriming
+        self.forcedXLLSegmentCount = forcedXLLSegmentCount
     }
 
     public func encode(
@@ -32,7 +44,11 @@ public struct HDMAEncoder: Sendable {
             format: pcm.format,
             profile: .dtsHDMA,
             deterministic: true,
-            tailPolicy: tailPolicy
+            tailPolicy: tailPolicy,
+            xllCodingMode: xllCodingMode,
+            coreAssociationPolicy: coreAssociationPolicy,
+            compactXLLPriming: compactXLLPriming,
+            forcedXLLSegmentCount: forcedXLLSegmentCount
         )).encode(pcm, progress: { completed, total in
             progress?(950 * completed / max(1, total), 1_000)
         })
@@ -72,7 +88,11 @@ public struct HDMAEncoder: Sendable {
                 format: pcm.format,
                 profile: .dtsHDMA,
                 deterministic: true,
-                tailPolicy: tailPolicy
+                tailPolicy: tailPolicy,
+                xllCodingMode: xllCodingMode,
+                coreAssociationPolicy: coreAssociationPolicy,
+                compactXLLPriming: compactXLLPriming,
+                forcedXLLSegmentCount: forcedXLLSegmentCount
             )).encode(pcm, writingAccessUnitsTo: { accessUnit in
                 try writer.append(accessUnit: accessUnit)
             }, progress: { completed, total in

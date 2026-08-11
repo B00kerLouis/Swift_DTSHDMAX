@@ -75,7 +75,10 @@ public enum XLLCoreNativeVerifier {
             corePlanes: core.planes,
             coreSampleCount: core.sampleCount,
             source: source,
-            sourceDirectory: sourceDirectory
+            sourceDirectory: sourceDirectory,
+            maximumAlignedSourceSampleCount: maximumSourceFrameCount == nil
+                ? nil
+                : source.sampleCount
         )
         return XLLCoreNativeVerificationReport(
             inputPath: common.inputPath,

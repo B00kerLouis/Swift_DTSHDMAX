@@ -216,12 +216,16 @@ public struct DTSCoreEncoder: Sendable {
         try writer.write(0, bitCount: 1, field: "HDCD")
         try writer.write(0, bitCount: 3, field: "EXT_AUDIO_ID")
         try writer.write(0, bitCount: 1, field: "EXT_AUDIO")
-        try writer.write(0, bitCount: 1, field: "ASPF")
+        // Encoder Suite sets ASPF and emits a DSYNC word after every
+        // subsubframe.  Keeping only the mandatory final DSYNC is syntactically
+        // decodable, but strict terminals use the advertised synchronization
+        // cadence while acquiring a stream from 00:00.
+        try writer.write(1, bitCount: 1, field: "ASPF")
         try writer.write(2, bitCount: 2, field: "LFF") // 64x LFE
         try writer.write(1, bitCount: 1, field: "HFLAG")
         try writer.write(0, bitCount: 1, field: "FILTS") // non-perfect reconstruction
         try writer.write(7, bitCount: 4, field: "VERNUM")
-        try writer.write(0, bitCount: 2, field: "CHIST")
+        try writer.write(1, bitCount: 2, field: "CHIST")
         try writer.write(6, bitCount: 3, field: "PCMR") // 24-bit source PCM, non-ES
         try writer.write(0, bitCount: 1, field: "SUMF")
         try writer.write(0, bitCount: 1, field: "SUMS")
@@ -298,8 +302,12 @@ public struct DTSCoreEncoder: Sendable {
                     }
                 }
             }
+            try writer.write(
+                0xffff,
+                bitCount: 16,
+                field: "DSYNC[\(subsubframe)]"
+            )
         }
-        try writer.write(0xffff, bitCount: 16, field: "DSYNC")
     }
 
     private static let lossyQuantStep: UInt32 = 1_426_063

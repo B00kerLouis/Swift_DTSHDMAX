@@ -49,17 +49,34 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
     public let profile: DTSHDMAProfile
     public let deterministic: Bool
     public let tailPolicy: DTSTailPolicy
+    public let xllCodingMode: XLLCodingMode
+    public let coreAssociationPolicy: XLLCoreAssociationPolicy
+    /// Uses the compact, independently decoded zero-residual grammar for the
+    /// two Core priming frames. This is exposed for public-XLL differential
+    /// controls; ordinary HDMA keeps its existing explicit-zero default.
+    public let compactXLLPriming: Bool
+    /// Test-only override for public XLL segmentation. Production uses the
+    /// encoder's per-frame search when this is nil.
+    public let forcedXLLSegmentCount: Int?
 
     public init(
         format: PCMFormat,
         profile: DTSHDMAProfile = .dtsHDMA,
         deterministic: Bool = true,
-        tailPolicy: DTSTailPolicy = .reject
+        tailPolicy: DTSTailPolicy = .reject,
+        xllCodingMode: XLLCodingMode = .terminalConservative,
+        coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
+        compactXLLPriming: Bool = false,
+        forcedXLLSegmentCount: Int? = nil
     ) {
         self.format = format
         self.profile = profile
         self.deterministic = deterministic
         self.tailPolicy = tailPolicy
+        self.xllCodingMode = xllCodingMode
+        self.coreAssociationPolicy = coreAssociationPolicy
+        self.compactXLLPriming = compactXLLPriming
+        self.forcedXLLSegmentCount = forcedXLLSegmentCount
     }
 }
 
@@ -235,7 +252,7 @@ public struct DTSHDMAEncoder: Sendable {
             ? XLLSyntax.coreCompatiblePrimingSampleCount / XLLSyntax.frameSampleCount
             : 0
         let totalFrameCount = sourceFrameCount + primingFrameCount
-        let xllEncoder = XLLEncoder()
+        let xllEncoder = XLLEncoder(codingMode: configuration.xllCodingMode)
         let exssWriter = ExSSWriter()
         let exssAssetDescriptorProfile: ExSSAssetDescriptorProfile = privateXLLXSource == nil
             ? .standardHDMA
@@ -314,7 +331,52 @@ public struct DTSHDMAEncoder: Sendable {
                 let xllCoreReconstruction = item.isPriming
                     ? silentCoreFrame
                     : item.decodedCore
-                let xll = try xllEncoder.encode(
+                // DTS:X reference streams use the standard compact zero-XLL
+                // declaration during the two Core-priming access units.  The
+                // terminal-conservative payload keeps later frames free of
+                // unqualified transforms, but its all-explicit zero entropy
+                // state is eight bytes larger and differs from the observed
+                // priming grammar.  Use the independently verified compact
+                // zero form only for those silent pre-roll frames.
+                let frameXLLEncoder = (privateXLLXSource != nil
+                    || configuration.compactXLLPriming)
+                    && item.isPriming
+                    && configuration.xllCodingMode != .research
+                    ? XLLEncoder(codingMode: .research)
+                    : xllEncoder
+                // Pre-encoded private-frame callers cannot expose their source
+                // activity, so retain their legacy 4x128 startup contract.
+                // Native sessions decide this from the aligned height PCM:
+                // Nature's Fury-style silent startup uses 4x128, while an
+                // active startup follows the public encoder's cost search.
+                let legacyFrameStartupSegmentCount: Int?
+                if case .frames = privateXLLXSource,
+                   configuration.xllCodingMode != .research,
+                   item.frameIndex >= primingFrameCount,
+                   item.frameIndex < primingFrameCount + 2 {
+                    legacyFrameStartupSegmentCount = 4
+                } else {
+                    legacyFrameStartupSegmentCount = nil
+                }
+                let privatePreferredSegmentCount: Int?
+                if case .session(let session) = privateXLLXSource {
+                    privatePreferredSegmentCount = session
+                        .terminalPreferredPublicSegmentCount(at: item.frameIndex)
+                } else {
+                    privatePreferredSegmentCount = nil
+                }
+                let nativeSessionStartupSegmentCount = item.frameIndex >= primingFrameCount
+                    && item.frameIndex < primingFrameCount + 2
+                    ? privatePreferredSegmentCount : nil
+                // This is intentionally configuration-gated rather than a
+                // delivery default. It lets a reference investigation hold the
+                // public/private XLL-X timeline constant while comparing
+                // 2x256, 4x128, or 8x64 syntax.
+                let forcedSegmentCount = legacyFrameStartupSegmentCount
+                    ?? nativeSessionStartupSegmentCount
+                    ?? configuration.forcedXLLSegmentCount
+                    ?? privatePreferredSegmentCount
+                let xll = try frameXLLEncoder.encode(
                     frame: item.frame,
                     useSevenOneHierarchy: configuration.profile == .dtsHDMA
                         && item.frame.format.layout == .sevenOne,
@@ -323,7 +385,8 @@ public struct DTSHDMAEncoder: Sendable {
                     // references. Ordinary HDMA without XLL-X keeps its existing
                     // full-primary policy.
                     coreAssociationPolicy: privateXLLXSource == nil
-                        ? .fullPrimaryChannels : privateCoreAssociationPolicy,
+                        ? configuration.coreAssociationPolicy
+                        : privateCoreAssociationPolicy,
                     privateExtensionProvider: privateXLLXSource.map { privateSource in
                         { segmentationPlan in
                             switch privateSource {
@@ -343,7 +406,8 @@ public struct DTSHDMAEncoder: Sendable {
                                 )
                             }
                         }
-                    }
+                    },
+                    forcedSegmentCount: forcedSegmentCount
                 )
                 guard let segmentationPlan = xll.info.segmentationPlan else {
                     throw DTSError.malformed("encoded public XLL frame has no segmentation plan")

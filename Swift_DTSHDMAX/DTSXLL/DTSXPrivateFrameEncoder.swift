@@ -1,12 +1,50 @@
 import Foundation
 
+/// Controls which recovered XLL-X coding choices may be emitted.  The
+/// conservative mode is for terminal-facing output while the broader mode is
+/// retained for byte-level research and its dedicated vectors.
+public enum DTSXPrivateCodingMode: Sendable, Equatable, Codable {
+    case research
+    case terminalConservative
+    /// Conservative direct-sample syntax with the official active-frame
+    /// branch-two lifting. This isolates branch interoperability from temporal
+    /// prediction and Rice coding during terminal qualification.
+    case terminalBranchTwoConservative
+    /// Branch-two lifting plus qualified adaptive prediction, with signed
+    /// Linear entropy held constant to isolate the predictor on hardware.
+    case terminalBranchTwoPredictiveLinear
+    /// Branch-two lifting plus fixed-order-zero prediction and straight Rice,
+    /// isolating entropy decoding from the adaptive predictor.
+    case terminalBranchTwoRice
+    /// Terminal-facing prediction and straight-Rice coding. Terminal playback
+    /// proved that our locally selected branch-two routing/lifting semantics
+    /// click even though the symmetric native decoder closes sample-exactly.
+    /// Keep the terminal profile on the fixed, independently certified
+    /// branch-zero routing; branch-two remains available only through the
+    /// explicitly named diagnostic modes above. Hybrid Rice remains excluded.
+    case terminalPredictive
+    /// Terminal-facing Branch-0, fixed-order-zero Straight-Rice profile. This
+    /// preserves the routing and entropy conditions of the terminal-clean
+    /// legacy Rice control without enabling adaptive prediction.
+    case terminalRice
+    /// Branch-0/fixed-order-zero Straight Rice with the ABIT estimator observed
+    /// in the official corpus: bit width of the segment's mean absolute
+    /// magnitude. This is an explicitly named terminal diagnostic and does not
+    /// replace ``terminalRice`` until hardware playback qualifies it.
+    case terminalRiceMeanMagnitude
+    /// Branch-0/fixed-order-zero Straight Rice using the exact minimum-bit
+    /// ABIT unless that choice would emit a unary quotient above the maximum
+    /// observed in the official corpus. This is a terminal diagnostic and
+    /// does not replace ``terminalRice`` before physical qualification.
+    case terminalRiceBoundedUnary
+}
+
 /// Encoder-side inverse of the recovered four-plane XLL-X frame grammar.
 ///
-/// The native branch-zero profile uses identity plane routing, independently
-/// selected fixed or adaptive prediction and per-segment signed-linear/Rice
-/// entropy coding. It does not copy an oracle payload; every entropy bit is
-/// produced from the supplied 512-sample height planes and is verified through
-/// ``DTSXPrivateFrameDecoder`` before being returned.
+/// The native profile uses independently selected fixed or adaptive prediction
+/// and per-segment entropy coding. Terminal-conservative output keeps the
+/// prediction declaration at order zero and uses explicit signed-linear
+/// parameters; it does not copy an oracle payload.
 public struct DTSXPrivateFrameEncoder: Sendable {
     public static let channelCount = 4
     public static let frameSampleCount = 512
@@ -19,6 +57,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
 
     private static let predictionBoundaryByteCount = 8
     private static let bitAllocationWidth = 5
+    private static let terminalMaximumUnaryQuotient: UInt64 = 22
     private static let fixedHeaderBytes = Data([
         0x28, 0x4b, 0xfa, 0x71, 0x0d, 0x62, 0x02, 0xfa,
         0x02, 0xdc, 0x13, 0x71, 0x0d, 0xc8, 0x37
@@ -26,6 +65,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     private static let fixedHeaderCRC16: UInt16 = 0x3cf1
 
     private let allowsExperimentalHybridRice: Bool
+    private let codingMode: DTSXPrivateCodingMode
 
     private enum EntropyMode: Equatable {
         case linear(width: Int)
@@ -53,8 +93,18 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         let rawCoefficientCodes: [Int]
     }
 
-    public init(allowsExperimentalHybridRice: Bool = false) {
+    private struct RoutedDecorrelationSelection {
+        let codedPlanes: [[Int32]]
+        let routing: DTSXPrivateRouting
+        let decorrelation: DecorrelationSelection
+    }
+
+    public init(
+        allowsExperimentalHybridRice: Bool = false,
+        codingMode: DTSXPrivateCodingMode = .research
+    ) {
         self.allowsExperimentalHybridRice = allowsExperimentalHybridRice
+        self.codingMode = codingMode
     }
 
     public func encode(
@@ -68,26 +118,168 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     ) throws -> Data {
         try validate(codedPlanes: codedPlanes, routing: routing)
 
-        let decorrelation = optimizePairwiseDecorrelation
-            ? selectPairwiseDecorrelation(codedPlanes, segmentationPlan: segmentationPlan)
-            : DecorrelationSelection(
-                planes: codedPlanes,
-                branchCode: 0,
-                rawCoefficientCodes: []
+        let usesTerminalBranchTwoSearch = codingMode == .terminalBranchTwoConservative
+            || codingMode == .terminalBranchTwoPredictiveLinear
+            || codingMode == .terminalBranchTwoRice
+        let routedSelection: RoutedDecorrelationSelection
+        if optimizePairwiseDecorrelation, usesTerminalBranchTwoSearch {
+            routedSelection = try selectTerminalRoutingAndDecorrelation(
+                codedPlanes,
+                sourceRouting: routing,
+                segmentationPlan: segmentationPlan
             )
-        let effectiveRouting = try DTSXPrivateRouting(
-            codedPlaneToHeightPermutation: routing.codedPlaneToHeightPermutation,
-            branchCode: decorrelation.branchCode
-        )
+        } else {
+            let decorrelation = optimizePairwiseDecorrelation && codingMode == .research
+                ? selectPairwiseDecorrelation(
+                    codedPlanes,
+                    segmentationPlan: segmentationPlan
+                )
+                : DecorrelationSelection(
+                    planes: codedPlanes,
+                    branchCode: 0,
+                    rawCoefficientCodes: []
+                )
+            routedSelection = RoutedDecorrelationSelection(
+                codedPlanes: codedPlanes,
+                routing: try DTSXPrivateRouting(
+                    codedPlaneToHeightPermutation:
+                        routing.codedPlaneToHeightPermutation,
+                    branchCode: decorrelation.branchCode
+                ),
+                decorrelation: decorrelation
+            )
+        }
         let selectedPrediction = selectPrediction(
-            decorrelation.planes,
+            routedSelection.decorrelation.planes,
             segmentationPlan: segmentationPlan
         )
         return try encodeSelected(
-            codedPlanes: codedPlanes,
-            effectiveRouting: effectiveRouting,
-            decorrelation: decorrelation,
+            codedPlanes: routedSelection.codedPlanes,
+            effectiveRouting: routedSelection.routing,
+            decorrelation: routedSelection.decorrelation,
             selectedPrediction: selectedPrediction,
+            segmentationPlan: segmentationPlan
+        )
+    }
+
+    /// Emits the terminal-facing four-segment no-NAVI silence used by the
+    /// first non-priming DTS:X access unit.  This is a typed reconstruction of
+    /// the observed control declaration; prediction, side-info CRC, frame
+    /// header CRC, and routing are still generated by the encoder.
+    func encodeTerminalNoNavigationFourSegmentSilence(
+        codedPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> Data {
+        guard codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive else {
+            throw DTSError.unsupported(
+                "terminal no-NAVI silence is only available in a terminal delivery mode"
+            )
+        }
+        let sideInfo = try DTSXPrivateNoNavigationZeroSideInfo(
+            controlCode: 0x80,
+            dataByteCount: 5
+        )
+        let zeroPlanes = Array(
+            repeating: Array(
+                repeating: Int32(0),
+                count: Self.frameSampleCount
+            ),
+            count: Self.channelCount
+        )
+        return try encodeQualifiedNoNavigationZeroSilence(
+            codedPlanes: codedPlanes,
+            routing: routing,
+            selectedPrediction: PredictionSelection(
+                residualPlanes: zeroPlanes,
+                adaptiveOrders: [0, 0, 0, 0],
+                reflectionCoefficientIndices: [[], [], [], []],
+                fixedOrders: [0, 0, 0, 0]
+            ),
+            predictionBoundaryByteCount: 9,
+            sideInfo: sideInfo,
+            segmentationPlan: segmentationPlan
+        )
+    }
+
+    /// Emits the independently recovered mid-stream 2x256 silence grammar.
+    /// Unlike the 48-byte Core-priming declaration, this form carries the
+    /// code-16 prediction boundary and side-info CRC used by the official
+    /// stream whenever an ordinary source AU has silent height planes.
+    func encodeTerminalMidstreamTwoSegmentSilence(
+        codedPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> Data {
+        guard codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive else {
+            throw DTSError.unsupported(
+                "terminal mid-stream silence is only available in a terminal delivery mode"
+            )
+        }
+        let sideInfo = try DTSXPrivateNoNavigationZeroSideInfo(
+            controlCode: 0x20,
+            dataByteCount: 3
+        )
+        let zeroPlanes = Array(
+            repeating: Array(
+                repeating: Int32(0),
+                count: Self.frameSampleCount
+            ),
+            count: Self.channelCount
+        )
+        return try encodeQualifiedNoNavigationZeroSilence(
+            codedPlanes: codedPlanes,
+            routing: routing,
+            selectedPrediction: PredictionSelection(
+                residualPlanes: zeroPlanes,
+                adaptiveOrders: [0, 0, 0, 0],
+                reflectionCoefficientIndices: [[], [], [], []],
+                fixedOrders: [0, 0, 0, 0]
+            ),
+            predictionBoundaryByteCount: 9,
+            sideInfo: sideInfo,
+            segmentationPlan: segmentationPlan
+        )
+    }
+
+    /// Emits the compact navigated silence observed only at the first source
+    /// access unit after Core priming.  Keeping this entry point frame-indexed
+    /// in ``DTSXPrivateStreamEncodingSession`` prevents the same startup state
+    /// declaration from being repeated for ordinary mid-stream silence.
+    func encodeTerminalStartupNavigatedFourSegmentSilence(
+        codedPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> Data {
+        guard codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive else {
+            throw DTSError.unsupported(
+                "terminal startup silence is only available in a terminal delivery mode"
+            )
+        }
+        return try encodeCanonicalFourSegmentSilence(
+            codedPlanes: codedPlanes,
+            routing: routing,
             segmentationPlan: segmentationPlan
         )
     }
@@ -120,7 +312,12 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         case 2:
             hasExpectedCoefficientCount = (1...2).contains(rawCoefficientCount)
         case 3:
-            hasExpectedCoefficientCount = rawCoefficientCount == 2
+            // Official branch three uses the same CRC-disambiguated one- and
+            // two-coefficient forms as branch two. The even-first one-field
+            // form assigns the coefficient to pair zero; treating the next
+            // prediction bits as a second coefficient yields a different LPC
+            // header despite sharing the prediction CRC boundary.
+            hasExpectedCoefficientCount = (1...2).contains(rawCoefficientCount)
         default:
             hasExpectedCoefficientCount = false
         }
@@ -232,24 +429,11 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 segmentationPlan: segmentationPlan
             )
         }
-        // A public XLL frame can choose a finer 4x128 partition even while
-        // the private height planes are silent.  The DTS:X reference stream
-        // uses a compact, explicitly navigated zero-code form in that case;
-        // emitting four ordinary entropy headers creates a different private
-        // grammar at the first non-priming DTS:X frame.
-        if isSilent,
-           segmentationPlan.segmentCount == 4,
-           segmentationPlan.segmentSampleCount == 128,
-           // The compact form is an explicitly navigated grammar.  Qualified
-           // inverse verification must not replace an un-navigated official
-           // silence form merely because its decoded PCM is also zero.
-           (qualifiedEntropySegments == nil || navigationTemplate != nil) {
-            return try encodeCanonicalFourSegmentSilence(
-                codedPlanes: codedPlanes,
-                routing: effectiveRouting,
-                segmentationPlan: segmentationPlan
-            )
-        }
+        // The compact navigated 4x128 zero declaration is a startup state, not
+        // a generic silence codec. The stream session invokes it explicitly at
+        // the first source AU. Ordinary mid-stream silence continues through
+        // the generalized NAVI/entropy path below so every segment carries the
+        // same complete state grammar as the terminal-clean legacy controls.
         // The recovered compact no-NAVI suffix is specific to 2x256. Dynamic
         // 4/8-segment silence uses explicit generalized NAVI so the partition is
         // unambiguous to a decoder.
@@ -524,15 +708,28 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                     0,
                     count: segmentByteCounts.reduce(0, +) + trailingFrameByteCount
                 ))
-                guard let parsed = try? DTSXPrivateNavigation.parse(
-                    body: validationBody,
-                    navigationStartByteOffset: navigationStartByteOffset,
-                    segmentCount: segmentByteCounts.count
-                ),
-                    parsed.bitWidth == bitWidth,
-                    parsed.segmentByteCounts == segmentByteCounts,
-                    parsed.trailingFrameByteCount == trailingFrameByteCount else {
-                    continue
+                if preferredBitWidth != nil {
+                    let candidates = try DTSXPrivateNavigation.parseCandidates(
+                        body: validationBody,
+                        navigationStartByteOffset: navigationStartByteOffset,
+                        segmentCount: segmentByteCounts.count
+                    )
+                    guard candidates.contains(where: {
+                        $0.bitWidth == bitWidth
+                            && $0.segmentByteCounts == segmentByteCounts
+                            && $0.trailingFrameByteCount == trailingFrameByteCount
+                    }) else { continue }
+                } else {
+                    guard let parsed = try? DTSXPrivateNavigation.parse(
+                        body: validationBody,
+                        navigationStartByteOffset: navigationStartByteOffset,
+                        segmentCount: segmentByteCounts.count
+                    ),
+                        parsed.bitWidth == bitWidth,
+                        parsed.segmentByteCounts == segmentByteCounts,
+                        parsed.trailingFrameByteCount == trailingFrameByteCount else {
+                        continue
+                    }
                 }
                 return (navigation, trailingFrameByteCount)
             }
@@ -552,14 +749,15 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             8,
             requiredUnsignedBitCount(maximumSegmentByteCount - 1)
         )
-        guard requiredBitWidth <= 12 else {
+        guard requiredBitWidth <= DTSXPrivateNavigation.supportedBitWidths.upperBound else {
             throw DTSError.valueOutOfRange(
                 field: "XLL-X native navigation width",
                 value: String(requiredBitWidth)
             )
         }
         if let preferredBitWidth {
-            guard (requiredBitWidth...12).contains(preferredBitWidth) else {
+            guard (requiredBitWidth...DTSXPrivateNavigation.supportedBitWidths.upperBound)
+                .contains(preferredBitWidth) else {
                 throw DTSError.valueOutOfRange(
                     field: "XLL-X qualified navigation width",
                     value: String(preferredBitWidth)
@@ -572,7 +770,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // byte-identical, then try the remaining representable forms.  A form
         // is selected only after the decoder's parser accepts it uniquely.
         let canonicalBitWidth = requiredBitWidth <= 11 ? 11 : requiredBitWidth
-        return [canonicalBitWidth] + (requiredBitWidth...12).filter {
+        return [canonicalBitWidth]
+            + (requiredBitWidth...DTSXPrivateNavigation.supportedBitWidths.upperBound).filter {
             $0 != canonicalBitWidth
         }
     }
@@ -639,6 +838,18 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         _ codedPlanes: [[Int32]],
         segmentationPlan: XLLSegmentationPlan
     ) -> DecorrelationSelection {
+        // Branch two dominates the inspected official program, including 594
+        // of its first 600 frames, but branch zero also occurs on active audio.
+        // Force branch two only for this deliberately isolated terminal profile
+        // so hardware playback can qualify the recovered lifting syntax without
+        // a content-dependent entropy-cost decision changing the experiment.
+        let requiresActiveBranchTwo = (
+            codingMode == .terminalPredictive
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+        )
+            && codedPlanes.contains { plane in plane.contains { $0 != 0 } }
         let baselineScore = codedPlanes.reduce(0) {
             $0 + estimatedEntropyBitCount(
                 $1,
@@ -651,7 +862,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             branchCode: 0,
             rawCoefficientCodes: []
         )
-        var selectedScore = baselineScore
+        var selectedScore = requiresActiveBranchTwo ? Int.max : baselineScore
 
         for branchCode in [2] {
             var transformed = codedPlanes
@@ -711,7 +922,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             segmentationPlan: segmentationPlan
         )
             + 14
-        return selectedFinalScore < baselineFinalScore
+        return requiresActiveBranchTwo || selectedFinalScore < baselineFinalScore
             ? selected
             : DecorrelationSelection(
                 planes: codedPlanes,
@@ -719,6 +930,127 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 rawCoefficientCodes: []
             )
     }
+
+    /// Searches coded-plane routing and branch-two lifting together. Official
+    /// streams vary the height permutation with content; holding the startup
+    /// permutation fixed caused thousands of pair-zero coefficients to use the
+    /// zero alias, whereas the official first coefficient is nonzero in all but
+    /// six decoded two-coefficient frames. Prefer a nonzero canonical first
+    /// coefficient, then the official-observed odd raw alias for zero. Branch
+    /// zero is only a last resort when no canonical branch-two form exists.
+    private func selectTerminalRoutingAndDecorrelation(
+        _ codedPlanes: [[Int32]],
+        sourceRouting: DTSXPrivateRouting,
+        segmentationPlan: XLLSegmentationPlan
+    ) throws -> RoutedDecorrelationSelection {
+        guard codedPlanes.contains(where: { $0.contains(where: { $0 != 0 }) }) else {
+            return RoutedDecorrelationSelection(
+                codedPlanes: codedPlanes,
+                routing: try DTSXPrivateRouting(
+                    codedPlaneToHeightPermutation:
+                        sourceRouting.codedPlaneToHeightPermutation,
+                    branchCode: 0
+                ),
+                decorrelation: DecorrelationSelection(
+                    planes: codedPlanes,
+                    branchCode: 0,
+                    rawCoefficientCodes: []
+                )
+            )
+        }
+        let heightPlanes = try sourceRouting.heightPlanes(fromCodedPlanes: codedPlanes)
+        typealias ScoredRouting = (
+            score: Int,
+            selection: RoutedDecorrelationSelection
+        )
+        var selectedNonzero: ScoredRouting?
+        var selectedZero: ScoredRouting?
+        for permutation in Self.heightPermutations {
+            let candidateRouting = try DTSXPrivateRouting(
+                codedPlaneToHeightPermutation: permutation,
+                branchCode: 0
+            )
+            let candidateCodedPlanes = try candidateRouting.codedPlanes(
+                fromHeightPlanes: heightPlanes
+            )
+            let candidateDecorrelation = selectPairwiseDecorrelation(
+                candidateCodedPlanes,
+                segmentationPlan: segmentationPlan
+            )
+            guard candidateDecorrelation.branchCode == 2,
+                  candidateDecorrelation.rawCoefficientCodes.count == 2,
+                  !candidateDecorrelation.rawCoefficientCodes[0].isMultiple(of: 2) else {
+                continue
+            }
+            let firstCoefficient = decodedDecorrelationCoefficient(
+                rawCode: candidateDecorrelation.rawCoefficientCodes[0],
+                branchCode: 2,
+                pair: 0
+            )
+            let candidatePrediction = selectPrediction(
+                candidateDecorrelation.planes,
+                segmentationPlan: segmentationPlan
+            )
+            let score = predictionBitCount(
+                candidatePrediction,
+                segmentationPlan: segmentationPlan
+            ) + 14
+            let routed = RoutedDecorrelationSelection(
+                codedPlanes: candidateCodedPlanes,
+                routing: try DTSXPrivateRouting(
+                    codedPlaneToHeightPermutation: permutation,
+                    branchCode: 2
+                ),
+                decorrelation: candidateDecorrelation
+            )
+            let candidate = (score: score, selection: routed)
+            if firstCoefficient != 0 {
+                if selectedNonzero == nil
+                    || score < selectedNonzero!.score
+                    || (score == selectedNonzero!.score
+                        && permutation.lexicographicallyPrecedes(
+                            selectedNonzero!.selection.routing
+                                .codedPlaneToHeightPermutation
+                        )) {
+                    selectedNonzero = candidate
+                }
+            } else if selectedZero == nil
+                || score < selectedZero!.score
+                || (score == selectedZero!.score
+                    && permutation.lexicographicallyPrecedes(
+                        selectedZero!.selection.routing
+                            .codedPlaneToHeightPermutation
+                    )) {
+                selectedZero = candidate
+            }
+        }
+        if let selectedNonzero { return selectedNonzero.selection }
+        if let selectedZero { return selectedZero.selection }
+        return RoutedDecorrelationSelection(
+            codedPlanes: codedPlanes,
+            routing: try DTSXPrivateRouting(
+                codedPlaneToHeightPermutation: sourceRouting.codedPlaneToHeightPermutation,
+                branchCode: 0
+            ),
+            decorrelation: DecorrelationSelection(
+                planes: codedPlanes,
+                branchCode: 0,
+                rawCoefficientCodes: []
+            )
+        )
+    }
+
+    private static let heightPermutations: [[Int]] = {
+        func permutations(_ remaining: [Int]) -> [[Int]] {
+            guard remaining.count > 1 else { return [remaining] }
+            return remaining.indices.flatMap { index -> [[Int]] in
+                var tail = remaining
+                let head = tail.remove(at: index)
+                return permutations(tail).map { [head] + $0 }
+            }
+        }
+        return permutations(Array(0..<Self.channelCount))
+    }()
 
     private func predictionBitCount(
         _ selection: PredictionSelection,
@@ -756,7 +1088,18 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 branchCode: branchCode,
                 pair: pair
             )
-            rawByCoefficient[coefficient] = min(rawByCoefficient[coefficient] ?? rawCode, rawCode)
+            if let current = rawByCoefficient[coefficient] {
+                if prefersDecorrelationRawCode(
+                    rawCode,
+                    over: current,
+                    branchCode: branchCode,
+                    pair: pair
+                ) {
+                    rawByCoefficient[coefficient] = rawCode
+                }
+            } else {
+                rawByCoefficient[coefficient] = rawCode
+            }
         }
         let availableCoefficients = rawByCoefficient.keys.sorted()
         let nearby = availableCoefficients.filter { abs(Int($0) - target) <= 4 }
@@ -785,9 +1128,14 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 plane[sample] = Int32(value)
             }
             guard fits else { continue }
-            let score = estimatedEntropyBitCount(
-                plane,
-                adaptiveOrder: 0,
+            // Coefficients alter the temporal predictor choice as well as the
+            // raw residual magnitude. Ranking them only by unpredicted entropy
+            // can select a transform that forces a longer predictor header and
+            // a larger final payload. The prediction declaration is constant
+            // with respect to the other pair, so it is safe to rank each pair
+            // by its own fully selected predictor and entropy estimate here.
+            let score = predictionBitCount(
+                selectPrediction([plane], segmentationPlan: segmentationPlan),
                 segmentationPlan: segmentationPlan
             )
             if selected == nil
@@ -797,6 +1145,30 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             }
         }
         return selected
+    }
+
+    /// Branch two has coefficient aliases: multiple seven-bit raw values can
+    /// decode to the same signed lifting coefficient. The official corpus uses
+    /// the branch-qualified form overwhelmingly—odd raw codes for pair zero,
+    /// even raw codes for pair one. Selecting the numerically smallest alias
+    /// emitted pair-zero raw 0 throughout locally encoded streams even though
+    /// it never appears in 7,447 decoded official two-coefficient frames. Keep
+    /// the observed parity canonical; fall back only when that parity cannot
+    /// represent the selected signed coefficient.
+    private func prefersDecorrelationRawCode(
+        _ candidate: Int,
+        over current: Int,
+        branchCode: Int,
+        pair: Int
+    ) -> Bool {
+        guard branchCode == 2 else { return candidate < current }
+        let preferredParity = pair == 0 ? 1 : 0
+        let candidateIsCanonical = candidate & 1 == preferredParity
+        let currentIsCanonical = current & 1 == preferredParity
+        if candidateIsCanonical != currentIsCanonical {
+            return candidateIsCanonical
+        }
+        return candidate < current
     }
 
     private func leastSquaresDecorrelationCoefficient(
@@ -820,10 +1192,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         pair: Int
     ) -> Int32 {
         let coefficientCode = rawCode >> 1
-        if branchCode == 1 || (branchCode == 3 && pair == 1) {
+        if pair == 1 {
             return Int32((rawCode & 1) == 0 ? coefficientCode : -coefficientCode - 1)
         }
-        if (rawCode & 1) == 0 { return Int32(coefficientCode) }
         let extensionBit = (branchCode >> pair) & 1
         let extendedCode = (extensionBit << 6) | coefficientCode
         let magnitude = extendedCode >> 1
@@ -887,7 +1258,12 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         }
         let syntaxByteCount = (writer.bitCount + 7) / 8
         let defaultBoundaryByteCount = usesNavigation
-            ? syntaxByteCount + 6
+            // The terminal grammar reserves a ten-byte minimum prediction
+            // region for every navigated non-silent frame.  A shorter nine-
+            // byte declaration is structurally decodable locally but is not
+            // present in the official active-frame corpus (code 16 is silent
+            // or padding-only there).
+            ? max(syntaxByteCount + 6, 10)
             : max(Self.predictionBoundaryByteCount, syntaxByteCount)
         let boundaryByteCount = forcedBoundaryByteCount ?? defaultBoundaryByteCount
         guard boundaryByteCount >= syntaxByteCount else {
@@ -1027,7 +1403,10 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                     )
                 }
             case .hybridRice(let parameter, let linearWidth, let isolatedSampleOffsets):
-                guard isolatedSampleOffsets.count <= Int(UInt8.max),
+                let isolatedLocationBitCount = segmentSampleCount.trailingZeroBitCount
+                guard isolatedLocationBitCount > 0,
+                      1 << isolatedLocationBitCount == segmentSampleCount,
+                      isolatedSampleOffsets.count < 1 << isolatedLocationBitCount,
                       isolatedSampleOffsets == isolatedSampleOffsets.sorted(),
                       isolatedSampleOffsets.allSatisfy({
                           (0..<(end - partBStart)).contains($0)
@@ -1036,13 +1415,13 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 }
                 try writer.write(
                     UInt64(isolatedSampleOffsets.count),
-                    bitCount: 8,
+                    bitCount: isolatedLocationBitCount,
                     field: "XLL-X nIsolatedSamples[\(segment)][\(channel)]"
                 )
                 for offset in isolatedSampleOffsets {
                     try writer.write(
                         UInt64(offset),
-                        bitCount: 8,
+                        bitCount: isolatedLocationBitCount,
                         field: "XLL-X nIsolatedSampleLocation[\(segment)][\(channel)]"
                     )
                 }
@@ -1242,7 +1621,10 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 // decoder selects the linear form by location.  Both details
                 // are required for a byte-exact inverse and avoid treating the
                 // parsed list as opaque reference data.
-                guard isolatedOffsets.count <= Int(UInt8.max) else {
+                let isolatedLocationBitCount = segmentSampleCount.trailingZeroBitCount
+                guard isolatedLocationBitCount > 0,
+                      1 << isolatedLocationBitCount == segmentSampleCount,
+                      isolatedOffsets.count < 1 << isolatedLocationBitCount else {
                     throw DTSError.valueOutOfRange(
                         field: "XLL-X qualified isolated sample count",
                         value: String(isolatedOffsets.count)
@@ -1250,13 +1632,13 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 }
                 try writer.write(
                     UInt64(isolatedOffsets.count),
-                    bitCount: 8,
+                    bitCount: isolatedLocationBitCount,
                     field: "XLL-X qualified nIsolatedSamples[\(segment)][\(channel)]"
                 )
                 for offset in isolatedOffsets {
                     try writer.write(
                         UInt64(offset),
-                        bitCount: 8,
+                        bitCount: isolatedLocationBitCount,
                         field: "XLL-X qualified nIsolatedSampleLocation[\(segment)][\(channel)]"
                     )
                 }
@@ -1297,6 +1679,27 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         _ codedPlanes: [[Int32]],
         segmentationPlan: XLLSegmentationPlan
     ) -> PredictionSelection {
+        // Local round-trip success alone does not certify a terminal's private
+        // predictor interpretation. Keep conservative and Rice-isolation
+        // profiles as direct signed samples; predictor-isolation profiles enter
+        // the qualified adaptive-only branch below. The explicit 10-byte active
+        // prediction region remains present in either form.
+        if codingMode == .terminalConservative
+            || codingMode == .terminalBranchTwoConservative
+            || codingMode == .terminalBranchTwoRice
+            || codingMode == .terminalRice
+            || codingMode == .terminalRiceMeanMagnitude
+            || codingMode == .terminalRiceBoundedUnary {
+            return PredictionSelection(
+                residualPlanes: codedPlanes,
+                adaptiveOrders: Array(repeating: 0, count: codedPlanes.count),
+                reflectionCoefficientIndices: Array(
+                    repeating: [],
+                    count: codedPlanes.count
+                ),
+                fixedOrders: Array(repeating: 0, count: codedPlanes.count)
+            )
+        }
         var residualPlanes: [[Int32]] = []
         var adaptiveOrders: [Int] = []
         var reflectionIndices: [[Int32]] = []
@@ -1307,6 +1710,80 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         fixedOrders.reserveCapacity(codedPlanes.count)
 
         for plane in codedPlanes {
+            if codingMode == .terminalPredictive
+                || codingMode == .terminalBranchTwoPredictiveLinear {
+                // The inspected official active branch-zero and branch-two
+                // corpus never uses fixed prediction order 2 or 3.  Keep those
+                // recovered forms available to research mode, but do not let a
+                // local cost win introduce an unqualified terminal syntax.  A
+                // predictive qualification vector intentionally chooses the
+                // best valid adaptive order whenever LPC analysis succeeds;
+                // fixed order 0/1 is only a stable fallback.
+                if !plane.contains(where: { $0 != 0 }) {
+                    residualPlanes.append(plane)
+                    adaptiveOrders.append(0)
+                    reflectionIndices.append([])
+                    fixedOrders.append(0)
+                    continue
+                }
+
+                var bestAdaptivePlane: [Int32]?
+                var bestAdaptiveOrder = 0
+                var bestAdaptiveReflectionIndices: [Int32] = []
+                var bestAdaptiveBitCount = Int.max
+                if let candidates = levinsonReflectionCandidates(plane) {
+                    for (offset, indices) in candidates.enumerated() {
+                        let order = offset + 1
+                        guard let candidate = adaptivePredictionResiduals(
+                            plane,
+                            reflectionIndices: indices
+                        ) else { continue }
+                        let bitCount = estimatedEntropyBitCount(
+                            candidate,
+                            adaptiveOrder: order,
+                            segmentationPlan: segmentationPlan
+                        ) + indices.count * 8
+                        if bitCount < bestAdaptiveBitCount {
+                            bestAdaptivePlane = candidate
+                            bestAdaptiveOrder = order
+                            bestAdaptiveReflectionIndices = indices
+                            bestAdaptiveBitCount = bitCount
+                        }
+                    }
+                }
+                if let bestAdaptivePlane {
+                    residualPlanes.append(bestAdaptivePlane)
+                    adaptiveOrders.append(bestAdaptiveOrder)
+                    reflectionIndices.append(bestAdaptiveReflectionIndices)
+                    fixedOrders.append(0)
+                    continue
+                }
+
+                var fallbackPlane = plane
+                var fallbackFixedOrder = 0
+                let fallbackBitCount = estimatedEntropyBitCount(
+                    plane,
+                    adaptiveOrder: 0,
+                    segmentationPlan: segmentationPlan
+                ) + 2
+                if let candidate = fixedPredictionResiduals(plane, order: 1) {
+                    let bitCount = estimatedEntropyBitCount(
+                        candidate,
+                        adaptiveOrder: 0,
+                        segmentationPlan: segmentationPlan
+                    ) + 2
+                    if bitCount < fallbackBitCount {
+                        fallbackPlane = candidate
+                        fallbackFixedOrder = 1
+                    }
+                }
+                residualPlanes.append(fallbackPlane)
+                adaptiveOrders.append(0)
+                reflectionIndices.append([])
+                fixedOrders.append(fallbackFixedOrder)
+                continue
+            }
+
             var bestPlane = plane
             var bestFixedOrder = 0
             var bestAdaptiveOrder = 0
@@ -1552,6 +2029,26 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         initializationSamples: ArraySlice<Int32>
     ) -> EntropyMode {
         let linearWidth = minimumLinearWidth(samples)
+        switch codingMode {
+        case .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear:
+            return .linear(width: linearWidth)
+        case .terminalRice, .terminalBranchTwoRice:
+            // Public XLL Rice selection is exhaustive, but the original XLL-X
+            // terminal branch still used the mean-magnitude estimate below.
+            // That estimate is not guaranteed to minimize a finite segment's
+            // unary payload, especially around parameter boundaries.  Keep
+            // the terminal experiment semantically narrow and select the
+            // actual minimum over every legal straight-Rice parameter.
+            return .rice(parameter: optimalRiceParameter(samples))
+        case .terminalRiceMeanMagnitude:
+            return .rice(parameter: initialRiceParameter(samples))
+        case .terminalRiceBoundedUnary:
+            return .rice(parameter: boundedUnaryRiceParameter(samples))
+        case .research, .terminalPredictive:
+            break
+        }
         var selected = EntropyMode.linear(width: linearWidth)
         let linearInitializationMode = entropyMode(
             matching: selected,
@@ -1564,9 +2061,13 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             )
 
         // Controlled official frames estimate ABIT from mean magnitude. The
-        // estimate usually equals an exhaustive Rice minimum, but its boundary
-        // cases are observable and must remain deterministic for byte parity.
-        let parameter = initialRiceParameter(samples)
+        // estimate usually equals an exhaustive Rice minimum, but it is not a
+        // code-length optimum at finite segment boundaries. The delivery
+        // predictive profile is emitted from locally chosen syntax, so rank it
+        // using the exact mapped payload that `writeRice` will serialize.
+        let parameter = codingMode == .terminalPredictive
+            ? optimalRiceParameter(samples)
+            : initialRiceParameter(samples)
         let rice = EntropyMode.rice(parameter: parameter)
         let riceInitializationMode = entropyMode(
             matching: rice,
@@ -1615,7 +2116,10 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         case .linear:
             return .linear(width: minimumLinearWidth(samples))
         case .rice, .hybridRice:
-            return .rice(parameter: initialRiceParameter(samples))
+            return .rice(parameter: codingMode == .terminalPredictive
+                ? optimalRiceParameter(samples)
+                : initialRiceParameter(samples)
+            )
         }
     }
 
@@ -1631,6 +2135,43 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         let meanMagnitude = magnitudeSum / UInt64(samples.count)
         guard meanMagnitude > 0 else { return 0 }
         return min(31, UInt64.bitWidth - meanMagnitude.leadingZeroBitCount)
+    }
+
+    /// Selects the straight-Rice parameter from the same mapped residuals the
+    /// writer emits.  Ties choose the lower parameter so the result is stable
+    /// and independently reproducible by the verifier.
+    private func optimalRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
+        var selectedParameter = 0
+        var selectedBitCount = Int.max
+        for parameter in 0...31 {
+            let bitCount = entropyPayloadBitCount(
+                samples,
+                mode: .rice(parameter: parameter)
+            )
+            if bitCount < selectedBitCount {
+                selectedParameter = parameter
+                selectedBitCount = bitCount
+            }
+        }
+        return selectedParameter
+    }
+
+    /// Starts from the exact minimum-bit parameter used by candidate 20 and
+    /// raises it only when required to keep the longest emitted unary code at
+    /// or below the official-corpus maximum. Increasing ABIT cannot alter the
+    /// decoded residual; it only trades remainder bits for a shorter quotient.
+    private func boundedUnaryRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
+        var parameter = optimalRiceParameter(samples)
+        var maximumMapped: UInt64 = 0
+        for sample in samples {
+            maximumMapped = max(maximumMapped, zigZag(sample))
+        }
+        while parameter < 31,
+              maximumMapped >> UInt64(parameter)
+                > Self.terminalMaximumUnaryQuotient {
+            parameter += 1
+        }
+        return parameter
     }
 
     private func entropyPayloadBitCount(
@@ -1978,12 +2519,14 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     private let sourceHeightPlanes: [[Int32]]
     private let routing: DTSXPrivateRouting
     private let silent: [[Int32]]
+    private let codingMode: DTSXPrivateCodingMode
     private var measuredFrames: [DTSXPrivateMeasuredFrame?]
     private let lock = NSLock()
 
     public init(
         source: DTS714PCMBuffer,
-        maximumSourceFrameCount: Int? = nil
+        maximumSourceFrameCount: Int? = nil,
+        codingMode: DTSXPrivateCodingMode = .terminalConservative
     ) throws {
         let requestedSampleCount: Int
         if let maximumSourceFrameCount {
@@ -2026,6 +2569,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             codedPlaneToHeightPermutation: [1, 0, 3, 2],
             branchCode: 0
         )
+        self.codingMode = codingMode
         silent = Array(
             repeating: Array(
                 repeating: Int32(0),
@@ -2073,12 +2617,84 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             codedPlanes = try routing.codedPlanes(fromHeightPlanes: inputHeightPlanes)
         }
 
-        let frame = try DTSXPrivateFrameEncoder().encode(
-            codedPlanes: codedPlanes,
-            routing: routing,
-            optimizePairwiseDecorrelation: false,
-            segmentationPlan: segmentationPlan
+        // Hybrid Rice is retained strictly for byte-level research. It never
+        // enters either terminal delivery profile until an independent
+        // DTS:X-aware decoder certifies it across active content.
+        let encoder = DTSXPrivateFrameEncoder(
+            allowsExperimentalHybridRice: codingMode == .research,
+            codingMode: codingMode
         )
+        // The reference terminal stream changes grammar at the first
+        // non-priming silent 4x128 access unit: it uses code 16 with no NAVI.
+        // Keep this state transition explicit and frame-indexed so parallel
+        // workers cannot accidentally reuse it for later silence.
+        let frame: Data
+        if (codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive),
+           frameIndex == primingFrameCount,
+           segmentationPlan.segmentCount == 4,
+           segmentationPlan.segmentSampleCount == 128,
+           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+            frame = try encoder.encodeTerminalStartupNavigatedFourSegmentSilence(
+                codedPlanes: codedPlanes,
+                routing: routing,
+                segmentationPlan: segmentationPlan
+            )
+        } else if (codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive),
+           frameIndex == primingFrameCount + 1,
+           segmentationPlan.segmentCount == 4,
+           segmentationPlan.segmentSampleCount == 128,
+           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+            frame = try encoder.encodeTerminalNoNavigationFourSegmentSilence(
+                codedPlanes: codedPlanes,
+                routing: routing,
+                segmentationPlan: segmentationPlan
+            )
+        } else if (codingMode == .terminalConservative
+                || codingMode == .terminalRice
+                || codingMode == .terminalRiceMeanMagnitude
+                || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalBranchTwoConservative
+                || codingMode == .terminalBranchTwoPredictiveLinear
+                || codingMode == .terminalBranchTwoRice
+                || codingMode == .terminalPredictive),
+           frameIndex >= primingFrameCount + 2,
+           segmentationPlan.segmentCount == 2,
+           segmentationPlan.segmentSampleCount == 256,
+           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+            frame = try encoder.encodeTerminalMidstreamTwoSegmentSilence(
+                codedPlanes: codedPlanes,
+                routing: routing,
+                segmentationPlan: segmentationPlan
+            )
+        } else {
+            frame = try encoder.encode(
+                codedPlanes: codedPlanes,
+                routing: routing,
+                // Branch-two remains a byte-level diagnostic path. Hardware
+                // playback of candidates 13 and 14 isolated frequent clicks
+                // to this locally inferred transform, while the branch-zero
+                // candidates were clean. Never select it in a terminal profile.
+                optimizePairwiseDecorrelation: codingMode == .research
+                    || codingMode == .terminalBranchTwoConservative
+                    || codingMode == .terminalBranchTwoPredictiveLinear
+                    || codingMode == .terminalBranchTwoRice,
+                segmentationPlan: segmentationPlan
+            )
+        }
         let ast = try DTSXPrivateFrameAST.parse(frame[...])
         let prediction = try ast.parsePredictionHeaderCandidate()
         let decoded = try DTSXPrivateFrameDecoder.decode(
@@ -2086,7 +2702,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             segmentCount: segmentationPlan.segmentCount,
             segmentSampleCount: segmentationPlan.segmentSampleCount
         )
-        let decodedHeightPlanes = try routing.heightPlanes(
+        let decodedHeightPlanes = try ast.routing.heightPlanes(
             fromCodedPlanes: decoded.codedPlanes
         )
         var maximumAbsoluteInputSample: Int64 = 0
@@ -2147,6 +2763,46 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         }
         measuredFrames[frameIndex] = measured
         return frame
+    }
+
+    /// Returns the public-XLL partition required by frame-indexed terminal
+    /// XLL-X silence syntax. Active frames remain free to use the public
+    /// encoder's ordinary cost search; source-height silence after startup is
+    /// held at the official 2x256 no-NAVI form.
+    public func terminalPreferredPublicSegmentCount(at frameIndex: Int) -> Int? {
+        guard (0..<frameCount).contains(frameIndex) else { return nil }
+        switch codingMode {
+        case .research:
+            return nil
+        case .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice,
+             .terminalPredictive,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary:
+            break
+        }
+        if frameIndex < primingFrameCount { return 2 }
+        let sourceStart = (frameIndex - primingFrameCount)
+            * DTSXPrivateFrameEncoder.frameSampleCount
+        let available = max(0, min(
+            DTSXPrivateFrameEncoder.frameSampleCount,
+            sourceSampleCount - sourceStart
+        ))
+        let heightsAreSilent = sourceHeightPlanes.allSatisfy { plane in
+            plane[sourceStart..<(sourceStart + available)].allSatisfy { $0 == 0 }
+        }
+        // The 4x128 transition is the observed Nature's Fury silent-start
+        // grammar, not a universal rule for the first two source access units.
+        // Official active-height controlled vectors enter ordinary 2x256
+        // coding immediately, so active startup frames must remain available
+        // to the public encoder's normal segmentation search.
+        if frameIndex < primingFrameCount + 2 {
+            return heightsAreSilent ? 4 : nil
+        }
+        return heightsAreSilent ? 2 : nil
     }
 
     public func finalize(parallelWorkerCount: Int) throws -> DTSXPrivateEncodedStream {
@@ -2221,6 +2877,45 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             hybridIsolatedSampleCount += encoded.hybridIsolatedSampleCount
         }
 
+        let terminalPredictionProfileIsAllowed: Bool
+        switch codingMode {
+        case .research:
+            terminalPredictionProfileIsAllowed = true
+        case .terminalPredictive, .terminalBranchTwoPredictiveLinear:
+            terminalPredictionProfileIsAllowed = fixedPredictionOrderHistogram
+                .dropFirst(2)
+                .allSatisfy { $0 == 0 }
+        case .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoRice,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary:
+            terminalPredictionProfileIsAllowed = adaptivePredictionOrderHistogram
+                .dropFirst()
+                .allSatisfy { $0 == 0 }
+                && fixedPredictionOrderHistogram.dropFirst().allSatisfy { $0 == 0 }
+        }
+        let terminalRoutingProfileIsAllowed: Bool
+        switch codingMode {
+        case .terminalConservative,
+             .terminalPredictive,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary:
+            // Only branch zero has passed real terminal playback. Keep the
+            // invariant at stream-finalization time so a future optimizer
+            // cannot silently reintroduce the clicking branch-two path.
+            terminalRoutingProfileIsAllowed = decorrelationBranchHistogram
+                .dropFirst()
+                .allSatisfy { $0 == 0 }
+        case .research,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice:
+            terminalRoutingProfileIsAllowed = true
+        }
+
         let report = DTSXPrivateStreamEncodingReport(
             sourceSampleCount: sourceSampleCount,
             encodedSourceSampleCount: encodedSourceSampleCount,
@@ -2254,6 +2949,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 && inputSamplesOutsideSigned24Bit == 0
                 && decodedSamplesOutsideSigned24Bit == 0
                 && frameBoundaryDeltaMismatchCount == 0
+                && terminalPredictionProfileIsAllowed
+                && terminalRoutingProfileIsAllowed
         )
         guard report.isBitExact else {
             throw DTSError.malformed("XLL-X native stream encoder failed its decoder round-trip")

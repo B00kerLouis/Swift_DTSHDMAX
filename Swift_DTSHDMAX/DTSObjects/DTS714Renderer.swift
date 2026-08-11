@@ -5,9 +5,8 @@ import Foundation
 /// object audio or metadata into the private XLL-X extension.
 public enum DTS714Renderer {
     private struct ActiveObject {
-        let objectIndex: Int
         let inputChannel: Int
-        var gains: [(outputIndex: Int, q30: Int64)]
+        var gainSmoother: DTS714ObjectGainSmoother
     }
 
     private static let q30: Int64 = 1 << 30
@@ -111,39 +110,27 @@ public enum DTS714Renderer {
         }
         let objectIndexByID = Dictionary(uniqueKeysWithValues: master.objects.enumerated().map { ($0.element.elementID, $0.offset) })
         var states = master.objects.map { AtmosObjectState(elementID: $0.elementID) }
-        var activeObjects: [ActiveObject] = []
-        var activePositions = Array(repeating: -1, count: master.objects.count)
-
-        func updateActiveObject(_ objectIndex: Int) {
-            let gains = objectGains(states[objectIndex])
-            let position = activePositions[objectIndex]
-            if gains.isEmpty {
-                guard position >= 0 else { return }
-                let last = activeObjects.count - 1
-                if position != last {
-                    activeObjects[position] = activeObjects[last]
-                    activePositions[activeObjects[position].objectIndex] = position
-                }
-                activeObjects.removeLast()
-                activePositions[objectIndex] = -1
-            } else if position >= 0 {
-                activeObjects[position].gains = gains
-            } else {
-                activePositions[objectIndex] = activeObjects.count
-                activeObjects.append(ActiveObject(
-                    objectIndex: objectIndex,
-                    inputChannel: master.objects[objectIndex].audioChannelIndex,
-                    gains: gains
-                ))
-            }
-        }
-
-        for index in states.indices { updateActiveObject(index) }
         let events = master.metadataEvents.compactMap { event -> (AtmosMetadataEvent, Int)? in
             guard let index = objectIndexByID[event.elementID] else { return nil }
             return (event, index)
         }
         var eventCursor = 0
+        // Initial declarations describe the state at sample zero; installing
+        // them directly avoids an artificial program-start fade.  Every later
+        // update passes through the authoring profile's gain smoother.
+        while eventCursor < events.count, events[eventCursor].0.samplePosition <= 0 {
+            let (event, index) = events[eventCursor]
+            states[index].apply(event)
+            eventCursor += 1
+        }
+        var activeObjects = master.objects.enumerated().map { objectIndex, object in
+            var smoother = DTS714ObjectGainSmoother()
+            smoother.setImmediately(objectGains(states[objectIndex]))
+            return ActiveObject(
+                inputChannel: object.audioChannelIndex,
+                gainSmoother: smoother
+            )
+        }
         var output = Array(repeating: [Int32](repeating: 0, count: sampleCount), count: DTS714Channel.allCases.count)
         var accumulators = Array(repeating: Int64(0), count: DTS714Channel.allCases.count)
 
@@ -164,7 +151,13 @@ public enum DTS714Renderer {
                     while eventCursor < events.count, events[eventCursor].0.samplePosition <= absoluteSample {
                         let (event, index) = events[eventCursor]
                         states[index].apply(event)
-                        updateActiveObject(index)
+                        activeObjects[index].gainSmoother.retarget(
+                            objectGains(states[index]),
+                            over: smoothingSampleCount(
+                                for: event,
+                                framesPerSecond: master.framesPerSecond
+                            )
+                        )
                         eventCursor += 1
                     }
                     var runEnd = blockCount
@@ -181,10 +174,22 @@ public enum DTS714Renderer {
                                 accumulators[route.outputIndex] += value * route.q30
                             }
                         }
-                        for object in activeObjects {
-                            let value = Int64(packed24(frame + object.inputChannel * 3))
-                            for gain in object.gains {
-                                accumulators[gain.outputIndex] += value * gain.q30
+                        for objectIndex in activeObjects.indices {
+                            // Match the reference renderer's first ramp sample:
+                            // a state update may move by at most the recovered
+                            // per-sample slew, never by the full target delta.
+                            activeObjects[objectIndex].gainSmoother.advance()
+                            let indices = activeObjects[objectIndex]
+                                .gainSmoother.activeIndices
+                            if !indices.isEmpty {
+                                let value = Int64(packed24(
+                                    frame + activeObjects[objectIndex].inputChannel * 3
+                                ))
+                                for outputIndex in indices {
+                                    accumulators[outputIndex] += value
+                                        * activeObjects[objectIndex]
+                                            .gainSmoother.currentGains[outputIndex]
+                                }
                             }
                         }
                         let outputSample = blockStart + localSample
@@ -203,6 +208,24 @@ public enum DTS714Renderer {
 
     private static func objectGains(_ state: AtmosObjectState) -> [(outputIndex: Int, q30: Int64)] {
         DTS714VBAPPanner.gains(for: state)
+    }
+
+    private static func smoothingSampleCount(
+        for event: AtmosMetadataEvent,
+        framesPerSecond: Double?
+    ) -> Int {
+        if let rampLength = event.rampLength, rampLength > 0 {
+            return rampLength >= Int64(Int.max) ? Int.max : Int(rampLength)
+        }
+        guard DTS714AuthoringProfile.official.rendererSmoothingEnabled else { return 0 }
+        guard let framesPerSecond,
+              framesPerSecond.isFinite,
+              framesPerSecond > 0 else {
+            return DTS714ObjectGainSmoother.defaultPanSubBlockSampleCount
+        }
+        return max(1, Int(
+            (Double(DTS714PCMBuffer.sampleRate) / (framesPerSecond * 8)).rounded()
+        ))
     }
 
     @inline(__always) private static func roundQ30(_ value: Int64) -> Int64 {

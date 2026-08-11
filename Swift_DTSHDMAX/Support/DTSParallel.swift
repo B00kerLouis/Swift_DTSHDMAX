@@ -8,7 +8,7 @@ public enum DTSParallel {
     /// Reusing one queue avoids repeatedly allocating dispatch queue state and
     /// gives an explicit user-requested encode foreground scheduling priority.
     private static let encoderQueue = DispatchQueue(
-        label: "org.swift-dtshdma.encoder",
+        label: "org.libhdmax",
         qos: .userInitiated,
         attributes: .concurrent
     )

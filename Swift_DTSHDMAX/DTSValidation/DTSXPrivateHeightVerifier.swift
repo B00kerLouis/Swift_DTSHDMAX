@@ -8,6 +8,22 @@ public struct DTSXPrivateHeightMismatch: Sendable, Equatable, Codable {
     public let decodedSample: Int32
 }
 
+public enum DTSXPrivateBoundaryKind: String, Sendable, Equatable, Codable {
+    case segment
+    case frame
+}
+
+public struct DTSXPrivateBoundaryMismatch: Sendable, Equatable, Codable {
+    public let privateFrameIndex: Int
+    public let sourceSampleIndex: Int
+    public let heightChannel: DTS714Channel
+    public let kind: DTSXPrivateBoundaryKind
+    public let expectedPreviousSample: Int32
+    public let expectedSample: Int32
+    public let decodedPreviousSample: Int32
+    public let decodedSample: Int32
+}
+
 public struct DTSXPrivateHeightVerificationReport: Sendable, Equatable, Codable {
     public let inputPath: String
     public let sourceSampleCount: Int
@@ -23,7 +39,17 @@ public struct DTSXPrivateHeightVerificationReport: Sendable, Equatable, Codable 
     public let comparedHeightSampleCount: Int
     public let differentHeightSampleCount: Int
     public let nonzeroPaddingSampleCount: Int
+    public let outOfSigned24BitSampleCount: Int
+    public let frameBoundaryComparisonCount: Int
+    public let segmentBoundaryComparisonCount: Int
+    public let frameBoundaryDeltaMismatchCount: Int
+    public let segmentBoundaryDeltaMismatchCount: Int
+    public let maximumAbsoluteDecodedSample: Int64
+    public let maximumAbsoluteAdjacentDelta: Int64
+    public let maximumAbsoluteFrameBoundaryDelta: Int64
+    public let maximumAbsoluteSegmentBoundaryDelta: Int64
     public let firstMismatch: DTSXPrivateHeightMismatch?
+    public let firstBoundaryMismatch: DTSXPrivateBoundaryMismatch?
     public let isBitExact: Bool
 }
 
@@ -92,9 +118,34 @@ public enum DTSXPrivateHeightVerifier {
         var comparedHeightSampleCount = 0
         var differentHeightSampleCount = 0
         var nonzeroPaddingSampleCount = 0
+        var outOfSigned24BitSampleCount = 0
+        var frameBoundaryComparisonCount = 0
+        var segmentBoundaryComparisonCount = 0
+        var frameBoundaryDeltaMismatchCount = 0
+        var segmentBoundaryDeltaMismatchCount = 0
+        var maximumAbsoluteDecodedSample: Int64 = 0
+        var maximumAbsoluteAdjacentDelta: Int64 = 0
+        var maximumAbsoluteFrameBoundaryDelta: Int64 = 0
+        var maximumAbsoluteSegmentBoundaryDelta: Int64 = 0
         var firstMismatch: DTSXPrivateHeightMismatch?
+        var firstBoundaryMismatch: DTSXPrivateBoundaryMismatch?
+        var previousDecodedSamples = [Int32?](
+            repeating: nil,
+            count: Self.heightChannels.count
+        )
+        var previousExpectedSamples = [Int32?](
+            repeating: nil,
+            count: Self.heightChannels.count
+        )
 
-        for (position, record) in loaded.records.enumerated() {
+        guard loaded.records.count >= expectedFrameCount else {
+            throw DTSError.truncated(
+                field: "XLL-X private verification frame prefix",
+                bitOffset: loaded.records.count * frameSampleCount * 8
+            )
+        }
+        let records = loaded.records.prefix(expectedFrameCount)
+        for (position, record) in records.enumerated() {
             guard record.frameIndex == position else {
                 throw DTSError.malformed(
                     "XLL-X private frame indices are not contiguous at \(position)"
@@ -130,6 +181,12 @@ public enum DTSXPrivateHeightVerifier {
             let decodedHeights = try routing.heightPlanes(
                 fromCodedPlanes: decoded.codedPlanes
             )
+            let segmentSampleCount = record.xllSyntax?.segmentSampleCount ?? 256
+            guard segmentSampleCount > 0 else {
+                throw DTSError.malformed(
+                    "XLL-X private frame \(position) has a zero segment sample count"
+                )
+            }
 
             for heightIndex in Self.heightChannels.indices {
                 let sourcePlane = source[Self.heightChannels[heightIndex]]
@@ -143,6 +200,67 @@ public enum DTSXPrivateHeightVerifier {
                         expected = 0
                     }
                     let actual = decodedHeights[heightIndex][frameSample]
+                    maximumAbsoluteDecodedSample = max(
+                        maximumAbsoluteDecodedSample,
+                        abs(Int64(actual))
+                    )
+                    if actual < -8_388_608 || actual > 8_388_607 {
+                        outOfSigned24BitSampleCount += 1
+                    }
+                    if let previousDecoded = previousDecodedSamples[heightIndex],
+                       let previousExpected = previousExpectedSamples[heightIndex] {
+                        let decodedDelta = Int64(actual) - Int64(previousDecoded)
+                        let expectedDelta = Int64(expected) - Int64(previousExpected)
+                        maximumAbsoluteAdjacentDelta = max(
+                            maximumAbsoluteAdjacentDelta,
+                            abs(decodedDelta)
+                        )
+                        let boundaryKind: DTSXPrivateBoundaryKind?
+                        if frameSample == 0 {
+                            boundaryKind = .frame
+                        } else if frameSample % segmentSampleCount == 0 {
+                            boundaryKind = .segment
+                        } else {
+                            boundaryKind = nil
+                        }
+                        if let boundaryKind {
+                            switch boundaryKind {
+                            case .frame:
+                                frameBoundaryComparisonCount += 1
+                                maximumAbsoluteFrameBoundaryDelta = max(
+                                    maximumAbsoluteFrameBoundaryDelta,
+                                    abs(decodedDelta)
+                                )
+                                if decodedDelta != expectedDelta {
+                                    frameBoundaryDeltaMismatchCount += 1
+                                }
+                            case .segment:
+                                segmentBoundaryComparisonCount += 1
+                                maximumAbsoluteSegmentBoundaryDelta = max(
+                                    maximumAbsoluteSegmentBoundaryDelta,
+                                    abs(decodedDelta)
+                                )
+                                if decodedDelta != expectedDelta {
+                                    segmentBoundaryDeltaMismatchCount += 1
+                                }
+                            }
+                            if decodedDelta != expectedDelta,
+                               firstBoundaryMismatch == nil {
+                                firstBoundaryMismatch = DTSXPrivateBoundaryMismatch(
+                                    privateFrameIndex: position,
+                                    sourceSampleIndex: encodedSampleIndex,
+                                    heightChannel: Self.heightChannels[heightIndex],
+                                    kind: boundaryKind,
+                                    expectedPreviousSample: previousExpected,
+                                    expectedSample: expected,
+                                    decodedPreviousSample: previousDecoded,
+                                    decodedSample: actual
+                                )
+                            }
+                        }
+                    }
+                    previousDecodedSamples[heightIndex] = actual
+                    previousExpectedSamples[heightIndex] = expected
                     comparedHeightSampleCount += 1
                     if expected != actual {
                         differentHeightSampleCount += 1
@@ -163,9 +281,9 @@ public enum DTSXPrivateHeightVerifier {
             }
         }
 
-        let decodedFrameCount = loaded.records.count
+        let decodedFrameCount = records.count
         let allFrameChecksPassed = decodedFrameCount == expectedFrameCount
-            && extraction.summary.privateFrameCount == expectedFrameCount
+            && extraction.summary.privateFrameCount >= expectedFrameCount
             && extraction.summary.resynchronizationByteCount == 0
             && extraction.summary.trailingBufferedByteCount == 0
             && headerCRCValidFrameCount == decodedFrameCount
@@ -188,10 +306,23 @@ public enum DTSXPrivateHeightVerifier {
             comparedHeightSampleCount: comparedHeightSampleCount,
             differentHeightSampleCount: differentHeightSampleCount,
             nonzeroPaddingSampleCount: nonzeroPaddingSampleCount,
+            outOfSigned24BitSampleCount: outOfSigned24BitSampleCount,
+            frameBoundaryComparisonCount: frameBoundaryComparisonCount,
+            segmentBoundaryComparisonCount: segmentBoundaryComparisonCount,
+            frameBoundaryDeltaMismatchCount: frameBoundaryDeltaMismatchCount,
+            segmentBoundaryDeltaMismatchCount: segmentBoundaryDeltaMismatchCount,
+            maximumAbsoluteDecodedSample: maximumAbsoluteDecodedSample,
+            maximumAbsoluteAdjacentDelta: maximumAbsoluteAdjacentDelta,
+            maximumAbsoluteFrameBoundaryDelta: maximumAbsoluteFrameBoundaryDelta,
+            maximumAbsoluteSegmentBoundaryDelta: maximumAbsoluteSegmentBoundaryDelta,
             firstMismatch: firstMismatch,
+            firstBoundaryMismatch: firstBoundaryMismatch,
             isBitExact: allFrameChecksPassed
                 && differentHeightSampleCount == 0
                 && nonzeroPaddingSampleCount == 0
+                && outOfSigned24BitSampleCount == 0
+                && frameBoundaryDeltaMismatchCount == 0
+                && segmentBoundaryDeltaMismatchCount == 0
         )
     }
 

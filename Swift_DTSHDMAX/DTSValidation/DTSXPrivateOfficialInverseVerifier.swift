@@ -39,6 +39,35 @@ public struct DTSXPrivateOfficialInverseFrame: Sendable, Equatable, Codable {
     public let byteExact: Bool
 }
 
+/// Frequency of one independently decoded private syntax combination. Activity
+/// is measured from the reconstructed coded plane for the same channel and
+/// segment, so silent declarations cannot be mistaken for active evidence.
+public struct DTSXPrivatePredictionEntropyFrequency: Sendable, Equatable, Codable {
+    public let active: Bool
+    public let branchCode: Int
+    public let predictionKind: String
+    public let predictionOrder: Int
+    public let entropyKind: String
+    public let count: Int
+}
+
+public struct DTSXPrivateRoutingFrequency: Sendable, Equatable, Codable {
+    public let codedPlaneToHeightPermutation: [Int]
+    public let branchCode: Int
+    public let count: Int
+}
+
+public struct DTSXPrivateIntegerSequenceFrequency: Sendable, Equatable, Codable {
+    public let values: [Int]
+    public let count: Int
+}
+
+public struct DTSXPrivateSegmentationFrequency: Sendable, Equatable, Codable {
+    public let segmentCount: Int
+    public let segmentSampleCount: Int
+    public let count: Int
+}
+
 public struct DTSXPrivateOfficialInverseReport: Sendable, Equatable, Codable {
     public let indexPath: String
     public let payloadPath: String
@@ -69,6 +98,10 @@ public struct DTSXPrivateOfficialInverseReport: Sendable, Equatable, Codable {
     public let reencodedNavigationBitWidthFrequencies: [DTSXValueFrequency]
     public let originalTrailingFrameByteCountFrequencies: [DTSXValueFrequency]
     public let reencodedTrailingFrameByteCountFrequencies: [DTSXValueFrequency]
+    public let decodedPredictionEntropyFrequencies: [DTSXPrivatePredictionEntropyFrequency]
+    public let decodedRoutingFrequencies: [DTSXPrivateRoutingFrequency]
+    public let decodedDecorrelationCoefficientFrequencies: [DTSXPrivateIntegerSequenceFrequency]
+    public let decodedSegmentationFrequencies: [DTSXPrivateSegmentationFrequency]
     public let originalTotalByteCount: Int
     public let reencodedTotalByteCount: Int
     public let reencodedToOriginalByteRatio: Double
@@ -84,6 +117,24 @@ public struct DTSXPrivateOfficialInverseReport: Sendable, Equatable, Codable {
 /// serialized field. This is intentionally a reference-set verifier, not a
 /// product dependency: production encoding never reads or copies oracle bytes.
 public enum DTSXPrivateOfficialInverseVerifier {
+    private struct PredictionEntropyKey: Hashable {
+        let active: Bool
+        let branchCode: Int
+        let predictionKind: String
+        let predictionOrder: Int
+        let entropyKind: String
+    }
+
+    private struct RoutingKey: Hashable {
+        let codedPlaneToHeightPermutation: [Int]
+        let branchCode: Int
+    }
+
+    private struct SegmentationKey: Hashable {
+        let segmentCount: Int
+        let segmentSampleCount: Int
+    }
+
     public static func verify(
         indexURL: URL,
         payloadURL: URL,
@@ -129,6 +180,10 @@ public enum DTSXPrivateOfficialInverseVerifier {
         var reencodedNavigationBitWidthCounts: [Int: Int] = [:]
         var originalTrailingFrameByteCounts: [Int: Int] = [:]
         var reencodedTrailingFrameByteCounts: [Int: Int] = [:]
+        var decodedPredictionEntropyCounts: [PredictionEntropyKey: Int] = [:]
+        var decodedRoutingCounts: [RoutingKey: Int] = [:]
+        var decodedDecorrelationCoefficientCounts: [[Int]: Int] = [:]
+        var decodedSegmentationCounts: [SegmentationKey: Int] = [:]
         var originalTotalByteCount = 0
         var reencodedTotalByteCount = 0
         var failures: [String] = []
@@ -153,10 +208,25 @@ public enum DTSXPrivateOfficialInverseVerifier {
                 default:
                     break
                 }
-                let prediction = try ast.parsePredictionHeaderCandidate()
-                let navigation = try? ast.parseNavigation(
-                    segmentCount: record.xllSyntax?.segmentCount ?? 2
+                // Branch two has independently observed one- and two-
+                // coefficient prediction-header forms. Both can close the
+                // prediction CRC, so the first structural candidate is not
+                // necessarily the one whose entropy syntax closes. The
+                // decoder performs that full candidate search; use its
+                // selected header for every inverse-encoding decision.
+                let decoded = try DTSXPrivateFrameDecoder.decode(
+                    ast,
+                    segmentCount: record.xllSyntax?.segmentCount ?? 2,
+                    segmentSampleCount: record.xllSyntax?.segmentSampleCount ?? 256,
+                    collectEntropyDiagnostics: true
                 )
+                let prediction = decoded.predictionHeader
+                let navigation = decoded.noNavigationZeroSideInfo == nil
+                    ? try? ast.parseNavigation(
+                        segmentCount: record.xllSyntax?.segmentCount ?? 2,
+                        matching: decoded
+                    )
+                    : nil
                 originalPredictionReservedByteCounts[
                     reservedPredictionByteCount(prediction),
                     default: 0
@@ -175,16 +245,66 @@ public enum DTSXPrivateOfficialInverseVerifier {
                     && (navigation?.crcIsValid ?? (original.count == 48))
                 if grammarEligible { eligibleFrameCount += 1 }
 
-                let decoded = try DTSXPrivateFrameDecoder.decode(
-                    ast,
-                    segmentCount: record.xllSyntax?.segmentCount ?? 2,
-                    segmentSampleCount: record.xllSyntax?.segmentSampleCount ?? 256,
-                    collectEntropyDiagnostics: true
-                )
                 let segmentationPlan = try XLLSegmentationPlan(
                     segmentCount: record.xllSyntax?.segmentCount ?? 2,
                     segmentSampleCount: record.xllSyntax?.segmentSampleCount ?? 256
                 )
+                let routing = try ast.routing
+                decodedRoutingCounts[
+                    RoutingKey(
+                        codedPlaneToHeightPermutation:
+                            routing.codedPlaneToHeightPermutation,
+                        branchCode: routing.branchCode
+                    ),
+                    default: 0
+                ] += 1
+                decodedDecorrelationCoefficientCounts[
+                    prediction.decorrelation.rawCoefficientCodes,
+                    default: 0
+                ] += 1
+                decodedSegmentationCounts[
+                    SegmentationKey(
+                        segmentCount: segmentationPlan.segmentCount,
+                        segmentSampleCount: segmentationPlan.segmentSampleCount
+                    ),
+                    default: 0
+                ] += 1
+                for entropySegment in decoded.entropySegments {
+                    let sampleStart = entropySegment.segmentIndex
+                        * segmentationPlan.segmentSampleCount
+                    let sampleEnd = min(
+                        Self.frameSampleCount,
+                        sampleStart + segmentationPlan.segmentSampleCount
+                    )
+                    for channel in 0..<Self.channelCount {
+                        let adaptiveOrder = prediction.adaptivePredictionOrders[channel]
+                        let predictionKind = adaptiveOrder == 0 ? "fixed" : "adaptive"
+                        let predictionOrder = adaptiveOrder == 0
+                            ? prediction.fixedPredictionOrders[channel] ?? 0
+                            : adaptiveOrder
+                        let entropyKind: String
+                        if entropySegment.hybridLinearWidths[channel] > 0 {
+                            entropyKind = "hybridRice"
+                        } else if entropySegment.riceCoding[channel] {
+                            entropyKind = "rice"
+                        } else {
+                            entropyKind = "linear"
+                        }
+                        let active = sampleStart < sampleEnd
+                            && decoded.codedPlanes[channel][sampleStart..<sampleEnd]
+                                .contains { $0 != 0 }
+                        decodedPredictionEntropyCounts[
+                            PredictionEntropyKey(
+                                active: active,
+                                branchCode: branchCode,
+                                predictionKind: predictionKind,
+                                predictionOrder: predictionOrder,
+                                entropyKind: entropyKind
+                            ),
+                            default: 0
+                        ] += 1
+                    }
+                }
                 switch branchCode {
                 case 0:
                     decodedBranchZeroFrameCount += 1
@@ -197,7 +317,6 @@ public enum DTSXPrivateOfficialInverseVerifier {
                 default:
                     break
                 }
-                let routing = try ast.routing
                 let reencoded = try DTSXPrivateFrameEncoder(
                     allowsExperimentalHybridRice: true
                 ).encodeUsingQualifiedPrediction(
@@ -372,6 +491,13 @@ public enum DTSXPrivateOfficialInverseVerifier {
                 frequencies(originalTrailingFrameByteCounts),
             reencodedTrailingFrameByteCountFrequencies:
                 frequencies(reencodedTrailingFrameByteCounts),
+            decodedPredictionEntropyFrequencies:
+                predictionEntropyFrequencies(decodedPredictionEntropyCounts),
+            decodedRoutingFrequencies: routingFrequencies(decodedRoutingCounts),
+            decodedDecorrelationCoefficientFrequencies:
+                integerSequenceFrequencies(decodedDecorrelationCoefficientCounts),
+            decodedSegmentationFrequencies:
+                segmentationFrequencies(decodedSegmentationCounts),
             originalTotalByteCount: originalTotalByteCount,
             reencodedTotalByteCount: reencodedTotalByteCount,
             reencodedToOriginalByteRatio: originalTotalByteCount == 0
@@ -441,5 +567,71 @@ public enum DTSXPrivateOfficialInverseVerifier {
     private static func frequencies(_ counts: [Int: Int]) -> [DTSXValueFrequency] {
         counts.map { DTSXValueFrequency(value: $0.key, count: $0.value) }
             .sorted { $0.value < $1.value }
+    }
+
+    private static let channelCount = 4
+    private static let frameSampleCount = 512
+
+    private static func predictionEntropyFrequencies(
+        _ counts: [PredictionEntropyKey: Int]
+    ) -> [DTSXPrivatePredictionEntropyFrequency] {
+        counts.map { key, count in
+            DTSXPrivatePredictionEntropyFrequency(
+                active: key.active,
+                branchCode: key.branchCode,
+                predictionKind: key.predictionKind,
+                predictionOrder: key.predictionOrder,
+                entropyKind: key.entropyKind,
+                count: count
+            )
+        }.sorted {
+            ($0.active ? 1 : 0, $0.branchCode, $0.predictionKind,
+             $0.predictionOrder, $0.entropyKind)
+                < ($1.active ? 1 : 0, $1.branchCode, $1.predictionKind,
+                   $1.predictionOrder, $1.entropyKind)
+        }
+    }
+
+    private static func routingFrequencies(
+        _ counts: [RoutingKey: Int]
+    ) -> [DTSXPrivateRoutingFrequency] {
+        counts.map { key, count in
+            DTSXPrivateRoutingFrequency(
+                codedPlaneToHeightPermutation: key.codedPlaneToHeightPermutation,
+                branchCode: key.branchCode,
+                count: count
+            )
+        }.sorted {
+            ($0.branchCode, $0.codedPlaneToHeightPermutation.lexicographicallyPrecedes(
+                $1.codedPlaneToHeightPermutation
+            ) ? 0 : 1)
+                < ($1.branchCode, 1)
+        }
+    }
+
+    private static func integerSequenceFrequencies(
+        _ counts: [[Int]: Int]
+    ) -> [DTSXPrivateIntegerSequenceFrequency] {
+        counts.map { values, count in
+            DTSXPrivateIntegerSequenceFrequency(values: values, count: count)
+        }.sorted {
+            if $0.values == $1.values { return $0.count > $1.count }
+            return $0.values.lexicographicallyPrecedes($1.values)
+        }
+    }
+
+    private static func segmentationFrequencies(
+        _ counts: [SegmentationKey: Int]
+    ) -> [DTSXPrivateSegmentationFrequency] {
+        counts.map { key, count in
+            DTSXPrivateSegmentationFrequency(
+                segmentCount: key.segmentCount,
+                segmentSampleCount: key.segmentSampleCount,
+                count: count
+            )
+        }.sorted {
+            ($0.segmentCount, $0.segmentSampleCount)
+                < ($1.segmentCount, $1.segmentSampleCount)
+        }
     }
 }

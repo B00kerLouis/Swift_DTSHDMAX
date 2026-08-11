@@ -19,6 +19,9 @@ public struct XLLDecodeVerificationReport: Sendable, Equatable, Codable {
     public let xllFrameCount: Int
     public let crossAccessUnitFrameCount: Int
     public let decodedSampleCountPerChannel: Int
+    public let entropyStateReuseSegmentCount: Int
+    public let entropyCommonParameterSegmentCount: Int
+    public let entropyRiceParameterCount: Int
     public let hybridRiceParameterCount: Int
     public let hybridIsolatedSampleCount: Int
     public let channelSets: [XLLDecodedChannelSetSummary]
@@ -38,6 +41,9 @@ public enum XLLDecodeVerifier {
         var maximumAbsoluteSampleFrameIndices: [Int] = []
         var samplesOutsideSigned24Bit: [Int] = []
         var totalSamples = 0
+        var entropyStateReuseSegmentCount = 0
+        var entropyCommonParameterSegmentCount = 0
+        var entropyRiceParameterCount = 0
         var hybridRiceParameterCount = 0
         var hybridIsolatedSampleCount = 0
         for (frameIndex, frame) in stream.frames.enumerated() {
@@ -80,6 +86,9 @@ public enum XLLDecodeVerifier {
                 }
             }
             totalSamples += decoded.sampleCount
+            entropyStateReuseSegmentCount += decoded.entropyStateReuseSegmentCount
+            entropyCommonParameterSegmentCount += decoded.entropyCommonParameterSegmentCount
+            entropyRiceParameterCount += decoded.entropyRiceParameterCount
             hybridRiceParameterCount += decoded.hybridRiceParameterCount
             hybridIsolatedSampleCount += decoded.hybridIsolatedSampleCount
         }
@@ -91,6 +100,9 @@ public enum XLLDecodeVerifier {
             xllFrameCount: stream.frames.count,
             crossAccessUnitFrameCount: stream.frames.filter { $0.startAccessUnit != $0.endAccessUnit }.count,
             decodedSampleCountPerChannel: totalSamples,
+            entropyStateReuseSegmentCount: entropyStateReuseSegmentCount,
+            entropyCommonParameterSegmentCount: entropyCommonParameterSegmentCount,
+            entropyRiceParameterCount: entropyRiceParameterCount,
             hybridRiceParameterCount: hybridRiceParameterCount,
             hybridIsolatedSampleCount: hybridIsolatedSampleCount,
             channelSets: configurations.enumerated().map { index, configuration in
