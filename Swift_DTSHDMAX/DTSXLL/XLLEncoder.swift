@@ -85,7 +85,8 @@ struct XLLEncoder: Sendable {
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         privateExtension: Data = Data(),
         privateExtensionProvider: ((XLLSegmentationPlan) throws -> Data)? = nil,
-        forcedSegmentCount: Int? = nil
+        forcedSegmentCount: Int? = nil,
+        preferredSegmentCount: Int? = nil
     ) throws -> XLLEncodedFrame {
         guard pcm.sampleCount == XLLSyntax.frameSampleCount else {
             throw DTSError.unsupported(
@@ -169,11 +170,19 @@ struct XLLEncoder: Sendable {
         // implementation forced one Rice/linear allocation over all channels;
         // that is legal, but produces unnecessarily large XLL segments and
         // puts avoidable pressure on a hardware decoder's extension buffer.
+        if let preferredSegmentCount {
+            guard [2, 4, 8].contains(preferredSegmentCount) else {
+                throw DTSError.invalidArgument(
+                    "XLL preferred segment count must be 2, 4, or 8"
+                )
+            }
+        }
         var modes: [[[EntropyMode]]] = []
         var segments: [[Data]] = []
         var segmentCount = 0
         var segmentSampleCount = 0
         var bestSegmentationByteCount = Int.max
+        var preferredSegmentationIsSelected = false
         for candidate in segmentationCandidates {
             let candidateModes = channelSets.map {
                 selectEntropyModes(
@@ -217,12 +226,25 @@ struct XLLEncoder: Sendable {
                     .flatMap { $0 }
                     .reduce(0) { $0 + $1.count }
                     + navigationByteCount
-                if candidateByteCount < bestSegmentationByteCount {
+                // A preferred partition wins outright whenever it can be
+                // expressed. Choosing the partition by compression cost alone
+                // makes the declared frame layout flip between 2x256 and 4x128
+                // from one access unit to the next as content changes, which
+                // forces a terminal to reconfigure its segment navigation
+                // mid-programme. Delivery therefore pins the partition and
+                // only falls back to the cost search when the preferred form
+                // does not fit its size fields.
+                let isPreferred = candidate.count == preferredSegmentCount
+                if isPreferred
+                    || (!preferredSegmentationIsSelected
+                        && candidateByteCount < bestSegmentationByteCount) {
                     bestSegmentationByteCount = candidateByteCount
                     modes = candidateModes
                     segments = candidateSegments
                     segmentCount = candidate.count
                     segmentSampleCount = candidate.samples
+                    preferredSegmentationIsSelected =
+                        preferredSegmentationIsSelected || isPreferred
                 }
             }
         }
