@@ -331,15 +331,18 @@ public struct DTSHDMAEncoder: Sendable {
                 let xllCoreReconstruction = item.isPriming
                     ? silentCoreFrame
                     : item.decodedCore
-                // DTS:X reference streams use the standard compact zero-XLL
-                // declaration during the two Core-priming access units.  The
-                // terminal-conservative payload keeps later frames free of
-                // unqualified transforms, but its all-explicit zero entropy
-                // state is eight bytes larger and differs from the observed
-                // priming grammar.  Use the independently verified compact
-                // zero form only for those silent pre-roll frames.
-                let frameXLLEncoder = (privateXLLXSource != nil
-                    || configuration.compactXLLPriming)
+                // The two Core-priming access units are the first two access
+                // units a terminal ever sees, so they must declare the same
+                // channel-set configuration as the rest of the stream. The
+                // compact zero-XLL form is eight bytes smaller, but it reaches
+                // that size by enabling pairwise decorrelation with a
+                // non-identity original-channel order and by sharing entropy
+                // parameters across channels — two declarations the delivery
+                // profile deliberately never emits. A decoder that latches its
+                // channel configuration when it first synchronizes then has to
+                // reconfigure at the third access unit. Keep the compact form
+                // available to public-XLL differential controls only.
+                let frameXLLEncoder = configuration.compactXLLPriming
                     && item.isPriming
                     && configuration.xllCodingMode != .research
                     ? XLLEncoder(codingMode: .research)
