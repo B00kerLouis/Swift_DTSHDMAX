@@ -378,7 +378,13 @@ public struct DTSHDMAEncoder: Sendable {
                 let forcedSegmentCount = legacyFrameStartupSegmentCount
                     ?? nativeSessionStartupSegmentCount
                     ?? configuration.forcedXLLSegmentCount
-                    ?? privatePreferredSegmentCount
+                // Delivery pins the mid-stream partition instead of letting a
+                // per-frame cost search flip it. Unlike a forced count this
+                // still falls back to the ordinary search for any frame the
+                // preferred partition cannot express.
+                let preferredSegmentCount = forcedSegmentCount == nil
+                    ? privatePreferredSegmentCount
+                    : nil
                 let xll = try frameXLLEncoder.encode(
                     frame: item.frame,
                     useSevenOneHierarchy: configuration.profile == .dtsHDMA
@@ -410,7 +416,8 @@ public struct DTSHDMAEncoder: Sendable {
                             }
                         }
                     },
-                    forcedSegmentCount: forcedSegmentCount
+                    forcedSegmentCount: forcedSegmentCount,
+                    preferredSegmentCount: preferredSegmentCount
                 )
                 guard let segmentationPlan = xll.info.segmentationPlan else {
                     throw DTSError.malformed("encoded public XLL frame has no segmentation plan")
