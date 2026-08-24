@@ -17,6 +17,26 @@ struct DTS714ObjectGainSmoother: Sendable, Equatable {
     /// One of eight pan sub-blocks in a 24 fps / 48 kHz authoring frame.
     static let defaultPanSubBlockSampleCount = 250
     static let maximumOrdinaryTransitionSampleCount = 4_800
+    /// Lfh/Rfh/Lrh/Rrh occupy the last four 7.1.4 PCM planes.
+    static let firstHeightChannelIndex = 8
+    /// The height pan law reaches a Top Surround speaker at |x| = 0.5 and
+    /// saturates beyond it, so the four height feeds move at roughly twice
+    /// the floor rate for the same object velocity and reach the ordinary
+    /// slew ceiling on almost every sub-block of a fast trajectory. Ramping
+    /// at the ceiling on back-to-back sub-blocks leaves a slope break every
+    /// pan period, which is what makes fast Top Surround moves sound stepped
+    /// even though no single-sample gain jump is present. Height feeds
+    /// therefore use a lower ceiling of 1 / 1440 full scale per sample
+    /// (30 ms for a full-scale move).
+    static let maximumHeightSlewTransitionSampleCount = 1_440
+    /// Height retargets are additionally spread over at least 480 samples so
+    /// consecutive pan sub-blocks overlap into one continuous trajectory
+    /// instead of restarting a fresh ramp every 250 samples.
+    static let minimumHeightTransitionSampleCount = 480
+
+    static func isHeightChannel(_ index: Int) -> Bool {
+        index >= firstHeightChannelIndex
+    }
 
     private(set) var currentGains = Array(
         repeating: Int64(0),
@@ -75,14 +95,21 @@ struct DTS714ObjectGainSmoother: Sendable, Equatable {
                 remainderDirections[channel] = 0
                 continue
             }
-            // Equivalent to abs(delta / ordinaryPeriod) > 1 / 480,
-            // evaluated without floating-point ambiguity.
-            let requiresSlewLimit = Swift.abs(delta)
-                * Int64(Self.maximumSlewTransitionSampleCount)
-                > Int64(1 << 30) * Int64(ordinaryPeriod)
-            let period = requiresSlewLimit
-                ? Self.maximumSlewTransitionSampleCount
+            let isHeight = Self.isHeightChannel(channel)
+            let slewPeriod = isHeight
+                ? Self.maximumHeightSlewTransitionSampleCount
+                : Self.maximumSlewTransitionSampleCount
+            let basePeriod = isHeight
+                ? Swift.min(
+                    Self.maximumOrdinaryTransitionSampleCount,
+                    Swift.max(ordinaryPeriod, Self.minimumHeightTransitionSampleCount)
+                )
                 : ordinaryPeriod
+            // Equivalent to abs(delta / basePeriod) > 1 / slewPeriod,
+            // evaluated without floating-point ambiguity.
+            let requiresSlewLimit = Swift.abs(delta) * Int64(slewPeriod)
+                > Int64(1 << 30) * Int64(basePeriod)
+            let period = requiresSlewLimit ? slewPeriod : basePeriod
             transitionSampleCounts[channel] = Int64(period)
             remainingSampleCounts[channel] = period
             transitioningChannelCount += 1
