@@ -2847,10 +2847,17 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         return frame
     }
 
-    /// Returns the public-XLL partition required by frame-indexed terminal
-    /// XLL-X silence syntax. Active frames remain free to use the public
-    /// encoder's ordinary cost search; source-height silence after startup is
-    /// held at the official 2x256 no-NAVI form.
+    /// Returns the public-XLL partition that terminal DTS:X delivery declares
+    /// for a given access unit.
+    ///
+    /// Only the frame-indexed startup grammar varies: the Core-priming pair
+    /// and the two first source access units follow the observed Nature's Fury
+    /// silent-start sequence. Everything after that is pinned to the official
+    /// mid-stream 2x256 partition. Leaving the mid-stream partition to the
+    /// public encoder's byte-count search made the declared frame layout flip
+    /// between 2x256 and 4x128 whenever content crossed a cost boundary, so a
+    /// terminal had to reconfigure segment navigation part-way through the
+    /// programme on exactly the access units where content was changing.
     public func terminalPreferredPublicSegmentCount(at frameIndex: Int) -> Int? {
         guard (0..<frameCount).contains(frameIndex) else { return nil }
         guard codingMode.isTerminalDelivery else { return nil }
@@ -2872,7 +2879,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         if frameIndex < primingFrameCount + 2 {
             return heightsAreSilent ? 4 : nil
         }
-        return heightsAreSilent ? 2 : nil
+        return 2
     }
 
     public func finalize(parallelWorkerCount: Int) throws -> DTSXPrivateEncodedStream {
