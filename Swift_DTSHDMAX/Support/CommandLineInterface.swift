@@ -972,6 +972,18 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-object-gain-smoothing":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-object-gain-smoothing takes no arguments"
+                )
+            }
+            let smoothing = DTS714ObjectGainSmoothingVerifier.verify()
+            print(try jsonString(smoothing))
+            guard smoothing.isVerified else {
+                throw DTSError.malformed("object gain smoothing verification failed")
+            }
+
         case "verify-dtsx-startup-seams":
             guard values.isEmpty else {
                 throw DTSError.invalidArgument("verify-dtsx-startup-seams takes no arguments")
@@ -2347,6 +2359,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax verify-dtsx-channel-allocation
+          hdmax verify-dtsx-object-gain-smoothing
           hdmax verify-dtsx-startup-seams
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
