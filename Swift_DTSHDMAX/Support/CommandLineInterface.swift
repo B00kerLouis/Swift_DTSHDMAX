@@ -2156,6 +2156,8 @@ public enum DTSHDMACommandLine {
             return .terminalRiceMeanMagnitude
         case "rice-bounded22":
             return .terminalRiceBoundedUnary
+        case "rice-official":
+            return .terminalRiceOfficial
         case "predictive":
             return .terminalPredictive
         case "research":
@@ -2164,7 +2166,7 @@ public enum DTSHDMACommandLine {
             throw DTSError.invalidArgument(
                 "private XLL-X coding mode must be conservative, branch2-conservative, "
                     + "branch2-predictive-linear, branch2-rice, rice, rice-mean, "
-                    + "rice-bounded22, predictive, or research"
+                    + "rice-bounded22, rice-official, predictive, or research"
             )
         }
     }
