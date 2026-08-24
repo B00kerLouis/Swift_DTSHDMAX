@@ -40,6 +40,7 @@ public struct DTSXPrivateEncoderVerificationReport: Sendable, Equatable, Codable
     public let terminalRiceParameterSearchPassed: Bool
     public let terminalRiceMeanMagnitudeSelectionPassed: Bool
     public let terminalRiceBoundedUnarySelectionPassed: Bool
+    public let terminalRiceOfficialSelectionPassed: Bool
     public let allVectorsBitExact: Bool
 }
 
@@ -162,6 +163,7 @@ public enum DTSXPrivateEncoderVerifier {
         let terminalRiceParameterSearchPassed = try verifyTerminalRiceParameterSearch()
         let terminalRiceMeanMagnitudeSelectionPassed = try verifyTerminalRiceMeanMagnitudeSelection()
         let terminalRiceBoundedUnarySelectionPassed = try verifyTerminalRiceBoundedUnarySelection()
+        let terminalRiceOfficialSelectionPassed = try verifyTerminalRiceOfficialSelection()
         let report = DTSXPrivateEncoderVerificationReport(
             vectors: reports,
             navigationBitWidthsRoundTripped: navigationBitWidths,
@@ -181,6 +183,7 @@ public enum DTSXPrivateEncoderVerifier {
             terminalRiceParameterSearchPassed: terminalRiceParameterSearchPassed,
             terminalRiceMeanMagnitudeSelectionPassed: terminalRiceMeanMagnitudeSelectionPassed,
             terminalRiceBoundedUnarySelectionPassed: terminalRiceBoundedUnarySelectionPassed,
+            terminalRiceOfficialSelectionPassed: terminalRiceOfficialSelectionPassed,
             allVectorsBitExact: !reports.isEmpty
                 && reports.allSatisfy(\.isBitExact)
                 && allNavigationBitWidthsRoundTrip
@@ -197,6 +200,7 @@ public enum DTSXPrivateEncoderVerifier {
                 && terminalRiceParameterSearchPassed
                 && terminalRiceMeanMagnitudeSelectionPassed
                 && terminalRiceBoundedUnarySelectionPassed
+                && terminalRiceOfficialSelectionPassed
         )
         guard report.allVectorsBitExact else {
             let failedVectors = reports.filter { !$0.isBitExact }.map(\.name).joined(separator: ",")
@@ -214,7 +218,8 @@ public enum DTSXPrivateEncoderVerifier {
                     + "terminalPredictiveRiceSearch=\(terminalPredictiveRiceParameterSearchPassed), "
                     + "terminalRiceSearch=\(terminalRiceParameterSearchPassed), "
                     + "terminalRiceMean=\(terminalRiceMeanMagnitudeSelectionPassed), "
-                    + "terminalRiceBounded=\(terminalRiceBoundedUnarySelectionPassed)"
+                    + "terminalRiceBounded=\(terminalRiceBoundedUnarySelectionPassed), "
+                    + "terminalRiceOfficial=\(terminalRiceOfficialSelectionPassed)"
             )
         }
         return report
@@ -422,7 +427,10 @@ public enum DTSXPrivateEncoderVerifier {
 
     /// Predictive delivery syntax is selected locally, so every emitted Rice
     /// ABIT must minimize the exact ZigZag/unary/remainder payload rather than
-    /// rely on the controlled-oracle mean-magnitude approximation.
+    /// rely on the controlled-oracle mean-magnitude approximation — except
+    /// when the exact optimum would emit a unary quotient above the official
+    /// maximum, in which case the parameter must be minimally raised to meet
+    /// the ceiling every bounded delivery profile guarantees.
     private static func verifyTerminalPredictiveRiceParameterSearch() throws -> Bool {
         let input = filteredAutoregressive()
         let segmentationPlan = DTSXPrivateFrameEncoder.defaultSegmentationPlan
@@ -445,16 +453,37 @@ public enum DTSXPrivateEncoderVerifier {
         }
         var validatedRiceParameter = false
         for segment in decoded.entropySegments {
-            guard segment.partBRicePayloadBitCounts.count == DTSXPrivateFrameEncoder.channelCount else {
+            guard segment.partBRicePayloadBitCounts.count == DTSXPrivateFrameEncoder.channelCount,
+                  segment.partASampleCounts.count == DTSXPrivateFrameEncoder.channelCount else {
                 return false
             }
+            let start = segment.segmentIndex * segmentationPlan.segmentSampleCount
+            let end = start + segmentationPlan.segmentSampleCount
             for channel in 0..<DTSXPrivateFrameEncoder.channelCount where segment.riceCoding[channel] {
                 let costs = segment.partBRicePayloadBitCounts[channel]
                 let selected = segment.partBBitAllocations[channel]
                 guard costs.count == 32,
                       costs.indices.contains(selected),
-                      costs[selected] == (costs.min() ?? Int.max) else {
+                      let exactMinimum = costs.firstIndex(of: costs.min() ?? Int.max) else {
                     return false
+                }
+                let partBStart = start + segment.partASampleCounts[channel]
+                var maximumMapped: UInt64 = 0
+                for sample in decoded.predictionResidualPlanes[channel][partBStart..<end] {
+                    let signed = Int64(sample)
+                    let mapped = signed >= 0
+                        ? UInt64(signed) << 1
+                        : UInt64((-signed << 1) - 1)
+                    maximumMapped = max(maximumMapped, mapped)
+                }
+                if maximumMapped >> UInt64(exactMinimum) <= 22 {
+                    guard selected == exactMinimum else { return false }
+                } else {
+                    guard selected > exactMinimum,
+                          maximumMapped >> UInt64(selected) <= 22,
+                          maximumMapped >> UInt64(selected - 1) > 22 else {
+                        return false
+                    }
                 }
                 validatedRiceParameter = true
             }
@@ -624,6 +653,87 @@ public enum DTSXPrivateEncoderVerifier {
         return observedRaisedParameter
     }
 
+    /// The production profile must reproduce both officially recovered
+    /// selection rules at once. The constant-magnitude vector sits on a Rice
+    /// cost tie that the exhaustive search breaks downward, so only the
+    /// official mean-magnitude start reproduces the recovered ABIT while the
+    /// quotient ceiling stays disengaged. The sparse-outlier vector then
+    /// forces the official ceiling to raise the mean estimate without moving
+    /// or altering any decoded sample. Passing both proves the profile is
+    /// neither the exhaustive-minimum diagnostic nor the raw mean estimator.
+    private static func verifyTerminalRiceOfficialSelection() throws -> Bool {
+        var observedMeanOverExhaustiveSelection = false
+        var observedRaisedParameter = false
+        for input in [officialMeanTieBreak(), boundedUnaryRiceOutlier()] {
+            let segmentationPlan = DTSXPrivateFrameEncoder.defaultSegmentationPlan
+            let encoded = try DTSXPrivateFrameEncoder(
+                codingMode: .terminalRiceOfficial
+            ).encode(
+                codedPlanes: input,
+                segmentationPlan: segmentationPlan
+            )
+            let ast = try DTSXPrivateFrameAST.parse(encoded[...])
+            let decoded = try DTSXPrivateFrameDecoder.decode(
+                ast,
+                segmentCount: segmentationPlan.segmentCount,
+                segmentSampleCount: segmentationPlan.segmentSampleCount,
+                collectEntropyDiagnostics: true
+            )
+            guard decoded.codedPlanes == input,
+                  decoded.predictionResidualPlanes == input,
+                  decoded.entropySegments.count == segmentationPlan.segmentCount else {
+                return false
+            }
+            for segment in decoded.entropySegments {
+                guard !segment.commonParameters,
+                      segment.riceCoding.allSatisfy({ $0 }),
+                      segment.hybridLinearWidths.allSatisfy({ $0 == 0 }),
+                      segment.partBMeanAbsoluteMagnitudes.count
+                        == DTSXPrivateFrameEncoder.channelCount,
+                      segment.partBRicePayloadBitCounts.count
+                        == DTSXPrivateFrameEncoder.channelCount else {
+                    return false
+                }
+                let start = segment.segmentIndex * segmentationPlan.segmentSampleCount
+                let end = start + segmentationPlan.segmentSampleCount
+                for channel in 0..<DTSXPrivateFrameEncoder.channelCount {
+                    let meanMagnitude = segment.partBMeanAbsoluteMagnitudes[channel]
+                    let meanEstimate = meanMagnitude == 0
+                        ? 0
+                        : min(31, Int.bitWidth - meanMagnitude.leadingZeroBitCount)
+                    var maximumMapped: UInt64 = 0
+                    for sample in input[channel][start..<end] {
+                        let signed = Int64(sample)
+                        let mapped = signed >= 0
+                            ? UInt64(signed) << 1
+                            : UInt64((-signed << 1) - 1)
+                        maximumMapped = max(maximumMapped, mapped)
+                    }
+                    var expected = meanEstimate
+                    while expected < 31, maximumMapped >> UInt64(expected) > 22 {
+                        expected += 1
+                    }
+                    let selected = segment.partBBitAllocations[channel]
+                    let costs = segment.partBRicePayloadBitCounts[channel]
+                    guard selected == expected,
+                          costs.count == 32,
+                          costs.indices.contains(selected),
+                          maximumMapped >> UInt64(selected) <= 22,
+                          let exactMinimum = costs.firstIndex(of: costs.min() ?? Int.max) else {
+                        return false
+                    }
+                    if selected != exactMinimum {
+                        observedMeanOverExhaustiveSelection = true
+                    }
+                    if selected > meanEstimate {
+                        observedRaisedParameter = true
+                    }
+                }
+            }
+        }
+        return observedMeanOverExhaustiveSelection && observedRaisedParameter
+    }
+
     /// Three values of 683 among 256 samples produce mean magnitude 8. The
     /// official estimator therefore selects ABIT 4, while exact serialized
     /// cost is one bit smaller at ABIT 3. Repeat the pattern in both segments
@@ -642,6 +752,22 @@ public enum DTSXPrivateEncoderVerifier {
             }
             return plane
         }
+    }
+
+    /// Every sample is 683, so each segment's mean magnitude is exactly 683
+    /// and the official estimator selects ABIT 10 with unary quotient 1. The
+    /// exact serialized cost ties across ABIT 9, 10, and 11, and the
+    /// exhaustive search breaks that tie downward to 9. Only the
+    /// mean-magnitude start reproduces the recovered parameter, and the
+    /// quotient ceiling must not engage anywhere on this vector.
+    private static func officialMeanTieBreak() -> [[Int32]] {
+        Array(
+            repeating: Array(
+                repeating: Int32(683),
+                count: DTSXPrivateFrameEncoder.frameSampleCount
+            ),
+            count: DTSXPrivateFrameEncoder.channelCount
+        )
     }
 
     /// One sparse value per 256-sample segment makes the minimum-bit ABIT emit
