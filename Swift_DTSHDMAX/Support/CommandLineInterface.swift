@@ -972,6 +972,18 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-startup-seams":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-startup-seams takes no arguments")
+            }
+            let startup = try DTSXStreamStartupSeamVerifier.verify()
+            print(try jsonString(startup))
+            guard startup.isVerified else {
+                throw DTSError.malformed(
+                    "DTS:X startup and seam declaration-stability verification failed"
+                )
+            }
+
         case "encode-dtsx-native-source":
             let parsed = try parseFrameRateOption(values)
             let arguments = parsed.arguments
@@ -2335,6 +2347,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax verify-dtsx-channel-allocation
+          hdmax verify-dtsx-startup-seams
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source-mode conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
