@@ -207,46 +207,35 @@ public enum DTSXNativeEncoderVerifier {
         guard stream.frames.count >= primingFrameCount else { return false }
         for (frameIndex, frame) in stream.frames.enumerated() {
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
-            if frameIndex < primingFrameCount {
-                // The DTS:X Core pre-roll uses the compact zero-XLL grammar
-                // seen in the reference stream. It is the only delivery frame
-                // allowed to use common entropy parameters and identity
-                // pairwise decorrelation in the conservative profile.
-                guard decoded.frameByteCount == 132,
-                      decoded.entropyStateReuseSegmentCount == 0,
-                      decoded.entropyCommonParameterSegmentCount == 4,
-                      decoded.entropyRiceParameterCount == 0,
-                      decoded.hybridRiceParameterCount == 0,
-                      decoded.hybridIsolatedSampleCount == 0,
-                      decoded.channelSets.allSatisfy({ channelSet in
-                          channelSet.decorrelationEnabled
-                              && channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
-                              && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
-                              && channelSet.planes.allSatisfy { plane in
-                                  plane.allSatisfy { $0 == 0 }
-                              }
-                      }) else {
-                    return false
-                }
-                continue
-            }
+            // The Core pre-roll access units carry no audio, but they are the
+            // first two access units a terminal synchronizes to, so they must
+            // declare exactly what every later access unit declares. Shared
+            // entropy parameters, retained entropy state and a non-identity
+            // pairwise-decorrelation channel order are all research-only
+            // syntax and must never appear anywhere in a delivery stream.
             guard decoded.entropyStateReuseSegmentCount == 0,
                   decoded.entropyCommonParameterSegmentCount == 0,
                   decoded.entropyRiceParameterCount == 0,
                   decoded.hybridRiceParameterCount == 0,
-                  decoded.hybridIsolatedSampleCount == 0 else {
+                  decoded.hybridIsolatedSampleCount == 0,
+                  decoded.channelSets.allSatisfy({ channelSet in
+                      !channelSet.decorrelationEnabled
+                          && channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
+                          && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
+                  }) else {
                 return false
             }
+            if frameIndex < primingFrameCount {
+                guard decoded.channelSets.allSatisfy({ channelSet in
+                    channelSet.planes.allSatisfy { plane in
+                        plane.allSatisfy { $0 == 0 }
+                    }
+                }) else {
+                    return false
+                }
+            }
         }
-        // Terminal-conservative delivery deliberately keeps every channel set
-        // in direct sample order until predictor interoperability is certified.
-        return stream.frames.dropFirst(primingFrameCount).allSatisfy { frame in
-            (try? XLLDecoder().decodeChannelSets(frame: frame.frame))?.channelSets.allSatisfy {
-                $0.adaptivePredictionOrders.allSatisfy { $0 == 0 }
-                    && $0.fixedPredictionOrders.allSatisfy { $0 == 0 }
-                    && !$0.decorrelationEnabled
-            } == true
-        }
+        return true
     }
 
     private static func verifyTerminalPredictiveXLLSyntax(inputURL: URL) throws -> Bool {
@@ -269,11 +258,11 @@ public enum DTSXNativeEncoderVerifier {
                 return false
             }
             if frameIndex < primingFrameCount {
-                guard decoded.frameByteCount == 132,
-                      decoded.entropyCommonParameterSegmentCount == 4,
+                guard decoded.entropyCommonParameterSegmentCount == 0,
                       decoded.entropyRiceParameterCount == 0,
                       decoded.channelSets.allSatisfy({ channelSet in
-                          channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
+                          !channelSet.decorrelationEnabled
+                              && channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.planes.allSatisfy { plane in
                                   plane.allSatisfy { $0 == 0 }
