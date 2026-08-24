@@ -960,6 +960,18 @@ public enum DTSHDMACommandLine {
             }
             print(try jsonString(DTSXNativeEncoderVerifier.verify()))
 
+        case "verify-dtsx-channel-allocation":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-channel-allocation takes no arguments")
+            }
+            let allocation = try DTSXChannelAllocationVerifier.verify()
+            print(try jsonString(allocation))
+            guard allocation.isVerified else {
+                throw DTSError.malformed(
+                    "controlled-impulse channel allocation verification failed"
+                )
+            }
+
         case "encode-dtsx-native-source":
             let parsed = try parseFrameRateOption(values)
             let arguments = parsed.arguments
@@ -2322,6 +2334,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
+          hdmax verify-dtsx-channel-allocation
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source-mode conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
