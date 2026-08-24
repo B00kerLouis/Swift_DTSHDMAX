@@ -2,6 +2,8 @@ import Foundation
 
 public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable {
     public let sourceSampleCount: Int
+    public let privateXLLXCodingMode: DTSXPrivateCodingMode
+    public let productionPrivateProfileIsOfficialBoundedRice: Bool
     public let accessUnitCount: Int
     public let streamByteCount: Int
     public let streamSHA256: String
@@ -94,7 +96,14 @@ public enum DTSXNativeEncoderVerifier {
         let privateMismatchCount = first.report.privateEncoding.decodedSampleMismatchCount
         let bedMismatchCount = bedComparison.prefix.differentSamples
             + bedComparison.nonZeroPaddingSamples
+        // The default production encoder must stay on the official-corpus
+        // bounded mean-magnitude Rice profile; a silently changed default is
+        // a delivery regression even when the stream still closes internally.
+        let productionPrivateProfileIsOfficialBoundedRice =
+            first.report.privateXLLXCodingMode == .terminalRiceOfficial
+            && first.report.privateXLLXCodingMode.guaranteesBoundedUnaryQuotients
         let verified = deterministic
+            && productionPrivateProfileIsOfficialBoundedRice
             && first.report.isInternallyBitExact
             && compatibilitySafety.isCompatible
             && structural.isStructurallyValid
@@ -114,6 +123,9 @@ public enum DTSXNativeEncoderVerifier {
             && hybridXLL.passed
         let report = DTSXNativeEncoderVerificationReport(
             sourceSampleCount: source.sampleCount,
+            privateXLLXCodingMode: first.report.privateXLLXCodingMode,
+            productionPrivateProfileIsOfficialBoundedRice:
+                productionPrivateProfileIsOfficialBoundedRice,
             accessUnitCount: first.report.accessUnitCount,
             streamByteCount: first.stream.count,
             streamSHA256: first.report.streamSHA256,
@@ -398,7 +410,7 @@ public enum DTSXNativeEncoderVerifier {
         let activeSource = try DTS714PCMBuffer(planes: planes)
         let session = try DTSXPrivateStreamEncodingSession(
             source: activeSource,
-            codingMode: .terminalRice
+            codingMode: .terminalRiceOfficial
         )
         guard (0..<session.frameCount).map({
             session.terminalPreferredPublicSegmentCount(at: $0)
@@ -413,7 +425,7 @@ public enum DTSXNativeEncoderVerifier {
         let encoded = try DTSXNativeHDMAEncoder(
             verificationPolicy: .none,
             publicXLLForcedSegmentCount: 2,
-            privateXLLXCodingMode: .terminalRice
+            privateXLLXCodingMode: .terminalRiceOfficial
         ).encode(source: activeSource, frameRate: .fps24)
         try encoded.stream.write(to: output, options: .atomic)
         let publicStream = try XLLPBRStreamReader.read(inputURL: output)

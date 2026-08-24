@@ -37,6 +37,103 @@ public enum DTSXPrivateCodingMode: Sendable, Equatable, Codable {
     /// observed in the official corpus. This is a terminal diagnostic and
     /// does not replace ``terminalRice`` before physical qualification.
     case terminalRiceBoundedUnary
+    /// Production delivery profile assembled from the two selection rules the
+    /// controlled official corpus proved independently: ABIT starts at the
+    /// bit width of the segment's mean absolute magnitude (the official
+    /// estimator isolated by ``terminalRiceMeanMagnitude``) and is raised
+    /// only when a sparse outlier would otherwise emit a unary quotient above
+    /// the official-corpus maximum of 22 (the invariant isolated by
+    /// ``terminalRiceBoundedUnary``). Raising ABIT never changes a decoded
+    /// residual; it only trades remainder bits for a shorter quotient, so the
+    /// bound removes the long-unary pattern that terminal hardware decoders
+    /// were never observed to receive, without touching the certified
+    /// Branch-0 routing or the fixed-order-zero direct-sample syntax.
+    case terminalRiceOfficial
+}
+
+extension DTSXPrivateCodingMode {
+    /// Every delivery profile other than byte-level research.
+    public var isTerminalDelivery: Bool { self != .research }
+
+    /// Delivery profiles that keep every plane as direct samples: adaptive
+    /// and fixed prediction orders stay at zero until hardware certifies the
+    /// predictor.
+    var usesDirectSampleSyntax: Bool {
+        switch self {
+        case .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoRice,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
+            return true
+        case .research,
+             .terminalPredictive,
+             .terminalBranchTwoPredictiveLinear:
+            return false
+        }
+    }
+
+    /// Profiles that force the active-frame branch-two lifting search so
+    /// hardware playback can qualify the recovered transform in isolation.
+    var requiresActiveBranchTwoDecorrelation: Bool {
+        switch self {
+        case .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice:
+            return true
+        case .research,
+             .terminalConservative,
+             .terminalPredictive,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
+            return false
+        }
+    }
+
+    /// Profiles restricted to the independently certified branch-zero
+    /// routing. Hardware playback of the branch-two candidates clicked, so
+    /// stream finalization re-checks the emitted branch histogram for these.
+    var requiresBranchZeroRouting: Bool {
+        switch self {
+        case .terminalConservative,
+             .terminalPredictive,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
+            return true
+        case .research,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice:
+            return false
+        }
+    }
+
+    /// Profiles whose straight-Rice selection promises that no emitted unary
+    /// quotient exceeds the official-corpus maximum. ``writeRice`` enforces
+    /// the promise at emission time so a future selection change cannot
+    /// silently reintroduce the hardware-desync pattern.
+    var guaranteesBoundedUnaryQuotients: Bool {
+        switch self {
+        case .terminalPredictive,
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
+            return true
+        case .research,
+             .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice,
+             .terminalRice,
+             .terminalRiceMeanMagnitude:
+            return false
+        }
+    }
 }
 
 /// Encoder-side inverse of the recovered four-plane XLL-X frame grammar.
@@ -118,9 +215,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     ) throws -> Data {
         try validate(codedPlanes: codedPlanes, routing: routing)
 
-        let usesTerminalBranchTwoSearch = codingMode == .terminalBranchTwoConservative
-            || codingMode == .terminalBranchTwoPredictiveLinear
-            || codingMode == .terminalBranchTwoRice
+        let usesTerminalBranchTwoSearch = codingMode.requiresActiveBranchTwoDecorrelation
         let routedSelection: RoutedDecorrelationSelection
         if optimizePairwiseDecorrelation, usesTerminalBranchTwoSearch {
             routedSelection = try selectTerminalRoutingAndDecorrelation(
@@ -171,14 +266,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         routing: DTSXPrivateRouting,
         segmentationPlan: XLLSegmentationPlan
     ) throws -> Data {
-        guard codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive else {
+        guard codingMode.isTerminalDelivery else {
             throw DTSError.unsupported(
                 "terminal no-NAVI silence is only available in a terminal delivery mode"
             )
@@ -218,14 +306,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         routing: DTSXPrivateRouting,
         segmentationPlan: XLLSegmentationPlan
     ) throws -> Data {
-        guard codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive else {
+        guard codingMode.isTerminalDelivery else {
             throw DTSError.unsupported(
                 "terminal mid-stream silence is only available in a terminal delivery mode"
             )
@@ -265,14 +346,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         routing: DTSXPrivateRouting,
         segmentationPlan: XLLSegmentationPlan
     ) throws -> Data {
-        guard codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive else {
+        guard codingMode.isTerminalDelivery else {
             throw DTSError.unsupported(
                 "terminal startup silence is only available in a terminal delivery mode"
             )
@@ -843,12 +917,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // Force branch two only for this deliberately isolated terminal profile
         // so hardware playback can qualify the recovered lifting syntax without
         // a content-dependent entropy-cost decision changing the experiment.
-        let requiresActiveBranchTwo = (
-            codingMode == .terminalPredictive
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-        )
+        let requiresActiveBranchTwo = codingMode.requiresActiveBranchTwoDecorrelation
             && codedPlanes.contains { plane in plane.contains { $0 != 0 } }
         let baselineScore = codedPlanes.reduce(0) {
             $0 + estimatedEntropyBitCount(
@@ -1684,12 +1753,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // profiles as direct signed samples; predictor-isolation profiles enter
         // the qualified adaptive-only branch below. The explicit 10-byte active
         // prediction region remains present in either form.
-        if codingMode == .terminalConservative
-            || codingMode == .terminalBranchTwoConservative
-            || codingMode == .terminalBranchTwoRice
-            || codingMode == .terminalRice
-            || codingMode == .terminalRiceMeanMagnitude
-            || codingMode == .terminalRiceBoundedUnary {
+        if codingMode.usesDirectSampleSyntax {
             return PredictionSelection(
                 residualPlanes: codedPlanes,
                 adaptiveOrders: Array(repeating: 0, count: codedPlanes.count),
@@ -2046,6 +2110,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             return .rice(parameter: initialRiceParameter(samples))
         case .terminalRiceBoundedUnary:
             return .rice(parameter: boundedUnaryRiceParameter(samples))
+        case .terminalRiceOfficial:
+            return .rice(parameter: officialTerminalRiceParameter(samples))
         case .research, .terminalPredictive:
             break
         }
@@ -2064,9 +2130,11 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // estimate usually equals an exhaustive Rice minimum, but it is not a
         // code-length optimum at finite segment boundaries. The delivery
         // predictive profile is emitted from locally chosen syntax, so rank it
-        // using the exact mapped payload that `writeRice` will serialize.
+        // using the exact mapped payload that `writeRice` will serialize —
+        // raised, like every bounded delivery profile, whenever the exact
+        // optimum would emit a unary quotient above the official maximum.
         let parameter = codingMode == .terminalPredictive
-            ? optimalRiceParameter(samples)
+            ? boundedUnaryRiceParameter(samples)
             : initialRiceParameter(samples)
         let rice = EntropyMode.rice(parameter: parameter)
         let riceInitializationMode = entropyMode(
@@ -2116,10 +2184,21 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         case .linear:
             return .linear(width: minimumLinearWidth(samples))
         case .rice, .hybridRice:
-            return .rice(parameter: codingMode == .terminalPredictive
-                ? optimalRiceParameter(samples)
-                : initialRiceParameter(samples)
-            )
+            switch codingMode {
+            case .terminalPredictive:
+                return .rice(parameter: boundedUnaryRiceParameter(samples))
+            case .terminalRiceOfficial:
+                return .rice(parameter: officialTerminalRiceParameter(samples))
+            case .research,
+                 .terminalConservative,
+                 .terminalBranchTwoConservative,
+                 .terminalBranchTwoPredictiveLinear,
+                 .terminalBranchTwoRice,
+                 .terminalRice,
+                 .terminalRiceMeanMagnitude,
+                 .terminalRiceBoundedUnary:
+                return .rice(parameter: initialRiceParameter(samples))
+            }
         }
     }
 
@@ -2161,7 +2240,22 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     /// or below the official-corpus maximum. Increasing ABIT cannot alter the
     /// decoded residual; it only trades remainder bits for a shorter quotient.
     private func boundedUnaryRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
-        var parameter = optimalRiceParameter(samples)
+        unaryBounded(optimalRiceParameter(samples), for: samples)
+    }
+
+    /// The production selection recovered from the controlled official
+    /// corpus: the mean-magnitude ABIT estimate, raised only when a sparse
+    /// outlier would otherwise emit a unary quotient above the official
+    /// maximum.
+    private func officialTerminalRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
+        unaryBounded(initialRiceParameter(samples), for: samples)
+    }
+
+    private func unaryBounded(
+        _ parameter: Int,
+        for samples: ArraySlice<Int32>
+    ) -> Int {
+        var parameter = parameter
         var maximumMapped: UInt64 = 0
         for sample in samples {
             maximumMapped = max(maximumMapped, zigZag(sample))
@@ -2316,6 +2410,17 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         guard quotient <= UInt64(Int.max) else {
             throw DTSError.valueOutOfRange(
                 field: "\(field()).quotient",
+                value: String(quotient)
+            )
+        }
+        // Emission-time invariant for the bounded delivery profiles: their
+        // parameter selection promises the official-corpus quotient ceiling,
+        // and a stream that violates it must never leave the encoder because
+        // terminal hardware was never observed to receive a longer unary run.
+        if codingMode.guaranteesBoundedUnaryQuotients,
+           quotient > Self.terminalMaximumUnaryQuotient {
+            throw DTSError.valueOutOfRange(
+                field: "\(field()).unary(bounded<=\(Self.terminalMaximumUnaryQuotient))",
                 value: String(quotient)
             )
         }
@@ -2629,14 +2734,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // Keep this state transition explicit and frame-indexed so parallel
         // workers cannot accidentally reuse it for later silence.
         let frame: Data
-        if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        if codingMode.isTerminalDelivery,
            frameIndex == primingFrameCount,
            segmentationPlan.segmentCount == 4,
            segmentationPlan.segmentSampleCount == 128,
@@ -2646,14 +2744,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 routing: routing,
                 segmentationPlan: segmentationPlan
             )
-        } else if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        } else if codingMode.isTerminalDelivery,
            frameIndex == primingFrameCount + 1,
            segmentationPlan.segmentCount == 4,
            segmentationPlan.segmentSampleCount == 128,
@@ -2663,14 +2754,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 routing: routing,
                 segmentationPlan: segmentationPlan
             )
-        } else if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        } else if codingMode.isTerminalDelivery,
            frameIndex >= primingFrameCount + 2,
            segmentationPlan.segmentCount == 2,
            segmentationPlan.segmentSampleCount == 256,
@@ -2689,9 +2773,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 // to this locally inferred transform, while the branch-zero
                 // candidates were clean. Never select it in a terminal profile.
                 optimizePairwiseDecorrelation: codingMode == .research
-                    || codingMode == .terminalBranchTwoConservative
-                    || codingMode == .terminalBranchTwoPredictiveLinear
-                    || codingMode == .terminalBranchTwoRice,
+                    || codingMode.requiresActiveBranchTwoDecorrelation,
                 segmentationPlan: segmentationPlan
             )
         }
@@ -2771,19 +2853,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     /// held at the official 2x256 no-NAVI form.
     public func terminalPreferredPublicSegmentCount(at frameIndex: Int) -> Int? {
         guard (0..<frameCount).contains(frameIndex) else { return nil }
-        switch codingMode {
-        case .research:
-            return nil
-        case .terminalConservative,
-             .terminalBranchTwoConservative,
-             .terminalBranchTwoPredictiveLinear,
-             .terminalBranchTwoRice,
-             .terminalPredictive,
-             .terminalRice,
-             .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
-            break
-        }
+        guard codingMode.isTerminalDelivery else { return nil }
         if frameIndex < primingFrameCount { return 2 }
         let sourceStart = (frameIndex - primingFrameCount)
             * DTSXPrivateFrameEncoder.frameSampleCount
@@ -2878,43 +2948,25 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         }
 
         let terminalPredictionProfileIsAllowed: Bool
-        switch codingMode {
-        case .research:
+        if codingMode == .research {
             terminalPredictionProfileIsAllowed = true
-        case .terminalPredictive, .terminalBranchTwoPredictiveLinear:
-            terminalPredictionProfileIsAllowed = fixedPredictionOrderHistogram
-                .dropFirst(2)
-                .allSatisfy { $0 == 0 }
-        case .terminalConservative,
-             .terminalBranchTwoConservative,
-             .terminalBranchTwoRice,
-             .terminalRice,
-             .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
+        } else if codingMode.usesDirectSampleSyntax {
             terminalPredictionProfileIsAllowed = adaptivePredictionOrderHistogram
                 .dropFirst()
                 .allSatisfy { $0 == 0 }
                 && fixedPredictionOrderHistogram.dropFirst().allSatisfy { $0 == 0 }
+        } else {
+            terminalPredictionProfileIsAllowed = fixedPredictionOrderHistogram
+                .dropFirst(2)
+                .allSatisfy { $0 == 0 }
         }
-        let terminalRoutingProfileIsAllowed: Bool
-        switch codingMode {
-        case .terminalConservative,
-             .terminalPredictive,
-             .terminalRice,
-             .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
-            // Only branch zero has passed real terminal playback. Keep the
-            // invariant at stream-finalization time so a future optimizer
-            // cannot silently reintroduce the clicking branch-two path.
-            terminalRoutingProfileIsAllowed = decorrelationBranchHistogram
+        // Only branch zero has passed real terminal playback. Keep the
+        // invariant at stream-finalization time so a future optimizer
+        // cannot silently reintroduce the clicking branch-two path.
+        let terminalRoutingProfileIsAllowed = !codingMode.requiresBranchZeroRouting
+            || decorrelationBranchHistogram
                 .dropFirst()
                 .allSatisfy { $0 == 0 }
-        case .research,
-             .terminalBranchTwoConservative,
-             .terminalBranchTwoPredictiveLinear,
-             .terminalBranchTwoRice:
-            terminalRoutingProfileIsAllowed = true
-        }
 
         let report = DTSXPrivateStreamEncodingReport(
             sourceSampleCount: sourceSampleCount,
