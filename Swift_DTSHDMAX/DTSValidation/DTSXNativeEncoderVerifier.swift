@@ -452,8 +452,90 @@ public enum DTSXNativeEncoderVerifier {
             return structural.isStructurallyValid
                 && structural.allPrivateFramesMatchPublicSegmentation
         }
+
+        // A mixed start must not repeat the Core-priming compact declaration
+        // on its silent source access units. An ordinary silent source AU on
+        // the 2x256 partition carries the 52-byte code-16 mid-stream no-NAVI
+        // form; a stream that declared the 48-byte priming state a third time
+        // presented its first source access unit as still priming, which a
+        // terminal cannot play.
+        func verifyMixedStartDeclarations() throws -> Bool {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("swift-native-dtsx-mixed-startup-\(UUID().uuidString)")
+            let output = root.appendingPathExtension("dtshd")
+            let payload = root.appendingPathExtension("xllx")
+            let index = root.appendingPathExtension("json")
+            defer {
+                try? FileManager.default.removeItem(at: output)
+                try? FileManager.default.removeItem(at: payload)
+                try? FileManager.default.removeItem(at: index)
+            }
+            let encoded = try DTSXNativeHDMAEncoder(
+                verificationPolicy: .none,
+                privateXLLXCodingMode: .terminalRiceOfficial
+            ).encode(
+                source: try DTS714PCMBuffer(planes: mixedPlanes),
+                frameRate: .fps24
+            )
+            try encoded.stream.write(to: output, options: .atomic)
+            let publicStream = try XLLPBRStreamReader.read(inputURL: output)
+            let publicSegments = try publicStream.frames.map {
+                try XLLFrameASTParser.parse($0.frame).segmentCount
+            }
+            guard publicSegments == [2, 2, 2, 2, 2] else { return false }
+            let extraction = try DTSXObjectExtractor.extract(
+                inputURL: output,
+                payloadOutputURL: payload,
+                indexOutputURL: index
+            )
+            guard extraction.frames.count == 5 else { return false }
+            let payloadBytes = try Data(contentsOf: payload)
+            // AU0/AU1 keep the 48-byte priming declaration. The silent first
+            // source AU and the silent tail AU carry the mid-stream code-16
+            // form; the active second source AU codes ordinarily.
+            let expectedSilentForms: [Int: (byteCount: Int, code: UInt8)] = [
+                0: (48, 15),
+                1: (48, 15),
+                2: (52, 16),
+                4: (52, 16)
+            ]
+            for (frameIndex, record) in extraction.frames.enumerated() {
+                guard let payloadOffset = record.payloadFileOffset,
+                      payloadOffset >= 0,
+                      payloadOffset + record.payloadByteCount <= payloadBytes.count else {
+                    return false
+                }
+                let frame = payloadBytes.subdata(
+                    in: payloadOffset..<(payloadOffset + record.payloadByteCount)
+                )
+                let ast = try DTSXPrivateFrameAST.parse(frame[...])
+                guard ast.headerCRCIsValid,
+                      try ast.parsePredictionCRC().isValid else {
+                    return false
+                }
+                guard let expectation = expectedSilentForms[frameIndex] else { continue }
+                guard record.payloadByteCount == expectation.byteCount,
+                      ast.primarySixBitCode == expectation.code else {
+                    return false
+                }
+                if frameIndex >= 2 {
+                    guard let header = try ast.parsePredictionHeaderCandidates().first,
+                          let sideInfo = try DTSXPrivateNoNavigationZeroSideInfo.parse(
+                            ast,
+                            prediction: header,
+                            segmentCount: 2,
+                            segmentSampleCount: 256
+                          ),
+                          sideInfo.controlCode == 0x20 else {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
         return try verifyEncoding(publicForcedSegmentCount: nil)
             && verifyEncoding(publicForcedSegmentCount: 2)
+            && verifyMixedStartDeclarations()
     }
 
     /// Exercises the adaptive predictor's one-time Part A seed partition and
