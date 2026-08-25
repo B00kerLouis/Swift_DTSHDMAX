@@ -875,6 +875,34 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-recovery-window":
+            guard (1...2).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-recovery-window requires INPUT.dtshd [MAX_ACCESS_UNITS]"
+                )
+            }
+            let maximumAccessUnits: Int?
+            if values.count == 2 {
+                guard let parsedCount = Int(values[1]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_ACCESS_UNITS must be positive")
+                }
+                maximumAccessUnits = parsedCount
+            } else {
+                maximumAccessUnits = nil
+            }
+            let report = try XLLRecoveryStartupVerifier.verify(
+                inputURL: URL(fileURLWithPath: values[0]),
+                maximumAccessUnitCount: maximumAccessUnits
+            )
+            print(try jsonString(report))
+            guard report.isRecoverySafe else {
+                throw DTSError.malformed(
+                    "stream diverges from the official DTS:X recovery grammar: "
+                    + "the reference decoder's forced first-frame Core playback "
+                    + "would clip or misrepresent this content"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -2316,6 +2344,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-compatibility-bed-oracle INPUT.dtshd CORE_ORACLE_5.1.wav SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
+          hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]

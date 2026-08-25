@@ -33,6 +33,10 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let hybridXLLIsolatedSampleCount: Int
     public let hybridXLLDifferentSampleCount: Int
     public let hybridXLLRegressionPassed: Bool
+    public let recoveryScaleCodesMatchOfficialConstant: Bool
+    public let recoveryClipSampleCount: Int
+    public let recoveryMaximumAbsoluteResidual: Int64
+    public let recoveryStartupPassed: Bool
     public let isStructurallyValid: Bool
     public let isVerified: Bool
 }
@@ -90,6 +94,10 @@ public enum DTSXNativeEncoderVerifier {
         let objectGainSmoothing = DTS714ObjectGainSmoothingVerifier.verify()
         let adaptiveXLL = try verifyAdaptiveXLLRegression()
         let hybridXLL = try verifyHybridXLLRegression()
+        let recoveryPrimary = try XLLRecoveryStartupVerifier.verify(inputURL: output)
+        let recoveryHotStart = try verifyHotStartRecoveryWindow()
+        let recoveryStartupPassed = recoveryPrimary.isRecoverySafe
+            && recoveryHotStart.isRecoverySafe
 
         let privateMismatchCount = first.report.privateEncoding.decodedSampleMismatchCount
         let bedMismatchCount = bedComparison.prefix.differentSamples
@@ -112,6 +120,7 @@ public enum DTSXNativeEncoderVerifier {
             && objectGainSmoothing.isVerified
             && adaptiveXLL.passed
             && hybridXLL.passed
+            && recoveryStartupPassed
         let report = DTSXNativeEncoderVerificationReport(
             sourceSampleCount: source.sampleCount,
             accessUnitCount: first.report.accessUnitCount,
@@ -151,6 +160,12 @@ public enum DTSXNativeEncoderVerifier {
             hybridXLLIsolatedSampleCount: hybridXLL.isolatedSampleCount,
             hybridXLLDifferentSampleCount: hybridXLL.differentSampleCount,
             hybridXLLRegressionPassed: hybridXLL.passed,
+            recoveryScaleCodesMatchOfficialConstant:
+                recoveryPrimary.scaleCodesMatchOfficialConstant
+                && recoveryHotStart.scaleCodesMatchOfficialConstant,
+            recoveryClipSampleCount: recoveryHotStart.recoveryClipSampleCount,
+            recoveryMaximumAbsoluteResidual: recoveryHotStart.maximumAbsoluteResidual,
+            recoveryStartupPassed: recoveryStartupPassed,
             isStructurallyValid: structural.isStructurallyValid,
             isVerified: verified
         )
@@ -499,6 +514,56 @@ public enum DTSXNativeEncoderVerifier {
             differentSampleCount,
             passed
         )
+    }
+
+    /// tbh-class active start: loud bed and height content from sample zero.
+    /// The reference decoder forces lossy recovery on the first XLL frame it
+    /// filters, playing `clip23(Core x sqrt(2))` alone on every Core-mapped
+    /// channel, so the embedded Core must actually carry the declared
+    /// -3.0103 dB DownmixScale fold. A Core without the fold clips the
+    /// recovery intermediate on this vector (the "first frame unplayable"
+    /// hardware failure) and leaves a level-error residual at every loud
+    /// onset; both directions fail this regression.
+    private static func verifyHotStartRecoveryWindow() throws -> XLLRecoveryStartupReport {
+        let sourceSampleCount = XLLSyntax.frameSampleCount * 3
+        // Amplitudes are chosen so the 7.1 compatibility bed peaks near
+        // -0.3 dBFS (far above the -3.0103 dB recovery headroom) while the
+        // hierarchy fold target (Lss + Lsr-with-height) stays inside the
+        // signed 24-bit range, keeping the official constant matrix in use.
+        let amplitudes: [Double] = [
+            6_000_000, 6_000_000, 6_000_000, 6_000_000,
+            3_000_000, 3_000_000, 2_000_000, 2_000_000,
+            3_000_000, 3_000_000, 3_000_000, 3_000_000
+        ]
+        // The LFE tone stays inside the Core's decimated LFE passband so the
+        // residual measures codec error rather than out-of-band content.
+        let frequencies: [Double] = [
+            409.0, 523.0, 641.0, 61.0,
+            757.0, 881.0, 997.0, 1_103.0,
+            1_213.0, 1_327.0, 1_439.0, 1_553.0
+        ]
+        let planes = (0..<DTS714Channel.allCases.count).map { channel in
+            (0..<sourceSampleCount).map { sample -> Int32 in
+                let phase = 2.0 * Double.pi * frequencies[channel]
+                    * Double(sample) / 48_000.0
+                return Int32((sin(phase) * amplitudes[channel]).rounded())
+            }
+        }
+        let hotSource = try DTS714PCMBuffer(planes: planes)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "swift-native-dtsx-hot-recovery-\(UUID().uuidString).dtshd"
+        )
+        defer { try? FileManager.default.removeItem(at: output) }
+        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .none)
+            .encode(source: hotSource, frameRate: .fps24)
+        do {
+            try encoded.stream.write(to: output, options: .atomic)
+        } catch {
+            throw DTSError.io(
+                "cannot write hot-start recovery verification stream: \(error.localizedDescription)"
+            )
+        }
+        return try XLLRecoveryStartupVerifier.verify(inputURL: output)
     }
 
     private static func syntheticSource() throws -> DTS714PCMBuffer {

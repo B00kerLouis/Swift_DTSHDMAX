@@ -251,6 +251,35 @@ public struct DTSHDMAEncoder: Sendable {
         let primingFrameCount = configuration.profile == .dtsHDMA
             ? XLLSyntax.coreCompatiblePrimingSampleCount / XLLSyntax.frameSampleCount
             : 0
+        // The Core-residual XLL hierarchy declares one constant DownmixScale
+        // (code 473, -3.0103 dB) for every reconstructed channel, exactly as
+        // the official DTS:X corpus does. That declaration is a promise about
+        // the Core content itself: Core = primary x (1/sqrt(2)) on all six
+        // channels. The reference decoder relies on it twice.
+        //
+        // 1. First-frame startup: the reference decoder forces lossy
+        //    recovery output on the first XLL frame it filters (and on any
+        //    seek re-entry). It zeroes every XLL band and plays
+        //    clip23(Core x sqrt(2)) alone on each Core-mapped channel. With
+        //    an unscaled Core, an active first frame is boosted +3 dB into
+        //    hard clipping - the tbh-class "first frame unplayable" failure -
+        //    while a silent start (Nature's Fury) is unaffected.
+        // 2. Steady-state residual combination computes the same
+        //    clip23(Core x sqrt(2)) intermediate. Official streams keep it
+        //    inside the signed 24-bit range by construction; an unscaled
+        //    Core drives it past full scale at every loud onset, leaving
+        //    reconstruction dependent on terminal saturation behavior.
+        //
+        // The surround pair already satisfies the promise (its equal-power
+        // 7.1-to-5.1 fold is the declared scale); the four pass-through
+        // channels must carry the identical fold. Ordinary HDMA delivery
+        // (full-primary XLL, no hierarchy matrix) keeps its unscaled Core.
+        let effectiveCoreAssociationPolicy = privateXLLXSource == nil
+            ? configuration.coreAssociationPolicy
+            : privateCoreAssociationPolicy
+        let coreCarriesDeclaredDownmixScale = configuration.profile == .dtsHDMA
+            && pcm.format.layout == .sevenOne
+            && effectiveCoreAssociationPolicy == .coreResidual
         let totalFrameCount = sourceFrameCount + primingFrameCount
         let xllEncoder = XLLEncoder(codingMode: configuration.xllCodingMode)
         let exssWriter = ExSSWriter()
@@ -443,7 +472,11 @@ public struct DTSHDMAEncoder: Sendable {
             let coreBytes: Data?
             if coreEncoderSession != nil {
                 coreBytes = try coreEncoderSession!.encode(
-                    try coreFrame(from: pcm, accessUnitIndex: frameIndex)
+                    try coreFrame(
+                        from: pcm,
+                        accessUnitIndex: frameIndex,
+                        applyingDeclaredDownmixScale: coreCarriesDeclaredDownmixScale
+                    )
                 )
             } else {
                 coreBytes = nil
@@ -516,7 +549,8 @@ public struct DTSHDMAEncoder: Sendable {
 
     private func coreFrame(
         from pcm: PCMBuffer,
-        accessUnitIndex: Int
+        accessUnitIndex: Int,
+        applyingDeclaredDownmixScale: Bool = false
     ) throws -> PCMBuffer {
         let coreFormat = try PCMFormat(
             sampleRate: pcm.format.sampleRate,
@@ -539,7 +573,17 @@ public struct DTSHDMAEncoder: Sendable {
                 guard pcm.planes[0].indices.contains(sourceSample) else { continue }
                 switch outputChannel {
                 case 0, 1, 2, 3:
-                    planes[outputChannel][frameSample] = pcm.planes[outputChannel][sourceSample]
+                    // With the Core-residual hierarchy the declared constant
+                    // DownmixScale (473) covers all six Core channels, so the
+                    // pass-through channels must carry the same -3.0103 dB
+                    // fold as the surround pair, using the identical Q30
+                    // constant and rounding. The reference decoder plays
+                    // clip23(Core x sqrt(2)) directly during first-frame
+                    // recovery; an unscaled Core turns any active start into
+                    // a +3 dB hard-clipped burst.
+                    planes[outputChannel][frameSample] = applyingDeclaredDownmixScale
+                        ? DTSBedRenderer.equalPowerSum(pcm.planes[outputChannel][sourceSample], 0)
+                        : pcm.planes[outputChannel][sourceSample]
                 case 4:
                     planes[outputChannel][frameSample] = pcm.format.layout == .sevenOne
                         ? DTSBedRenderer.equalPowerSum(
