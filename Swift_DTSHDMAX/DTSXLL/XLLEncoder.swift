@@ -85,7 +85,8 @@ struct XLLEncoder: Sendable {
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         privateExtension: Data = Data(),
         privateExtensionProvider: ((XLLSegmentationPlan) throws -> Data)? = nil,
-        forcedSegmentCount: Int? = nil
+        forcedSegmentCount: Int? = nil,
+        preferredSegmentCount: Int? = nil
     ) throws -> XLLEncodedFrame {
         guard pcm.sampleCount == XLLSyntax.frameSampleCount else {
             throw DTSError.unsupported(
@@ -174,6 +175,7 @@ struct XLLEncoder: Sendable {
         var segmentCount = 0
         var segmentSampleCount = 0
         var bestSegmentationByteCount = Int.max
+        var preferredCandidateSelected = false
         for candidate in segmentationCandidates {
             let candidateModes = channelSets.map {
                 selectEntropyModes(
@@ -217,12 +219,23 @@ struct XLLEncoder: Sendable {
                     .flatMap { $0 }
                     .reduce(0) { $0 + $1.count }
                     + navigationByteCount
-                if candidateByteCount < bestSegmentationByteCount {
+                // A preferred partition is a stability request: terminals
+                // latch segment navigation, so a per-frame byte-count race
+                // between 2x256 and 4x128 produces mid-programme
+                // reconfiguration seams. Honor the preference whenever the
+                // partition is representable; fall back to the ordinary
+                // cheapest-valid search only when it is not.
+                let candidateIsPreferred = candidate.count == preferredSegmentCount
+                if candidateIsPreferred || (
+                    !preferredCandidateSelected
+                        && candidateByteCount < bestSegmentationByteCount
+                ) {
                     bestSegmentationByteCount = candidateByteCount
                     modes = candidateModes
                     segments = candidateSegments
                     segmentCount = candidate.count
                     segmentSampleCount = candidate.samples
+                    preferredCandidateSelected = candidateIsPreferred
                 }
             }
         }
@@ -389,10 +402,37 @@ struct XLLEncoder: Sendable {
             // an equal-power 7.1-to-5.1 fold, while the hierarchical matrix
             // reconstructs the original side/rear split. This form is reserved
             // for the explicit Core-residual research policy below.
+            //
+            // The declared downmix scale must describe the fold that actually
+            // produced each Core channel. C/L/R/LFE enter the Core unscaled
+            // (scale 1, code 497); only the surround pair was folded at
+            // -3.0103 dB (scale 1/sqrt(2), code 473). Declaring 473 on the
+            // pass-through channels makes every decoder multiply their Core
+            // PCM by sqrt(2), pushing any content above -3 dBFS past the
+            // signed 24-bit boundary. Reconstruction then depends on the
+            // terminal saturating that intermediate exactly like this
+            // encoder's local mirror; hardware with a wide (or wrapping)
+            // accumulator emits multi-million-count sample errors precisely
+            // at loud onsets.
             let scaleCode = 473
+            let passThroughScaleCode = 497
             let zeroCoefficientCode = 256
             let surroundCoefficientCode = 473
             let inverseScale = try XLLSyntax.inverseDownmixScaleQ16(code: scaleCode)
+            let passThroughInverseScale = try XLLSyntax.inverseDownmixScaleQ16(
+                code: passThroughScaleCode
+            )
+            // Original-order primary channels: [C, L, R, LFE, Ls, Rs].
+            let channelScaleCodes = [
+                passThroughScaleCode, passThroughScaleCode,
+                passThroughScaleCode, passThroughScaleCode,
+                scaleCode, scaleCode
+            ]
+            let channelInverseScales = [
+                passThroughInverseScale, passThroughInverseScale,
+                passThroughInverseScale, passThroughInverseScale,
+                inverseScale, inverseScale
+            ]
             let coreOrder = [2, 0, 1, 3, 4, 5]
             let selectedLeftCoefficient = try selectHierarchyCoefficientCode(
                 base: pcm.planes[6],
@@ -442,7 +482,9 @@ struct XLLEncoder: Sendable {
                 )
                 for channel in 0..<6 {
                     let core = coreReconstruction.planes[coreOrder[channel]][sample]
-                    let scaledCoreUnclipped = (Int64(core) * Int64(inverseScale) + 32_768) >> 16
+                    let scaledCoreUnclipped = (
+                        Int64(core) * Int64(channelInverseScales[channel]) + 32_768
+                    ) >> 16
                     let scaledCore = min(
                         Int64(8_388_607),
                         max(Int64(-8_388_608), scaledCoreUnclipped)
@@ -518,7 +560,7 @@ struct XLLEncoder: Sendable {
                     residualChannelMask: 0x03,
                     primary: false,
                     hierarchical: true,
-                    downmixScaleCodes: Array(repeating: scaleCode, count: 6),
+                    downmixScaleCodes: channelScaleCodes,
                     downmixCoefficientCodes: [
                         zeroCoefficientCode, zeroCoefficientCode,
                         zeroCoefficientCode, zeroCoefficientCode,

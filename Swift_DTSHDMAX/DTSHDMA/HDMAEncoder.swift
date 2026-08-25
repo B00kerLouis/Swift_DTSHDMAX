@@ -376,6 +376,18 @@ public struct DTSHDMAEncoder: Sendable {
                     ?? nativeSessionStartupSegmentCount
                     ?? configuration.forcedXLLSegmentCount
                     ?? privatePreferredSegmentCount
+                // Frames without a grammar-fixed partition (active heights)
+                // prefer the reference programme's steady 2x256 form instead
+                // of racing the cost search per frame; see
+                // terminalSteadyStatePublicSegmentCount.
+                let steadyStateSegmentCount: Int?
+                if forcedSegmentCount == nil,
+                   case .session(let session) = privateXLLXSource {
+                    steadyStateSegmentCount = session
+                        .terminalSteadyStatePublicSegmentCount(at: item.frameIndex)
+                } else {
+                    steadyStateSegmentCount = nil
+                }
                 let xll = try frameXLLEncoder.encode(
                     frame: item.frame,
                     useSevenOneHierarchy: configuration.profile == .dtsHDMA
@@ -407,7 +419,8 @@ public struct DTSHDMAEncoder: Sendable {
                             }
                         }
                     },
-                    forcedSegmentCount: forcedSegmentCount
+                    forcedSegmentCount: forcedSegmentCount,
+                    preferredSegmentCount: steadyStateSegmentCount
                 )
                 guard let segmentationPlan = xll.info.segmentationPlan else {
                     throw DTSError.malformed("encoded public XLL frame has no segmentation plan")

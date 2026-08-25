@@ -2286,7 +2286,7 @@ public enum DTSHDMACommandLine {
           hdmax sha256 INPUT
           hdmax md5 INPUT
           hdmax generate stereo|5.1|7.1 FRAME_COUNT OUTPUT.wav
-          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|hot-sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax compare EXPECTED.wav ACTUAL.wav
           hdmax compare-padded EXPECTED.wav PADDED_ACTUAL.wav
           hdmax render-7.1-to-5.1 INPUT.wav OUTPUT.wav

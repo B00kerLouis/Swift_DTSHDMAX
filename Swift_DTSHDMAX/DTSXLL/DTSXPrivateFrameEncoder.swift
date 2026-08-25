@@ -2805,6 +2805,31 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         return heightsAreSilent ? 2 : nil
     }
 
+    /// Returns the public-XLL partition the terminal profiles should prefer
+    /// for frames whose partition is not fixed by the frame-indexed silence
+    /// grammar. The reference programme holds 2x256 across active content;
+    /// letting the public cost search race 2x256 against 4x128 per frame
+    /// produces mid-programme navigation reconfiguration seams that terminals
+    /// resolve audibly. The preference is soft: the public encoder falls back
+    /// to another representable partition when a 2x256 segment would exceed
+    /// its navigation size field.
+    public func terminalSteadyStatePublicSegmentCount(at frameIndex: Int) -> Int? {
+        guard (0..<frameCount).contains(frameIndex) else { return nil }
+        switch codingMode {
+        case .research:
+            return nil
+        case .terminalConservative,
+             .terminalBranchTwoConservative,
+             .terminalBranchTwoPredictiveLinear,
+             .terminalBranchTwoRice,
+             .terminalPredictive,
+             .terminalRice,
+             .terminalRiceMeanMagnitude,
+             .terminalRiceBoundedUnary:
+            return 2
+        }
+    }
+
     public func finalize(parallelWorkerCount: Int) throws -> DTSXPrivateEncodedStream {
         lock.lock()
         let completed = measuredFrames

@@ -60,7 +60,7 @@ enum SyntheticPCM {
                 throw DTSError.invalidArgument("silence does not take a channel selector")
             }
 
-        case "impulse", "frame-edge", "sine", "fullscale":
+        case "impulse", "frame-edge", "sine", "hot-sine", "fullscale":
             guard parts.count == 2 else {
                 throw DTSError.invalidArgument(
                     "\(kind) requires one DTS:X channel, for example \(kind):Lfh"
@@ -87,6 +87,16 @@ enum SyntheticPCM {
                 for sample in 0..<sampleCount {
                     let phase = 2.0 * Double.pi * frequency * Double(sample) / 48_000.0
                     planes[channel][sample] = Int32((sin(phase) * 2_000_000.0).rounded())
+                }
+            case "hot-sine":
+                // Loud programme material sits above -3 dBFS; every other
+                // pattern here stays far below it, which is exactly the region
+                // where the Core-residual scaled-Core boundary lives. Keep one
+                // controlled vector inside that envelope.
+                let frequency = 997.0
+                for sample in 0..<sampleCount {
+                    let phase = 2.0 * Double.pi * frequency * Double(sample) / 48_000.0
+                    planes[channel][sample] = Int32((sin(phase) * 7_969_177.0).rounded())
                 }
             case "fullscale":
                 for sample in 0..<sampleCount {
@@ -164,8 +174,8 @@ enum SyntheticPCM {
         default:
             throw DTSError.invalidArgument(
                 "unknown DTS:X control pattern \(pattern); use silence, impulse:CHANNEL, "
-                    + "frame-edge:CHANNEL, sine:CHANNEL, fullscale:CHANNEL, all-sine, "
-                    + "or channel-walk"
+                    + "frame-edge:CHANNEL, sine:CHANNEL, hot-sine:CHANNEL, fullscale:CHANNEL, "
+                    + "all-sine, or channel-walk"
             )
         }
         return try DTS714PCMBuffer(planes: planes)
