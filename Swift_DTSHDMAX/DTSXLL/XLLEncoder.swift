@@ -33,6 +33,25 @@ public enum XLLCodingMode: Sendable, Equatable, Codable {
     /// Experimental fixed-segmentation Rice syntax. It is retained for
     /// reference-stream experiments and is not a product default.
     case terminalRice
+    /// Official-corpus delivery grammar for the DTS:X Core-residual path:
+    /// active segments use ordinary Rice with explicit per-channel
+    /// parameters (the recovered reference streams code every observed
+    /// active segment as Rice even when a linear width would also fit),
+    /// all-zero segments keep the compact zero-width linear form, and the
+    /// free partition search is pinned to the ordinary 2x256 delivery form
+    /// (the references reach 4x128 only through the frame-indexed
+    /// silent-start transition, which arrives as a forced segment count).
+    /// Prediction, decorrelation, hybrid Rice, shared allocation and
+    /// state reuse remain disabled exactly as in ``terminalConservative``.
+    ///
+    /// This exists because the previous all-linear delivery emitted a
+    /// grammar the official corpus never exercises for active content; the
+    /// same terminal family already failed to recognize Linear controls in
+    /// the private XLL-X layer, and once the Core carries the declared
+    /// downmix fold the residuals shrink into small linear widths on all
+    /// quiet content, which presented as noise-gate-like dropouts and an
+    /// unreadable first active frame on hardware.
+    case terminalOfficialRice
 }
 
 struct XLLEncoder: Sendable {
@@ -162,6 +181,13 @@ struct XLLEncoder: Sendable {
                     (count: 4, samples: 128)
                 ]
             case .terminalRice:
+                segmentationCandidates = [(count: 2, samples: 256)]
+            case .terminalOfficialRice:
+                // The official corpus uses 4x128 only around the frame-indexed
+                // silent-start transition, which reaches this encoder through
+                // ``forcedSegmentCount``. Every freely searched delivery frame
+                // in the references is 2x256, so the compression-cost search
+                // must not be allowed to discover the other partitions.
                 segmentationCandidates = [(count: 2, samples: 256)]
             }
         }
@@ -645,7 +671,9 @@ struct XLLEncoder: Sendable {
             // syntax only and the decoder reconstructs the same direct PCM.
             return inputs
         }
-        if codingMode == .terminalConservative || codingMode == .terminalRice {
+        if codingMode == .terminalConservative
+            || codingMode == .terminalRice
+            || codingMode == .terminalOfficialRice {
             // Terminal delivery keeps the channel-set syntax explicit and
             // independently invertible.  Do not ask a hardware decoder to
             // reproduce a locally selected prediction/decorrelation transform
@@ -1453,7 +1481,9 @@ struct XLLEncoder: Sendable {
                 }
             }
         }
-        if codingMode == .terminalRice || codingMode == .terminalPredictive {
+        if codingMode == .terminalRice
+            || codingMode == .terminalOfficialRice
+            || codingMode == .terminalPredictive {
             return (0..<segmentCount).map { segment in
                 let start = segment * segmentSampleCount
                 let end = start + segmentSampleCount

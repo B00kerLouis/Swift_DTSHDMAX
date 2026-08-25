@@ -103,10 +103,17 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
         publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
-        // Keep the public XLL residual path direct as well. Terminal playback
-        // has not yet certified locally selected predictor/Rice state, and a
-        // single malformed state transition can present as a full-scale pop.
-        publicXLLCodingMode: XLLCodingMode = .terminalConservative,
+        // The public XLL residual path stays free of locally selected
+        // prediction/decorrelation and entropy-state transitions, but its
+        // active segments now use ordinary Rice with explicit per-channel
+        // parameters: every observed official active delivery segment is
+        // Rice-coded, while the previous all-linear form is a grammar the
+        // corpus never exercises. With the Core carrying the declared
+        // downmix fold, residuals shrink to Core-codec-error size and an
+        // all-linear stream spends its life in small uncertified linear
+        // widths - the hardware presented that as noise-gate-like dropouts
+        // on quiet content and an unreadable first active frame.
+        publicXLLCodingMode: XLLCodingMode = .terminalOfficialRice,
         publicXLLForcedSegmentCount: Int? = nil,
         // Hardware accepted the Branch-0 Straight-Rice controls while Linear
         // controls were not recognized and Branch-2 controls clicked. Keep the

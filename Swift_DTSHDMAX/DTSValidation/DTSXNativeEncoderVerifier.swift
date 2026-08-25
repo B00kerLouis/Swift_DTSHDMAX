@@ -16,7 +16,7 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let privateDifferentSampleCount: Int
     public let terminalCoreSynchronizationPassed: Bool
     public let terminalCoreResidualChannelSetsPassed: Bool
-    public let terminalConservativeXLLSyntaxPassed: Bool
+    public let terminalOfficialRiceXLLSyntaxPassed: Bool
     public let terminalPredictiveXLLSyntaxPassed: Bool
     public let terminalConservativeXLLXSyntaxPassed: Bool
     public let terminalStartupTransitionPassed: Bool
@@ -76,7 +76,7 @@ public enum DTSXNativeEncoderVerifier {
         let terminalCoreResidualChannelSetsPassed = try verifyTerminalCoreResidualChannelSets(
             inputURL: output
         )
-        let terminalConservativeXLLSyntaxPassed = try verifyTerminalConservativeXLLSyntax(
+        let terminalOfficialRiceXLLSyntaxPassed = try verifyTerminalOfficialRiceXLLSyntax(
             inputURL: output
         )
         let terminalPredictiveXLLSyntaxPassed = try verifyTerminalPredictiveXLLSyntax(
@@ -112,7 +112,7 @@ public enum DTSXNativeEncoderVerifier {
             && bedMismatchCount == 0
             && terminalCoreSynchronizationPassed
             && terminalCoreResidualChannelSetsPassed
-            && terminalConservativeXLLSyntaxPassed
+            && terminalOfficialRiceXLLSyntaxPassed
             && terminalPredictiveXLLSyntaxPassed
             && terminalConservativeXLLXSyntaxPassed
             && terminalStartupTransitionPassed
@@ -139,7 +139,7 @@ public enum DTSXNativeEncoderVerifier {
             privateDifferentSampleCount: privateMismatchCount,
             terminalCoreSynchronizationPassed: terminalCoreSynchronizationPassed,
             terminalCoreResidualChannelSetsPassed: terminalCoreResidualChannelSetsPassed,
-            terminalConservativeXLLSyntaxPassed: terminalConservativeXLLSyntaxPassed,
+            terminalOfficialRiceXLLSyntaxPassed: terminalOfficialRiceXLLSyntaxPassed,
             terminalPredictiveXLLSyntaxPassed: terminalPredictiveXLLSyntaxPassed,
             terminalConservativeXLLXSyntaxPassed: terminalConservativeXLLXSyntaxPassed,
             terminalStartupTransitionPassed: terminalStartupTransitionPassed,
@@ -208,7 +208,17 @@ public enum DTSXNativeEncoderVerifier {
         return primaryMasks == [0]
     }
 
-    private static func verifyTerminalConservativeXLLSyntax(inputURL: URL) throws -> Bool {
+    /// Gates the official-corpus delivery grammar of the public XLL residual
+    /// path. After the two compact zero priming frames, every segment that
+    /// carries residual content must be ordinary Rice with an explicit
+    /// per-channel parameter, and only all-zero segments may keep the compact
+    /// zero-width linear form. A nonzero-width linear active segment is the
+    /// one grammar the recovered references never exercise; once the Core
+    /// carried the declared downmix fold, the shrunken residuals put an
+    /// all-linear encode permanently inside that unexercised form, which the
+    /// terminal presented as noise-gate-like dropouts on quiet content and an
+    /// unreadable first active frame.
+    private static func verifyTerminalOfficialRiceXLLSyntax(inputURL: URL) throws -> Bool {
         let stream = try XLLPBRStreamReader.read(inputURL: inputURL)
         guard !stream.frames.isEmpty else { return false }
         let primingFrameCount = XLLSyntax.coreCompatiblePrimingSampleCount
@@ -220,7 +230,7 @@ public enum DTSXNativeEncoderVerifier {
                 // The DTS:X Core pre-roll uses the compact zero-XLL grammar
                 // seen in the reference stream. It is the only delivery frame
                 // allowed to use common entropy parameters and identity
-                // pairwise decorrelation in the conservative profile.
+                // pairwise decorrelation in this profile.
                 guard decoded.frameByteCount == 132,
                       decoded.entropyStateReuseSegmentCount == 0,
                       decoded.entropyCommonParameterSegmentCount == 4,
@@ -239,23 +249,41 @@ public enum DTSXNativeEncoderVerifier {
                 }
                 continue
             }
+            let segmentCount = try XLLFrameASTParser.parse(frame.frame).segmentCount
+            guard segmentCount > 0,
+                  XLLSyntax.frameSampleCount.isMultiple(of: segmentCount) else {
+                return false
+            }
+            let segmentSampleCount = XLLSyntax.frameSampleCount / segmentCount
+            // With prediction and decorrelation disabled the decoded planes
+            // are the coded residual planes, so the exact per-segment
+            // activity map is recoverable from the decode.
+            var activeSegmentParameterCount = 0
+            for channelSet in decoded.channelSets {
+                for plane in channelSet.planes {
+                    guard plane.count == XLLSyntax.frameSampleCount else { return false }
+                    for segment in 0..<segmentCount {
+                        let start = segment * segmentSampleCount
+                        if plane[start..<(start + segmentSampleCount)].contains(where: { $0 != 0 }) {
+                            activeSegmentParameterCount += 1
+                        }
+                    }
+                }
+            }
             guard decoded.entropyStateReuseSegmentCount == 0,
                   decoded.entropyCommonParameterSegmentCount == 0,
-                  decoded.entropyRiceParameterCount == 0,
                   decoded.hybridRiceParameterCount == 0,
-                  decoded.hybridIsolatedSampleCount == 0 else {
+                  decoded.hybridIsolatedSampleCount == 0,
+                  decoded.entropyRiceParameterCount == activeSegmentParameterCount,
+                  decoded.channelSets.allSatisfy({ channelSet in
+                      channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
+                          && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
+                          && !channelSet.decorrelationEnabled
+                  }) else {
                 return false
             }
         }
-        // Terminal-conservative delivery deliberately keeps every channel set
-        // in direct sample order until predictor interoperability is certified.
-        return stream.frames.dropFirst(primingFrameCount).allSatisfy { frame in
-            (try? XLLDecoder().decodeChannelSets(frame: frame.frame))?.channelSets.allSatisfy {
-                $0.adaptivePredictionOrders.allSatisfy { $0 == 0 }
-                    && $0.fixedPredictionOrders.allSatisfy { $0 == 0 }
-                    && !$0.decorrelationEnabled
-            } == true
-        }
+        return true
     }
 
     private static func verifyTerminalPredictiveXLLSyntax(inputURL: URL) throws -> Bool {
@@ -427,24 +455,37 @@ public enum DTSXNativeEncoderVerifier {
             return false
         }
 
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("swift-native-dtsx-active-startup-\(UUID().uuidString)")
-        let output = root.appendingPathExtension("dtshd")
-        defer { try? FileManager.default.removeItem(at: output) }
-        let encoded = try DTSXNativeHDMAEncoder(
-            verificationPolicy: .none,
-            publicXLLForcedSegmentCount: 2,
-            privateXLLXCodingMode: .terminalRice
-        ).encode(source: activeSource, frameRate: .fps24)
-        try encoded.stream.write(to: output, options: .atomic)
-        let publicStream = try XLLPBRStreamReader.read(inputURL: output)
-        let publicSegments = try publicStream.frames.map {
-            try XLLFrameASTParser.parse($0.frame).segmentCount
+        // The forced-2 diagnostic must hold, and so must the production free
+        // search: the official corpus reaches 4x128 only through the
+        // frame-indexed silent-start transition, so an active start must stay
+        // on the ordinary 2x256 delivery partition even when no override is
+        // present. The regression this gates was real - a compression-cost
+        // search that was allowed to discover 4x128 put the first active
+        // access unit into a partition the references never pair with active
+        // content, and the terminal could not read that first frame.
+        for forcedSegmentCount in [Int?.some(2), nil] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("swift-native-dtsx-active-startup-\(UUID().uuidString)")
+            let output = root.appendingPathExtension("dtshd")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let encoded = try DTSXNativeHDMAEncoder(
+                verificationPolicy: .none,
+                publicXLLForcedSegmentCount: forcedSegmentCount,
+                privateXLLXCodingMode: .terminalRice
+            ).encode(source: activeSource, frameRate: .fps24)
+            try encoded.stream.write(to: output, options: .atomic)
+            let publicStream = try XLLPBRStreamReader.read(inputURL: output)
+            let publicSegments = try publicStream.frames.map {
+                try XLLFrameASTParser.parse($0.frame).segmentCount
+            }
+            guard publicSegments == [2, 2, 2, 2, 2] else { return false }
+            let structural = try DTSXObjectExtractor.verify(inputURL: output)
+            guard structural.isStructurallyValid
+                && structural.allPrivateFramesMatchPublicSegmentation else {
+                return false
+            }
         }
-        guard publicSegments == [2, 2, 2, 2, 2] else { return false }
-        let structural = try DTSXObjectExtractor.verify(inputURL: output)
-        return structural.isStructurallyValid
-            && structural.allPrivateFramesMatchPublicSegmentation
+        return true
     }
 
     /// Exercises the adaptive predictor's one-time Part A seed partition and

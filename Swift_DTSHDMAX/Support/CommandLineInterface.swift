@@ -2155,13 +2155,15 @@ public enum DTSHDMACommandLine {
             return .terminalLegacyLinear
         case "rice":
             return .terminalRice
+        case "official-rice":
+            return .terminalOfficialRice
         case "predictive":
             return .terminalPredictive
         case "research":
             return .research
         default:
             throw DTSError.invalidArgument(
-                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, predictive, or research"
+                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, official-rice, predictive, or research"
             )
         }
     }
