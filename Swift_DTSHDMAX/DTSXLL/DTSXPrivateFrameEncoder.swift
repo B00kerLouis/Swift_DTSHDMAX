@@ -2620,6 +2620,14 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     public let encodedSourceSampleCount: Int
     public let primingFrameCount: Int
     public let frameCount: Int
+    /// True when the whole 4x128 silent-start pair applies: every height
+    /// sample covered by the first two source access units is zero. The
+    /// decision is made once for the pair because the two startup forms
+    /// (the navigated code-15 silence and the code-16 no-NAVI silence) are
+    /// one grammar; deciding per access unit could emit the first half of
+    /// the pair and then abandon it, a declaration sequence no reference
+    /// stream contains.
+    public let usesSilentStartupGrammar: Bool
 
     private let sourceHeightPlanes: [[Int32]]
     private let routing: DTSXPrivateRouting
@@ -2674,6 +2682,13 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             codedPlaneToHeightPermutation: [1, 0, 3, 2],
             branchCode: 0
         )
+        let startupSampleCount = min(
+            requestedSampleCount,
+            2 * DTSXPrivateFrameEncoder.frameSampleCount
+        )
+        usesSilentStartupGrammar = sourceHeightPlanes.allSatisfy { plane in
+            plane[0..<startupSampleCount].allSatisfy { $0 == 0 }
+        }
         self.codingMode = codingMode
         silent = Array(
             repeating: Array(
@@ -2862,22 +2877,19 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         guard (0..<frameCount).contains(frameIndex) else { return nil }
         guard codingMode.isTerminalDelivery else { return nil }
         if frameIndex < primingFrameCount { return 2 }
-        let sourceStart = (frameIndex - primingFrameCount)
-            * DTSXPrivateFrameEncoder.frameSampleCount
-        let available = max(0, min(
-            DTSXPrivateFrameEncoder.frameSampleCount,
-            sourceSampleCount - sourceStart
-        ))
-        let heightsAreSilent = sourceHeightPlanes.allSatisfy { plane in
-            plane[sourceStart..<(sourceStart + available)].allSatisfy { $0 == 0 }
-        }
-        // The 4x128 transition is the observed Nature's Fury silent-start
-        // grammar, not a universal rule for the first two source access units.
-        // Official active-height controlled vectors enter ordinary 2x256
-        // coding immediately, so active startup frames must remain available
-        // to the public encoder's normal segmentation search.
+        // The startup grammar is decided once for the whole pair of first
+        // source access units. A silent start follows the observed Nature's
+        // Fury sequence: both first source frames declare 4x128 and carry the
+        // paired navigated/no-NAVI silence forms. An active start follows the
+        // official active-height controlled vectors, which enter ordinary
+        // 2x256 coding at the very first source access unit. Leaving active
+        // startup frames to the public encoder's byte-count search instead
+        // let the first declared partitions vary with content — a decoder
+        // that latches its segment navigation on the access unit it first
+        // synchronizes to then reconfigures exactly where the programme
+        // starts, which presents as an unplayable first frame.
         if frameIndex < primingFrameCount + 2 {
-            return heightsAreSilent ? 4 : nil
+            return usesSilentStartupGrammar ? 4 : 2
         }
         return 2
     }

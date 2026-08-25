@@ -384,8 +384,14 @@ public enum DTSXNativeEncoderVerifier {
     }
 
     /// Active-height controlled references do not use Nature's Fury's silent
-    /// 4x128 transition. Verify both the session policy and the enclosing HDMA
-    /// selection so a second unconditional startup override cannot return.
+    /// 4x128 transition: they enter ordinary 2x256 coding at the very first
+    /// source access unit. The session must therefore pin an active start to
+    /// the immediate 2x256 declaration rather than leaving the first source
+    /// partitions to the public encoder's content-dependent byte-count
+    /// search, and the whole declared sequence must already be uniform
+    /// without any diagnostic segmentation override. A start that mixes
+    /// silent and active first source frames must not emit half of the
+    /// silent-start pair.
     private static func verifyTerminalActiveStartupSegmentationPolicy() throws -> Bool {
         let sourceSampleCount = XLLSyntax.frameSampleCount * 3
         var planes = Array(
@@ -401,30 +407,53 @@ public enum DTSXNativeEncoderVerifier {
             source: activeSource,
             codingMode: .terminalRiceOfficial
         )
-        guard (0..<session.frameCount).map({
-            session.terminalPreferredPublicSegmentCount(at: $0)
-        }) == [2, 2, nil, nil, 2] else {
+        guard !session.usesSilentStartupGrammar,
+              (0..<session.frameCount).map({
+                  session.terminalPreferredPublicSegmentCount(at: $0)
+              }) == [2, 2, 2, 2, 2] else {
             return false
         }
 
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("swift-native-dtsx-active-startup-\(UUID().uuidString)")
-        let output = root.appendingPathExtension("dtshd")
-        defer { try? FileManager.default.removeItem(at: output) }
-        let encoded = try DTSXNativeHDMAEncoder(
-            verificationPolicy: .none,
-            publicXLLForcedSegmentCount: 2,
-            privateXLLXCodingMode: .terminalRiceOfficial
-        ).encode(source: activeSource, frameRate: .fps24)
-        try encoded.stream.write(to: output, options: .atomic)
-        let publicStream = try XLLPBRStreamReader.read(inputURL: output)
-        let publicSegments = try publicStream.frames.map {
-            try XLLFrameASTParser.parse($0.frame).segmentCount
+        // A start whose first source frame is silent but whose second is
+        // active is an active start: the paired 4x128 silent-start grammar
+        // must be all-or-nothing.
+        var mixedPlanes = planes
+        for sample in 0..<XLLSyntax.frameSampleCount {
+            mixedPlanes[heightIndex][sample] = 0
         }
-        guard publicSegments == [2, 2, 2, 2, 2] else { return false }
-        let structural = try DTSXObjectExtractor.verify(inputURL: output)
-        return structural.isStructurallyValid
-            && structural.allPrivateFramesMatchPublicSegmentation
+        let mixedSession = try DTSXPrivateStreamEncodingSession(
+            source: try DTS714PCMBuffer(planes: mixedPlanes),
+            codingMode: .terminalRiceOfficial
+        )
+        guard !mixedSession.usesSilentStartupGrammar,
+              (0..<mixedSession.frameCount).map({
+                  mixedSession.terminalPreferredPublicSegmentCount(at: $0)
+              }) == [2, 2, 2, 2, 2] else {
+            return false
+        }
+
+        func verifyEncoding(publicForcedSegmentCount: Int?) throws -> Bool {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("swift-native-dtsx-active-startup-\(UUID().uuidString)")
+            let output = root.appendingPathExtension("dtshd")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let encoded = try DTSXNativeHDMAEncoder(
+                verificationPolicy: .none,
+                publicXLLForcedSegmentCount: publicForcedSegmentCount,
+                privateXLLXCodingMode: .terminalRiceOfficial
+            ).encode(source: activeSource, frameRate: .fps24)
+            try encoded.stream.write(to: output, options: .atomic)
+            let publicStream = try XLLPBRStreamReader.read(inputURL: output)
+            let publicSegments = try publicStream.frames.map {
+                try XLLFrameASTParser.parse($0.frame).segmentCount
+            }
+            guard publicSegments == [2, 2, 2, 2, 2] else { return false }
+            let structural = try DTSXObjectExtractor.verify(inputURL: output)
+            return structural.isStructurallyValid
+                && structural.allPrivateFramesMatchPublicSegmentation
+        }
+        return try verifyEncoding(publicForcedSegmentCount: nil)
+            && verifyEncoding(publicForcedSegmentCount: 2)
     }
 
     /// Exercises the adaptive predictor's one-time Part A seed partition and

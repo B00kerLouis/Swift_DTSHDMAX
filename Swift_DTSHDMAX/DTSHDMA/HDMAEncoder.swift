@@ -349,9 +349,12 @@ public struct DTSHDMAEncoder: Sendable {
                     : xllEncoder
                 // Pre-encoded private-frame callers cannot expose their source
                 // activity, so retain their legacy 4x128 startup contract.
-                // Native sessions decide this from the aligned height PCM:
-                // Nature's Fury-style silent startup uses 4x128, while an
-                // active startup follows the public encoder's cost search.
+                // Native sessions decide this once from the aligned height
+                // PCM: a Nature's Fury-style silent start declares the 4x128
+                // pair, while an active start is held at the official
+                // immediate 2x256 form. Either way the startup declaration is
+                // frame-indexed and content-independent; the byte-count
+                // search never chooses the first declared partitions.
                 let legacyFrameStartupSegmentCount: Int?
                 if case .frames = privateXLLXSource,
                    configuration.xllCodingMode != .research,
