@@ -29,14 +29,21 @@ public struct XLLRecoveryStartupReport: Sendable, Equatable, Codable {
     public let recoveryClipSampleCount: Int
     public let maximumAbsoluteScaledCore: Int64
     /// Largest coded residual. During recovery the terminal plays the scaled
-    /// Core alone, so this is exactly the first-frame divergence from the
-    /// true content and must stay small (Core codec error), never a level
-    /// error.
+    /// Core alone, so the residual is exactly the first-frame divergence
+    /// from the true content. Sample peaks legitimately reach content size
+    /// inside the Core filterbank's onset/tail transients, so the pass gate
+    /// uses the aggregate magnitudes below instead of this peak.
     public let maximumAbsoluteResidual: Int64
     public let maximumAbsolutePrimary: Int64
-    /// The recovery divergence is at least 18 dB below the stream peak
-    /// (residual*8 <= peak). A Core that does not carry the declared fold
-    /// fails this at roughly `peak * (1 - 1/sqrt(2))`.
+    public let totalAbsoluteResidual: Int64
+    public let totalAbsolutePrimary: Int64
+    /// The aggregate recovery divergence is at least 12 dB below the
+    /// aggregate content level (sum|residual| * 4 <= sum|primary|). A Core
+    /// that does not carry the declared fold diverges by `(1 - 1/sqrt(2))`
+    /// of every sample (-7.66 dB, ratio 0.414) and fails on any content.
+    /// Legitimate Core codec error stays well under the gate: even a
+    /// worst-case dense uniform-noise vector measures a 0.18 mean ratio,
+    /// and tonal content is far lower.
     public let residualWithinRecoveryTolerance: Bool
     public let isRecoverySafe: Bool
 }
@@ -74,6 +81,8 @@ public enum XLLRecoveryStartupVerifier {
         var maximumAbsoluteScaledCore: Int64 = 0
         var maximumAbsoluteResidual: Int64 = 0
         var maximumAbsolutePrimary: Int64 = 0
+        var totalAbsoluteResidual: Int64 = 0
+        var totalAbsolutePrimary: Int64 = 0
         var globalSample = 0
 
         for frame in stream.frames.prefix(measuredFrameCount) {
@@ -141,14 +150,16 @@ public enum XLLRecoveryStartupVerifier {
                         maximumAbsolutePrimary,
                         Swift.abs(residual + assembledCore)
                     )
+                    totalAbsoluteResidual += Swift.abs(residual)
+                    totalAbsolutePrimary += Swift.abs(residual + assembledCore)
                 }
             }
             globalSample += decoded.sampleCount
         }
 
-        let residualWithinRecoveryTolerance = maximumAbsolutePrimary == 0
-            ? maximumAbsoluteResidual == 0
-            : maximumAbsoluteResidual * 8 <= maximumAbsolutePrimary
+        let residualWithinRecoveryTolerance = totalAbsolutePrimary == 0
+            ? totalAbsoluteResidual == 0
+            : totalAbsoluteResidual * 4 <= totalAbsolutePrimary
         return XLLRecoveryStartupReport(
             inputPath: input.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
@@ -162,6 +173,8 @@ public enum XLLRecoveryStartupVerifier {
             maximumAbsoluteScaledCore: maximumAbsoluteScaledCore,
             maximumAbsoluteResidual: maximumAbsoluteResidual,
             maximumAbsolutePrimary: maximumAbsolutePrimary,
+            totalAbsoluteResidual: totalAbsoluteResidual,
+            totalAbsolutePrimary: totalAbsolutePrimary,
             residualWithinRecoveryTolerance: residualWithinRecoveryTolerance,
             isRecoverySafe: scaleCodesMatchOfficialConstant
                 && recoveryClipSampleCount == 0

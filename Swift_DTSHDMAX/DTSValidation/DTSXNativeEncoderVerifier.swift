@@ -170,7 +170,13 @@ public enum DTSXNativeEncoderVerifier {
             isVerified: verified
         )
         guard report.isVerified else {
-            throw DTSError.malformed("native DTS:X integrated encoder verification failed")
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let json = (try? encoder.encode(report))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "unencodable report"
+            throw DTSError.malformed(
+                "native DTS:X integrated encoder verification failed: \(json)"
+            )
         }
         return report
     }
