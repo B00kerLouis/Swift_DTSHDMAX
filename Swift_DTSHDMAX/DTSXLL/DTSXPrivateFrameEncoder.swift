@@ -2874,10 +2874,13 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // The 4x128 transition is the observed Nature's Fury silent-start
         // grammar, not a universal rule for the first two source access units.
         // Official active-height controlled vectors enter ordinary 2x256
-        // coding immediately, so active startup frames must remain available
-        // to the public encoder's normal segmentation search.
+        // coding immediately, so an active startup pins the same mid-stream
+        // partition from its first source access unit. Leaving those two
+        // frames to the byte-count search allowed content-dependent 2x256 /
+        // 4x128 zig-zags across the startup window that no reference stream
+        // contains.
         if frameIndex < primingFrameCount + 2 {
-            return heightsAreSilent ? 4 : nil
+            return heightsAreSilent ? 4 : 2
         }
         return 2
     }

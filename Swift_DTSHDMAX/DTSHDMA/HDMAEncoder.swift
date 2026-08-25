@@ -351,7 +351,7 @@ public struct DTSHDMAEncoder: Sendable {
                 // activity, so retain their legacy 4x128 startup contract.
                 // Native sessions decide this from the aligned height PCM:
                 // Nature's Fury-style silent startup uses 4x128, while an
-                // active startup follows the public encoder's cost search.
+                // active startup pins the ordinary 2x256 delivery partition.
                 let legacyFrameStartupSegmentCount: Int?
                 if case .frames = privateXLLXSource,
                    configuration.xllCodingMode != .research,
@@ -368,8 +368,14 @@ public struct DTSHDMAEncoder: Sendable {
                 } else {
                     privatePreferredSegmentCount = nil
                 }
+                // Only the silent-start 4x128 pair is a hard requirement: its
+                // frame-indexed private silence grammar can be expressed
+                // solely against a 4x128 public plan. The active-start 2x256
+                // pin below rides the soft preferred path so an inexpressible
+                // frame can still fall back to the ordinary search.
                 let nativeSessionStartupSegmentCount = item.frameIndex >= primingFrameCount
                     && item.frameIndex < primingFrameCount + 2
+                    && privatePreferredSegmentCount == 4
                     ? privatePreferredSegmentCount : nil
                 // This is intentionally configuration-gated rather than a
                 // delivery default. It lets a reference investigation hold the

@@ -403,7 +403,7 @@ public enum DTSXNativeEncoderVerifier {
         )
         guard (0..<session.frameCount).map({
             session.terminalPreferredPublicSegmentCount(at: $0)
-        }) == [2, 2, nil, nil, 2] else {
+        }) == [2, 2, 2, 2, 2] else {
             return false
         }
 
@@ -411,9 +411,10 @@ public enum DTSXNativeEncoderVerifier {
             .appendingPathComponent("swift-native-dtsx-active-startup-\(UUID().uuidString)")
         let output = root.appendingPathExtension("dtshd")
         defer { try? FileManager.default.removeItem(at: output) }
+        // No forced-segment override: the natural delivery path itself must
+        // enter the official 2x256 partition at the first active source AU.
         let encoded = try DTSXNativeHDMAEncoder(
             verificationPolicy: .none,
-            publicXLLForcedSegmentCount: 2,
             privateXLLXCodingMode: .terminalRiceOfficial
         ).encode(source: activeSource, frameRate: .fps24)
         try encoded.stream.write(to: output, options: .atomic)
