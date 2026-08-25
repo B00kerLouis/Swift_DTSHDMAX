@@ -1,0 +1,50 @@
+{
+  "package": "natures-fury-dtsx-digital-delivery",
+  "purpose": "Cloud subagent reference handoff for perfect commercial DTS:X stream",
+  "createdByAgent": "bc-cdf49b74-6c84-4ac4-bdd7-dfe5621ad1f3",
+  "branch": "cursor/reference-streams-natures-fury-d1f3",
+  "cloudMountStatus": "unavailable",
+  "localMacPaths": [
+    "/Volumes/HP_SSD_FX900_Pro /Xcode_WorkSpace/Swift_DTSHDMAX/Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtshd",
+    "/Volumes/HP_SSD_FX900_Pro /Xcode_WorkSpace/Swift_DTSHDMAX/Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtspbr",
+    "/Volumes/HP_SSD_FX900_Pro /Xcode_WorkSpace/Swift_DTSHDMAX/Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtshd_log.txt"
+  ],
+  "workspaceRelativePaths": [
+    "Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtshd",
+    "Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtspbr",
+    "Research/reference-streams/DTSX/Dolby_Natures_Fury_HDMAX_Digital_Delivery.dtshd_log.txt"
+  ],
+  "binariesStaged": false,
+  "reasonBinariesMissing": "Mac research volume is not mounted in the cloud VM; /Research is gitignored on main",
+  "oracle": {
+    "stem": "Dolby_Natures_Fury_HDMAX_Digital_Delivery",
+    "deliveryMode": "digital-delivery",
+    "canonicalDtshdSHA256": "aac7ab3d927174b1414e008d41bcfcdafbbf18428836058ce2b8cf2e0db0d1c6",
+    "canonicalDtspbrSHA256": "2a55ff6a771cb1ddff97feb674f10f1d6ece5aafc97af420c9e51ece71f639fb",
+    "notes": "BD / Digital Delivery / SCSA stems currently share one byte-identical elementary stream per DTSXReferenceSet"
+  },
+  "recoveredGrammarHints": {
+    "silentStartupPublicPartition": "4x128",
+    "midStreamPublicPartition": "2x256",
+    "corePrimingAccessUnits": 2,
+    "corePrimingSamples": 1024,
+    "nuInitLLDecDlyFrames": 0,
+    "privateRice": "terminalRiceOfficial (mean-magnitude ABIT, unary quotient <= 22)",
+    "privateRouting": "branch-zero stable routing word"
+  },
+  "priorCursorBranch": {
+    "name": "cursor/dtsx-encode-official-vector-refactor-51d8",
+    "tipAtHandoff": "2c9d83f3471c7816dcdc6aa90c5661b7457c56af",
+    "baseMain": "7199a8ecfab928dc2b73f342afb7ce801d893023",
+    "pr": "https://github.com/B00kerLouis/Swift_DTSHDMAX/pull/1"
+  },
+  "localProjectStatus": {
+    "hdmaEncode": "OK (Louis report)",
+    "coreEncode": "OK (Louis report)",
+    "controlledVectorsPresent": true,
+    "symptomsToReFix": [
+      "first two access units not playable (playback appears to start at AU3)",
+      "pops / crackling mid-programme on changing channels"
+    ]
+  }
+}
