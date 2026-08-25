@@ -2770,10 +2770,19 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 segmentationPlan: segmentationPlan
             )
         } else if codingMode.isTerminalDelivery,
-           frameIndex >= primingFrameCount + 2,
+           frameIndex >= primingFrameCount,
            segmentationPlan.segmentCount == 2,
            segmentationPlan.segmentSampleCount == 256,
            codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+            // Every silent source access unit on the ordinary 2x256 partition
+            // carries the code-16 mid-stream form, including the first two
+            // source AUs of an active start. Without this the generic encoder
+            // below emitted its compact 48-byte no-NAVI declaration there —
+            // the Core-priming startup state — so a stream whose height
+            // planes happened to be silent for exactly one of the first two
+            // source AUs repeated a priming declaration mid-programme. A
+            // terminal that counts priming states then treats the first
+            // source access unit as still priming and cannot play it.
             frame = try encoder.encodeTerminalMidstreamTwoSegmentSilence(
                 codedPlanes: codedPlanes,
                 routing: routing,
