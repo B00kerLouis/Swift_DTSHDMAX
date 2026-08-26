@@ -55,6 +55,14 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
     /// two Core priming frames. This is exposed for public-XLL differential
     /// controls; ordinary HDMA keeps its existing explicit-zero default.
     public let compactXLLPriming: Bool
+    /// DTS:X delivery invariant: every emitted Core-residual hierarchy frame
+    /// must keep the official constant matrix (scale/coefficient code 473)
+    /// and the all-zero primary residual mask the reference corpus always
+    /// uses. With the encoder-boundary source guard active these invariants
+    /// hold by construction, so a violation is a diagnosable defect (an
+    /// unguarded overload reached the XLL layer) rather than syntax that
+    /// silently ships. Differential/research configurations leave this off.
+    public let officialHierarchyGrammarEnforced: Bool
     /// Test-only override for public XLL segmentation. Production uses the
     /// encoder's per-frame search when this is nil.
     public let forcedXLLSegmentCount: Int?
@@ -67,6 +75,7 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
         xllCodingMode: XLLCodingMode = .terminalConservative,
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         compactXLLPriming: Bool = false,
+        officialHierarchyGrammarEnforced: Bool = false,
         forcedXLLSegmentCount: Int? = nil
     ) {
         self.format = format
@@ -76,6 +85,7 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
         self.xllCodingMode = xllCodingMode
         self.coreAssociationPolicy = coreAssociationPolicy
         self.compactXLLPriming = compactXLLPriming
+        self.officialHierarchyGrammarEnforced = officialHierarchyGrammarEnforced
         self.forcedXLLSegmentCount = forcedXLLSegmentCount
     }
 }
@@ -281,7 +291,10 @@ public struct DTSHDMAEncoder: Sendable {
             && pcm.format.layout == .sevenOne
             && effectiveCoreAssociationPolicy == .coreResidual
         let totalFrameCount = sourceFrameCount + primingFrameCount
-        let xllEncoder = XLLEncoder(codingMode: configuration.xllCodingMode)
+        let xllEncoder = XLLEncoder(
+            codingMode: configuration.xllCodingMode,
+            enforcesOfficialHierarchyGrammar: configuration.officialHierarchyGrammarEnforced
+        )
         let exssWriter = ExSSWriter()
         let exssAssetDescriptorProfile: ExSSAssetDescriptorProfile = privateXLLXSource == nil
             ? .standardHDMA
@@ -371,7 +384,11 @@ public struct DTSHDMAEncoder: Sendable {
                     || configuration.compactXLLPriming)
                     && item.isPriming
                     && configuration.xllCodingMode != .research
-                    ? XLLEncoder(codingMode: .research)
+                    ? XLLEncoder(
+                        codingMode: .research,
+                        enforcesOfficialHierarchyGrammar:
+                            configuration.officialHierarchyGrammarEnforced
+                    )
                     : xllEncoder
                 // Pre-encoded private-frame callers cannot expose their source
                 // activity, so retain their legacy 4x128 startup contract.

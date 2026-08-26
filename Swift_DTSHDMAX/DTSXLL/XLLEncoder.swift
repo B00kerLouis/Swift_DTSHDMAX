@@ -105,9 +105,21 @@ struct XLLEncoder: Sendable {
     }
 
     private let codingMode: XLLCodingMode
+    /// DTS:X delivery invariant: the Core-residual hierarchy must keep the
+    /// official constant matrix (coefficient code 473) and the all-zero
+    /// primary residual mask on every frame, exactly as the reference corpus
+    /// does. The encoder-boundary source guard makes both hold by
+    /// construction, so under enforcement an escape is reported as a
+    /// diagnosable encode defect instead of being serialized as syntax a
+    /// terminal has never been shown to parse.
+    private let enforcesOfficialHierarchyGrammar: Bool
 
-    init(codingMode: XLLCodingMode = .research) {
+    init(
+        codingMode: XLLCodingMode = .research,
+        enforcesOfficialHierarchyGrammar: Bool = false
+    ) {
         self.codingMode = codingMode
+        self.enforcesOfficialHierarchyGrammar = enforcesOfficialHierarchyGrammar
     }
 
     func encode(
@@ -449,6 +461,16 @@ struct XLLEncoder: Sendable {
                 defaultCode: surroundCoefficientCode,
                 coreAssociationPolicy: coreAssociationPolicy
             )
+            if enforcesOfficialHierarchyGrammar,
+               selectedLeftCoefficient != surroundCoefficientCode
+                || selectedRightCoefficient != surroundCoefficientCode {
+                throw DTSError.malformed(
+                    "XLL hierarchy coefficient escaped the official constant matrix "
+                        + "(left \(selectedLeftCoefficient), right \(selectedRightCoefficient), "
+                        + "expected \(surroundCoefficientCode)): the 7.1.4 source reached the "
+                        + "delivery encoder without composite-headroom guarding"
+                )
+            }
             let leftUndoCoefficient = try XLLSyntax.undoDownmixCoefficientQ15(
                 scaleCode: scaleCode,
                 coefficientCode: selectedLeftCoefficient
@@ -520,6 +542,14 @@ struct XLLEncoder: Sendable {
                         selectedMask |= UInt64(1) << UInt64(channel)
                         selected[channel] = primaryFull[channel]
                     }
+                }
+                if enforcesOfficialHierarchyGrammar, selectedMask != 0 {
+                    throw DTSError.malformed(
+                        "XLL primary residual mask escaped the corpus-constant 0x00 "
+                            + "(selected 0x\(String(selectedMask, radix: 16))): the 7.1.4 "
+                            + "source reached the delivery encoder without "
+                            + "composite-headroom guarding"
+                    )
                 }
                 residualChannelMask = selectedMask
                 primary = selected
