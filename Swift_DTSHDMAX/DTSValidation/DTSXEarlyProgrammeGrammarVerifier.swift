@@ -31,21 +31,37 @@ import Foundation
 ///    references never exercise; on hot starts it appears on exactly the
 ///    frames that stay hot, which is the sustained early-programme failure
 ///    shape.
-/// 6. Every silent private XLL-X frame carries the recovered frame-class
-///    silence form: the 48-byte compact zero declaration appears on exactly
-///    the Core-priming access units and never on a source access unit; the
-///    4x128 startup pair (compact navigated + code-0x80 no-NAVI) appears only
-///    on the two silent-start window AUs; every other silent source AU uses
-///    the ordinary 2x256 code-0x20 no-NAVI form. A priming declaration on a
-///    source access unit extends the terminal's priming window over audible
-///    frames - the DTS:X-only "first frame unplayable while the 7.1 bed
-///    plays" hot-start failure that stays invisible to Rice/partition
-///    audits because every byte of the leaked form is individually valid.
+/// 6. Every private XLL-X frame carries the recovered frame class for its
+///    access unit, keyed on the *whole access unit's* audibility (the
+///    losslessly reconstructed public bed plus the private height planes),
+///    not on the height planes alone. The compact/no-NAVI silence forms are
+///    access-unit silence declarations: the 48-byte compact zero appears on
+///    exactly the Core-priming access units; the 4x128 startup pair (compact
+///    navigated + code-0x80 no-NAVI) appears only on the two window AUs of a
+///    fully silent start; the ordinary 2x256 code-0x20 no-NAVI form appears
+///    on exactly the fully silent source access units - head, mid-stream,
+///    and trailing. A bed-audible access unit whose heights are digital zero
+///    must carry an ordinary navigated delivery frame that decodes to zero
+///    heights: a silence declaration under an audible bed makes the
+///    terminal's DTS:X presentation fail on exactly those access units
+///    (tbh's bed-only head and tail) while the public 7.1 bed keeps playing,
+///    and it stays invisible to Rice/partition audits because every byte of
+///    the misplaced form is individually valid.
+///
+/// Rules are enforced over two windows: the startup window (default ~10 s)
+/// and an equally sized end-of-programme window, so trailing bed-only
+/// access units are audited with the same frame-class timeline.
 public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let inputPath: String
     public let streamSHA256: String
     public let accessUnitCount: Int
     public let measuredAccessUnitCount: Int
+    /// First access unit of the audited end-of-programme window. Equals
+    /// ``measuredAccessUnitCount`` when the head window already reaches the
+    /// end of the stream (short programmes are audited completely).
+    public let trailingWindowStartAccessUnitIndex: Int
+    /// Access units audited inside the end-of-programme window.
+    public let trailingMeasuredAccessUnitCount: Int
     public let primingAccessUnitCount: Int
     public let terminalMaximumUnaryQuotient: Int
     /// Distinct public segment counts observed inside the measured window.
@@ -73,10 +89,18 @@ public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     /// Access units whose private frame is the 48-byte compact zero form -
     /// the Core-priming declaration.
     public let privateCorePrimingFormFrameIndices: [Int]
-    /// Silent private frames whose form violates the recovered frame-class
-    /// timeline (priming form on a source AU, startup form outside the
-    /// silent-start window, generalized navigated silence, or a non-priming
-    /// form on a priming AU).
+    /// Audited access units whose losslessly reconstructed public bed is
+    /// audible (any nonzero sample).
+    public let bedAudibleAccessUnitCount: Int
+    /// Bed-audible access units whose private frame is an ordinary navigated
+    /// delivery frame decoding to zero heights - the required frame class
+    /// for bed-only (height-silent) programme regions.
+    public let privateBedAudibleZeroHeightFrameCount: Int
+    /// Private frames whose form violates the recovered frame-class
+    /// timeline (priming form on a source AU, startup form outside a fully
+    /// silent start window, any compact/no-NAVI silence declaration on a
+    /// bed-audible access unit, navigated zero-height coding on a fully
+    /// silent access unit, or a non-priming form on a priming AU).
     public let privateSilenceFormViolationCount: Int
     public let privateFirstSilenceFormViolationFrameIndex: Int?
     public let privateSilenceFormsFollowOfficialTimeline: Bool
@@ -119,6 +143,41 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             stream.frames.count,
             maximumAccessUnitCount ?? defaultWindowAccessUnitCount
         )
+        // The end-of-programme window has the same width as the head window
+        // and never overlaps it; short programmes are audited completely.
+        let trailingWindowStart = max(window, stream.frames.count - window)
+        let trailingWindowCount = stream.frames.count - trailingWindowStart
+        let auditedFrameIndices = Array(0..<window)
+            + Array(trailingWindowStart..<stream.frames.count)
+
+        // Whole-access-unit audibility comes from the losslessly
+        // reconstructed public bed (Core + XLL residual), which is
+        // sample-exact against the encoder's source, so the audit and the
+        // encoder key on the same access-unit silence. The decode is
+        // performed lazily: streams without an XLL-X private extension never
+        // need it.
+        var reconstructedBedPlanes: [[Int32]]?
+        func bedIsAudible(_ frameIndex: Int) throws -> Bool {
+            guard frameIndex >= primingFrameCount else { return false }
+            if reconstructedBedPlanes == nil {
+                let fileData: Data
+                do {
+                    fileData = try Data(contentsOf: input, options: .mappedIfSafe)
+                } catch {
+                    throw DTSError.io(
+                        "cannot read early-programme stream \(input.path): \(error.localizedDescription)"
+                    )
+                }
+                reconstructedBedPlanes = try DTSHDMADecoder().decode(fileData).planes
+            }
+            let planes = reconstructedBedPlanes!
+            let start = (frameIndex - primingFrameCount) * XLLSyntax.frameSampleCount
+            let end = min(start + XLLSyntax.frameSampleCount, planes.first?.count ?? 0)
+            guard start < end else { return false }
+            return planes.contains { plane in
+                plane[start..<end].contains { $0 != 0 }
+            }
+        }
 
         var segmentCounts: Set<Int> = []
         var fourSegmentFrameIndices: [Int] = []
@@ -136,10 +195,13 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         var hierarchyDeviatingFrameCount = 0
         var hierarchyFirstDeviatingFrameIndex: Int?
         var privateCorePrimingFormFrameIndices: [Int] = []
+        var bedAudibleAccessUnitCount = 0
+        var privateBedAudibleZeroHeightFrameCount = 0
         var privateSilenceFormViolationCount = 0
         var privateFirstSilenceFormViolationFrameIndex: Int?
 
-        for (frameIndex, frame) in stream.frames.prefix(window).enumerated() {
+        for frameIndex in auditedFrameIndices {
+            let frame = stream.frames[frameIndex]
             let ast = try XLLFrameASTParser.parse(frame.frame)
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
             segmentCounts.insert(ast.segmentCount)
@@ -170,26 +232,40 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 if audit.silenceForm == .corePrimingCompact {
                     privateCorePrimingFormFrameIndices.append(frameIndex)
                 }
-                // Frame-class silence timeline (rule 6). Every silent private
-                // frame must carry the recovered form for its access-unit
-                // class; priming AUs must carry exactly the priming form.
+                // Frame-class timeline (rule 6). Every private frame must
+                // carry the recovered class for its access unit, keyed on
+                // whole-access-unit audibility: the compact/no-NAVI forms
+                // are access-unit silence declarations, so an audible bed
+                // requires an ordinary navigated delivery frame even when
+                // the height planes are digital zero, and a fully silent
+                // access unit must carry its silence form rather than a
+                // navigated zero coding.
                 let isPrimingAccessUnit = frameIndex < primingFrameCount
                 let isSilentStartWindowAccessUnit = frameIndex >= primingFrameCount
                     && frameIndex < primingFrameCount + 2
+                let accessUnitBedIsAudible = try bedIsAudible(frameIndex)
+                if accessUnitBedIsAudible { bedAudibleAccessUnitCount += 1 }
                 let formIsTimelineConformant: Bool
                 switch audit.silenceForm {
                 case .corePrimingCompact:
                     formIsTimelineConformant = isPrimingAccessUnit
                 case .startupNavigated, .startupNoNavigation:
                     formIsTimelineConformant = isSilentStartWindowAccessUnit
+                        && !accessUnitBedIsAudible
                 case .midStreamNoNavigation:
                     formIsTimelineConformant = !isPrimingAccessUnit
+                        && !accessUnitBedIsAudible
                 case .navigatedSilence:
-                    // The corpus serializes every silent private frame as one
-                    // of the compact/no-NAVI forms above; generalized
-                    // navigated silence is a grammar the references never
-                    // exercise.
-                    formIsTimelineConformant = false
+                    // Ordinary navigated delivery frame decoding to zero
+                    // heights: required on bed-audible height-silent access
+                    // units (tbh's bed-only head and tail), never exercised
+                    // by the references on fully silent access units.
+                    if !isPrimingAccessUnit, accessUnitBedIsAudible {
+                        privateBedAudibleZeroHeightFrameCount += 1
+                        formIsTimelineConformant = true
+                    } else {
+                        formIsTimelineConformant = false
+                    }
                 case nil:
                     // Active frame; priming AUs are silent by construction,
                     // so an active private frame on a priming AU is itself a
@@ -298,6 +374,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
             accessUnitCount: stream.frames.count,
             measuredAccessUnitCount: window,
+            trailingWindowStartAccessUnitIndex: trailingWindowStart,
+            trailingMeasuredAccessUnitCount: trailingWindowCount,
             primingAccessUnitCount: primingFrameCount,
             terminalMaximumUnaryQuotient: terminalMaximumUnaryQuotient,
             publicSegmentCounts: segmentCounts.sorted(),
@@ -318,6 +396,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             hierarchyDeclarationsFollowOfficialGrammar:
                 hierarchyDeclarationsFollowOfficialGrammar,
             privateCorePrimingFormFrameIndices: privateCorePrimingFormFrameIndices,
+            bedAudibleAccessUnitCount: bedAudibleAccessUnitCount,
+            privateBedAudibleZeroHeightFrameCount: privateBedAudibleZeroHeightFrameCount,
             privateSilenceFormViolationCount: privateSilenceFormViolationCount,
             privateFirstSilenceFormViolationFrameIndex:
                 privateFirstSilenceFormViolationFrameIndex,
@@ -372,10 +452,13 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         /// The code-0x80/0x10 no-NAVI 4x128 zero form of the second
         /// silent-start source access unit.
         case startupNoNavigation
-        /// The ordinary 2x256 code-0x20 no-NAVI source silence.
+        /// The ordinary 2x256 code-0x20 no-NAVI source silence - legal on
+        /// exactly the fully silent (bed and heights) source access units.
         case midStreamNoNavigation
-        /// Generalized navigated all-zero syntax - a silence grammar the
-        /// references never exercise.
+        /// Ordinary navigated delivery syntax decoding to all-zero heights -
+        /// the required class for bed-audible height-silent access units,
+        /// and a violation on fully silent access units, where the
+        /// references always use the compact/no-NAVI silence forms.
         case navigatedSilence
     }
 

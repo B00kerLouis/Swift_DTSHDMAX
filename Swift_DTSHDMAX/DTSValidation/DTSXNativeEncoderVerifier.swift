@@ -21,6 +21,7 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let terminalConservativeXLLXSyntaxPassed: Bool
     public let terminalStartupTransitionPassed: Bool
     public let terminalHotStartStartupTransitionPassed: Bool
+    public let terminalBedOnlyProgrammeTimelinePassed: Bool
     public let terminalActiveStartupSegmentationPolicyPassed: Bool
     public let objectGainUnsmoothedMaximumStepQ30: Int64
     public let objectGainSmoothingMaximumStepQ30: Int64
@@ -102,6 +103,8 @@ public enum DTSXNativeEncoderVerifier {
         let terminalStartupTransitionPassed = try verifyTerminalStartupTransition()
         let terminalHotStartStartupTransitionPassed = try
             verifyTerminalHotStartStartupTransition()
+        let terminalBedOnlyProgrammeTimelinePassed = try
+            verifyTerminalBedOnlyProgrammeTimeline()
         let terminalActiveStartupSegmentationPolicyPassed = try
             verifyTerminalActiveStartupSegmentationPolicy()
         let objectGainSmoothing = DTS714ObjectGainSmoothingVerifier.verify()
@@ -137,6 +140,7 @@ public enum DTSXNativeEncoderVerifier {
             && terminalConservativeXLLXSyntaxPassed
             && terminalStartupTransitionPassed
             && terminalHotStartStartupTransitionPassed
+            && terminalBedOnlyProgrammeTimelinePassed
             && terminalActiveStartupSegmentationPolicyPassed
             && objectGainSmoothing.isVerified
             && adaptiveXLL.passed
@@ -168,6 +172,8 @@ public enum DTSXNativeEncoderVerifier {
             terminalStartupTransitionPassed: terminalStartupTransitionPassed,
             terminalHotStartStartupTransitionPassed:
                 terminalHotStartStartupTransitionPassed,
+            terminalBedOnlyProgrammeTimelinePassed:
+                terminalBedOnlyProgrammeTimelinePassed,
             terminalActiveStartupSegmentationPolicyPassed:
                 terminalActiveStartupSegmentationPolicyPassed,
             objectGainUnsmoothedMaximumStepQ30:
@@ -471,9 +477,19 @@ public enum DTSXNativeEncoderVerifier {
     static let corePrimingXLLXFrameSHA256 =
         "0f9c24a65b214a2a81df643d102e2facf4f176e9fb784c1eb60f6c57cf1c5604"
     /// SHA-256 of the deterministic 52-byte code-0x20 no-NAVI XLL-X frame -
-    /// the ordinary 2x256 source silence.
+    /// the ordinary 2x256 silence declaration for fully silent (bed and
+    /// heights) source access units.
     static let midStreamSilenceXLLXFrameSHA256 =
         "df3fcd92dc6671572596e9c9ede1ca5a278bf4c9563f80d22c867533bdcc1144"
+    /// SHA-256 of the deterministic 316-byte ordinary navigated 2x256
+    /// delivery frame that decodes to zero heights - the required private
+    /// frame class for every bed-audible height-silent access unit (tbh's
+    /// bed-only head and tail). A compact/no-NAVI silence declaration on
+    /// such an access unit is the DTS:X-only "bed plays, DTS:X presentation
+    /// fails" defect.
+    static let bedAudibleZeroHeightsXLLXFrameByteCount = 316
+    static let bedAudibleZeroHeightsXLLXFrameSHA256 =
+        "7c312a858b6517e76082f6529524b1946031412359c1ed128f1fb4d28b7da82c"
 
     private struct HotStartPrivateFrameExpectation {
         /// nil expects an active navigated frame whose size is content-defined.
@@ -482,21 +498,26 @@ public enum DTSXNativeEncoderVerifier {
         let expectsNavigation: Bool
         let sideInfoControlCode: UInt8?
         let sha256: String?
+        /// True requires the private frame to decode to four all-zero
+        /// height planes (the navigated zero-height delivery class).
+        let expectsZeroDecodedHeights: Bool
     }
 
     /// tbh-class hot starts: the bed is active somewhere inside the two-AU
     /// startup window while the startup heights stay silent. The public
     /// partition must stay on the ordinary 2x256 delivery form for every
     /// access unit (the 4x128 startup pair belongs exclusively to fully
-    /// silent starts), and the private silence timeline must leave the
-    /// Core-priming declaration at the first source AU: the 48-byte compact
-    /// zero form on exactly AU0/AU1, then the ordinary code-0x20 source
-    /// silence from AU2 on. The regression this gates is the DTS:X-only
-    /// hot-start failure: with the code-0x20 transition gated at AU4, source
-    /// AU2/AU3 carried byte-identical Core-priming declarations, the
-    /// terminal's priming window extended over the first audible frames, and
-    /// the DTS:X presentation failed while the public 7.1 bed - the same
-    /// downmix - stayed playable.
+    /// silent starts), and the private timeline must key its frame class on
+    /// whole-access-unit audibility: the 48-byte compact zero form on
+    /// exactly AU0/AU1, the code-0x20 silence declaration on exactly the
+    /// fully silent source access units, and an ordinary navigated delivery
+    /// frame decoding to zero heights on every bed-audible height-silent
+    /// access unit. The regressions this gates are both DTS:X-only "bed
+    /// plays, DTS:X presentation fails" failures: priming declarations
+    /// leaking over audible source AUs (first frames unplayable until AU3)
+    /// and silence declarations leaking over the audible bed (tbh's bed-only
+    /// head unplayable for ~10 s while the 7.1 bed - the same downmix -
+    /// stayed playable).
     private static func verifyTerminalHotStartStartupTransition() throws -> Bool {
         let sourceFrameCount = 3
         let sourceSampleCount = XLLSyntax.frameSampleCount * sourceFrameCount
@@ -527,24 +548,38 @@ public enum DTSXNativeEncoderVerifier {
             code: 15,
             expectsNavigation: false,
             sideInfoControlCode: nil,
-            sha256: corePrimingXLLXFrameSHA256
+            sha256: corePrimingXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
         )
         let sourceSilence = HotStartPrivateFrameExpectation(
             byteCount: 52,
             code: 16,
             expectsNavigation: false,
             sideInfoControlCode: 0x20,
-            sha256: midStreamSilenceXLLXFrameSHA256
+            sha256: midStreamSilenceXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
+        )
+        let bedAudibleZeroHeights = HotStartPrivateFrameExpectation(
+            byteCount: bedAudibleZeroHeightsXLLXFrameByteCount,
+            code: 17,
+            expectsNavigation: true,
+            sideInfoControlCode: nil,
+            sha256: bedAudibleZeroHeightsXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
         )
         let activeFrame = HotStartPrivateFrameExpectation(
             byteCount: nil,
             code: 17,
             expectsNavigation: true,
             sideInfoControlCode: nil,
-            sha256: nil
+            sha256: nil,
+            expectsZeroDecodedHeights: false
         )
 
-        // Hot from sample zero: the tbh shape.
+        // Hot from sample zero: the tbh shape. Every source access unit is
+        // bed-audible with silent heights, so the whole run must carry the
+        // ordinary navigated zero-height delivery frame - never a silence
+        // declaration.
         var hotFromSampleZero = silentPlanes()
         writeTone(
             into: &hotFromSampleZero,
@@ -555,7 +590,8 @@ public enum DTSXNativeEncoderVerifier {
         )
         // Silent first source AU, bed enters at the second window AU: the
         // window is half-active, so the 4x128 startup pair must not appear
-        // as a lone declaration.
+        // as a lone declaration; the fully silent AU2 keeps the code-0x20
+        // silence declaration and the bed-audible AU3/AU4 leave it.
         var hotFromSecondWindowAccessUnit = silentPlanes()
         writeTone(
             into: &hotFromSecondWindowAccessUnit,
@@ -565,7 +601,8 @@ public enum DTSXNativeEncoderVerifier {
             frequency: 997.0
         )
         // Silent bed with heights active only at the second window AU: the
-        // private half of the same half-active window.
+        // private half of the same half-active window. The fully silent
+        // AU2/AU4 keep the code-0x20 silence declaration.
         var heightsAtSecondWindowAccessUnit = silentPlanes()
         writeTone(
             into: &heightsAtSecondWindowAccessUnit,
@@ -577,13 +614,159 @@ public enum DTSXNativeEncoderVerifier {
 
         let scenarios: [(planes: [[Int32]], expected: [HotStartPrivateFrameExpectation])] = [
             (hotFromSampleZero, [
-                corePriming, corePriming, sourceSilence, sourceSilence, sourceSilence
+                corePriming, corePriming,
+                bedAudibleZeroHeights, bedAudibleZeroHeights, bedAudibleZeroHeights
             ]),
             (hotFromSecondWindowAccessUnit, [
-                corePriming, corePriming, sourceSilence, sourceSilence, sourceSilence
+                corePriming, corePriming,
+                sourceSilence, bedAudibleZeroHeights, bedAudibleZeroHeights
             ]),
             (heightsAtSecondWindowAccessUnit, [
                 corePriming, corePriming, sourceSilence, activeFrame, sourceSilence
+            ])
+        ]
+        for scenario in scenarios {
+            guard try verifyHotStartScenario(
+                planes: scenario.planes,
+                expected: scenario.expected
+            ) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Bed-only programme timeline: mid-stream height dropouts and the
+    /// end-of-programme tail. Once the programme has started hot, every
+    /// bed-audible height-silent access unit - however late in the stream,
+    /// the zero-padded final access unit included - must carry the ordinary
+    /// navigated zero-height delivery frame, and every fully silent access
+    /// unit must carry the code-0x20 mid-stream silence declaration. Neither
+    /// class may ever re-enter the startup or Core-priming grammar
+    /// mid-stream or at the tail. This pins the fix for tbh's bed-only tail
+    /// (片尾) failing on hardware while height-active regions play.
+    private static func verifyTerminalBedOnlyProgrammeTimeline() throws -> Bool {
+        let corePriming = HotStartPrivateFrameExpectation(
+            byteCount: 48,
+            code: 15,
+            expectsNavigation: false,
+            sideInfoControlCode: nil,
+            sha256: corePrimingXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
+        )
+        let sourceSilence = HotStartPrivateFrameExpectation(
+            byteCount: 52,
+            code: 16,
+            expectsNavigation: false,
+            sideInfoControlCode: 0x20,
+            sha256: midStreamSilenceXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
+        )
+        let bedAudibleZeroHeights = HotStartPrivateFrameExpectation(
+            byteCount: bedAudibleZeroHeightsXLLXFrameByteCount,
+            code: 17,
+            expectsNavigation: true,
+            sideInfoControlCode: nil,
+            sha256: bedAudibleZeroHeightsXLLXFrameSHA256,
+            expectsZeroDecodedHeights: true
+        )
+        let activeFrame = HotStartPrivateFrameExpectation(
+            byteCount: nil,
+            code: 17,
+            expectsNavigation: true,
+            sideInfoControlCode: nil,
+            sha256: nil,
+            expectsZeroDecodedHeights: false
+        )
+
+        let center = DTS714Channel.allCases.firstIndex(of: .center)!
+        let heights = [
+            DTS714Channel.leftFrontHeight, .rightFrontHeight,
+            .leftRearHeight, .rightRearHeight
+        ].map { DTS714Channel.allCases.firstIndex(of: $0)! }
+
+        func tone(
+            into planes: inout [[Int32]],
+            channel: Int,
+            samples: Range<Int>,
+            amplitude: Double,
+            frequency: Double
+        ) {
+            for sample in samples {
+                let phase = 2.0 * Double.pi * frequency * Double(sample) / 48_000.0
+                planes[channel][sample] = Int32((sin(phase) * amplitude).rounded())
+            }
+        }
+        func silentPlanes(sampleCount: Int) -> [[Int32]] {
+            Array(
+                repeating: Array(repeating: Int32(0), count: sampleCount),
+                count: DTS714Channel.allCases.count
+            )
+        }
+
+        // Height dropout mid-stream, bed hot to the last sample: the tail
+        // must stay on the navigated zero-height class.
+        let dropoutSampleCount = XLLSyntax.frameSampleCount * 6
+        var heightDropout = silentPlanes(sampleCount: dropoutSampleCount)
+        tone(
+            into: &heightDropout,
+            channel: center,
+            samples: 0..<dropoutSampleCount,
+            amplitude: 5_000_000,
+            frequency: 997.0
+        )
+        for (heightOrdinal, channel) in heights.enumerated() {
+            tone(
+                into: &heightDropout,
+                channel: channel,
+                samples: (XLLSyntax.frameSampleCount * 2)..<(XLLSyntax.frameSampleCount * 4),
+                amplitude: 3_000_000,
+                frequency: 503.0 + Double(heightOrdinal) * 137.0
+            )
+        }
+
+        // Bed fades to digital silence before the end: the fully silent
+        // trailing access units must use the mid-stream silence declaration,
+        // never the startup pair or the priming form.
+        var silentTail = silentPlanes(sampleCount: dropoutSampleCount)
+        tone(
+            into: &silentTail,
+            channel: center,
+            samples: 0..<(XLLSyntax.frameSampleCount * 3),
+            amplitude: 5_000_000,
+            frequency: 997.0
+        )
+
+        // Bed hot through a partial final access unit: the encoder zero-pads
+        // the tail, and the padded access unit is still bed-audible, so it
+        // must carry the navigated zero-height class.
+        let paddedSampleCount = XLLSyntax.frameSampleCount * 3
+            + XLLSyntax.frameSampleCount / 2
+        var paddedTail = silentPlanes(sampleCount: paddedSampleCount)
+        tone(
+            into: &paddedTail,
+            channel: center,
+            samples: 0..<paddedSampleCount,
+            amplitude: 5_000_000,
+            frequency: 997.0
+        )
+
+        let scenarios: [(planes: [[Int32]], expected: [HotStartPrivateFrameExpectation])] = [
+            (heightDropout, [
+                corePriming, corePriming,
+                bedAudibleZeroHeights, bedAudibleZeroHeights,
+                activeFrame, activeFrame,
+                bedAudibleZeroHeights, bedAudibleZeroHeights
+            ]),
+            (silentTail, [
+                corePriming, corePriming,
+                bedAudibleZeroHeights, bedAudibleZeroHeights, bedAudibleZeroHeights,
+                sourceSilence, sourceSilence, sourceSilence
+            ]),
+            (paddedTail, [
+                corePriming, corePriming,
+                bedAudibleZeroHeights, bedAudibleZeroHeights,
+                bedAudibleZeroHeights, bedAudibleZeroHeights
             ])
         ]
         for scenario in scenarios {
@@ -664,6 +847,23 @@ public enum DTSXNativeEncoderVerifier {
                           segmentSampleCount: 256
                       ),
                       sideInfo.controlCode == controlCode else {
+                    return false
+                }
+            }
+            if expectation.expectsZeroDecodedHeights {
+                let segmentCount = record.xllSyntax?.segmentCount ?? 0
+                guard segmentCount > 0,
+                      XLLSyntax.frameSampleCount.isMultiple(of: segmentCount) else {
+                    return false
+                }
+                let decoded = try DTSXPrivateFrameDecoder.decode(
+                    ast,
+                    segmentCount: segmentCount,
+                    segmentSampleCount: XLLSyntax.frameSampleCount / segmentCount
+                )
+                guard decoded.codedPlanes.allSatisfy({ plane in
+                    plane.allSatisfy { $0 == 0 }
+                }) else {
                     return false
                 }
             }

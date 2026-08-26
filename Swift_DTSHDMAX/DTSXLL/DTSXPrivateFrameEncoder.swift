@@ -125,7 +125,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             branchCode: 0
         ),
         optimizePairwiseDecorrelation: Bool = false,
-        segmentationPlan: XLLSegmentationPlan = Self.defaultSegmentationPlan
+        segmentationPlan: XLLSegmentationPlan = Self.defaultSegmentationPlan,
+        forcesNavigation: Bool = false
     ) throws -> Data {
         try validate(codedPlanes: codedPlanes, routing: routing)
 
@@ -169,7 +170,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             effectiveRouting: routedSelection.routing,
             decorrelation: routedSelection.decorrelation,
             selectedPrediction: selectedPrediction,
-            segmentationPlan: segmentationPlan
+            segmentationPlan: segmentationPlan,
+            forcesNavigation: forcesNavigation
         )
     }
 
@@ -416,7 +418,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         predictionBoundaryByteCount: Int? = nil,
         qualifiedEntropySegments: [DTSXPrivateEntropySegmentSyntax]? = nil,
         noNavigationZeroSideInfo: DTSXPrivateNoNavigationZeroSideInfo? = nil,
-        segmentationPlan: XLLSegmentationPlan
+        segmentationPlan: XLLSegmentationPlan,
+        forcesNavigation: Bool = false
     ) throws -> Data {
         if let qualifiedEntropySegments,
            qualifiedEntropySegments.count != segmentationPlan.segmentCount {
@@ -451,7 +454,15 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // The recovered compact no-NAVI suffix is specific to 2x256. Dynamic
         // 4/8-segment silence uses explicit generalized NAVI so the partition is
         // unambiguous to a decoder.
-        let usesNavigation = !isSilent || segmentationPlan.segmentCount != Self.segmentCount
+        //
+        // `forcesNavigation` is the audible-access-unit zero-height path: an
+        // access unit whose bed is audible must carry an ordinary navigated
+        // delivery frame even when its four height planes are digital zero,
+        // because every compact/no-NAVI zero form the corpus exercises is a
+        // silence declaration that sits only on fully silent access units.
+        let usesNavigation = !isSilent
+            || segmentationPlan.segmentCount != Self.segmentCount
+            || forcesNavigation
         // The no-NAVI zero form is a complete compact grammar, including its
         // suffix; do not substitute ordinary qualified entropy syntax there.
         let effectiveQualifiedEntropySegments = usesNavigation
@@ -2560,6 +2571,20 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     private let routing: DTSXPrivateRouting
     private let silent: [[Int32]]
     private let codingMode: DTSXPrivateCodingMode
+    /// One flag per access unit (priming AUs included): true when every one
+    /// of the twelve 7.1.4 source planes is digital zero across the access
+    /// unit. The recovered compact/no-NAVI private silence forms are silence
+    /// declarations for the whole access unit, so they are keyed on this
+    /// flag rather than on the height planes alone: a bed-audible access
+    /// unit with silent heights must carry an ordinary navigated delivery
+    /// frame (see ``encodeFrame``).
+    private let accessUnitIsFullySilent: [Bool]
+    /// True when both first source access units are fully silent across all
+    /// twelve source planes (bounded by the source length). This is the
+    /// whole silent-start condition for the 4x128 startup grammar; the
+    /// height-only variant let a hot bed under silent startup heights
+    /// nominate a partition the corpus pairs only with silence.
+    private let startupWindowAccessUnitsAreFullySilent: Bool
     private var measuredFrames: [DTSXPrivateMeasuredFrame?]
     private let lock = NSLock()
 
@@ -2617,6 +2642,28 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             ),
             count: DTSXPrivateFrameEncoder.channelCount
         )
+        // Whole-access-unit silence is measured over all twelve source
+        // planes, not just the four heights: the delivered public bed is a
+        // linear fold of the same planes, so an access unit is silent to a
+        // terminal exactly when every source plane is silent. Priming AUs
+        // carry declared-discard zero XLL planes and stay classified silent.
+        var fullySilent = Array(repeating: true, count: frameCount)
+        for frameIndex in primingFrameCount..<frameCount {
+            let sourceStart = (frameIndex - primingFrameCount)
+                * DTSXPrivateFrameEncoder.frameSampleCount
+            let available = max(0, min(
+                DTSXPrivateFrameEncoder.frameSampleCount,
+                requestedSampleCount - sourceStart
+            ))
+            guard available > 0 else { continue }
+            fullySilent[frameIndex] = source.planes.allSatisfy { plane in
+                plane[sourceStart..<(sourceStart + available)].allSatisfy { $0 == 0 }
+            }
+        }
+        accessUnitIsFullySilent = fullySilent
+        startupWindowAccessUnitsAreFullySilent = fullySilent[
+            primingFrameCount..<min(primingFrameCount + 2, frameCount)
+        ].allSatisfy { $0 }
         measuredFrames = Array(repeating: nil, count: frameCount)
     }
 
@@ -2669,78 +2716,80 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // Keep this state transition explicit and frame-indexed so parallel
         // workers cannot accidentally reuse it for later silence.
         //
-        // The 2x256 code-0x20 form below is the *ordinary* delivery silence
-        // for every source access unit whose height planes are silent - the
-        // official stream uses it whenever a non-priming AU carries silent
-        // heights on the mid-stream partition. It must therefore be
-        // available from the very first source AU: a hot start (active bed,
-        // silent heights) keeps the public partition on 2x256, and gating
-        // this form at `primingFrameCount + 2` made source AU2/AU3 fall
-        // through to the generic zero path, which serializes the 48-byte
-        // canonical compact zero form - the Core-priming declaration. The
-        // delivered private timeline then read priming, priming, priming,
-        // priming, source: four byte-identical priming declarations with
-        // the first grammar change at AU4, which is the recorded
-        // "first frames unplayable until AU3" / unplayable all-2x256
-        // startup failure, now confined to the DTS:X private layer (the
-        // public bed plays, only the DTS:X presentation fails). The
-        // compact zero form is exclusively the two Core-priming AUs'
-        // declaration; source silence transitions to code 0x20 at the
-        // first source AU.
+        // Every compact/no-NAVI zero form the corpus exercises - the 48-byte
+        // Core-priming declaration, the 4x128 startup pair, and the 2x256
+        // code-0x20 mid-stream form - sits on access units that are silent
+        // *as a whole*: silent heights over a silent bed. They are silence
+        // declarations for the access unit, not a cheap coding of four zero
+        // planes. Keying them on the height planes alone serialized silence
+        // declarations under an audible bed for every bed-active,
+        // height-silent access unit, and the terminal's DTS:X presentation
+        // failed on exactly those access units - tbh's first ~10 seconds and
+        // its programme tail - while the public 7.1 bed (the same downmix)
+        // kept playing and every height-active region played. A bed-audible
+        // access unit with digital-zero heights therefore encodes through
+        // the ordinary navigated delivery path below (branch-zero,
+        // fixed-order-zero, official Rice over all-zero residuals), exactly
+        // the per-plane zero grammar the official corpus exercises inside
+        // active frames whose remaining planes are silent.
+        let isTerminalDeliveryMode = codingMode == .terminalConservative
+            || codingMode == .terminalRice
+            || codingMode == .terminalRiceMeanMagnitude
+            || codingMode == .terminalRiceBoundedUnary
+            || codingMode == .terminalRiceOfficial
+            || codingMode == .terminalBranchTwoConservative
+            || codingMode == .terminalBranchTwoPredictiveLinear
+            || codingMode == .terminalBranchTwoRice
+            || codingMode == .terminalPredictive
+        let codedPlanesAreSilent = codedPlanes.allSatisfy { plane in
+            plane.allSatisfy { $0 == 0 }
+        }
         let frame: Data
-        if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalRiceOfficial
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        if isTerminalDeliveryMode,
            frameIndex == primingFrameCount,
+           accessUnitIsFullySilent[frameIndex],
            segmentationPlan.segmentCount == 4,
            segmentationPlan.segmentSampleCount == 128,
-           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+           codedPlanesAreSilent {
             frame = try encoder.encodeTerminalStartupNavigatedFourSegmentSilence(
                 codedPlanes: codedPlanes,
                 routing: routing,
                 segmentationPlan: segmentationPlan
             )
-        } else if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalRiceOfficial
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        } else if isTerminalDeliveryMode,
            frameIndex == primingFrameCount + 1,
+           accessUnitIsFullySilent[frameIndex],
            segmentationPlan.segmentCount == 4,
            segmentationPlan.segmentSampleCount == 128,
-           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+           codedPlanesAreSilent {
             frame = try encoder.encodeTerminalNoNavigationFourSegmentSilence(
                 codedPlanes: codedPlanes,
                 routing: routing,
                 segmentationPlan: segmentationPlan
             )
-        } else if (codingMode == .terminalConservative
-                || codingMode == .terminalRice
-                || codingMode == .terminalRiceMeanMagnitude
-                || codingMode == .terminalRiceBoundedUnary
-                || codingMode == .terminalRiceOfficial
-                || codingMode == .terminalBranchTwoConservative
-                || codingMode == .terminalBranchTwoPredictiveLinear
-                || codingMode == .terminalBranchTwoRice
-                || codingMode == .terminalPredictive),
+        } else if isTerminalDeliveryMode,
            frameIndex >= primingFrameCount,
+           accessUnitIsFullySilent[frameIndex],
            segmentationPlan.segmentCount == 2,
            segmentationPlan.segmentSampleCount == 256,
-           codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+           codedPlanesAreSilent {
             frame = try encoder.encodeTerminalMidstreamTwoSegmentSilence(
                 codedPlanes: codedPlanes,
                 routing: routing,
                 segmentationPlan: segmentationPlan
+            )
+        } else if isTerminalDeliveryMode,
+           frameIndex >= primingFrameCount,
+           !accessUnitIsFullySilent[frameIndex],
+           codedPlanesAreSilent {
+            // Bed-audible access unit with silent heights: an ordinary
+            // navigated delivery frame whose four planes decode to zero.
+            frame = try encoder.encode(
+                codedPlanes: codedPlanes,
+                routing: routing,
+                optimizePairwiseDecorrelation: false,
+                segmentationPlan: segmentationPlan,
+                forcesNavigation: true
             )
         } else {
             frame = try encoder.encode(
@@ -2864,31 +2913,19 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // to the public encoder's normal segmentation search.
         //
         // The corpus exercises the 4x128 startup forms only as a pair
-        // covering both first source access units of a fully silent start.
-        // A start whose heights are silent at one window frame but active
-        // at the other would otherwise emit a lone startup declaration the
-        // references never pair with a half-active window, so the window is
-        // nominated only when the height planes are silent across the whole
-        // two-AU window; any other start is an ordinary hot start whose
-        // silent-height frames use the mid-stream 2x256 code-0x20 form.
+        // covering both first source access units of a *fully silent* start:
+        // silent heights over a silent bed across the whole two-AU window.
+        // The window is therefore nominated only when both window access
+        // units are fully silent on all twelve source planes; any other
+        // start is an ordinary hot start on the mid-stream 2x256 partition,
+        // whose silent access units use the code-0x20 form and whose
+        // bed-audible height-silent access units carry ordinary navigated
+        // delivery frames.
         if frameIndex < primingFrameCount + 2 {
-            if startupWindowHeightsAreSilent { return 4 }
+            if startupWindowAccessUnitsAreFullySilent { return 4 }
             return heightsAreSilent ? 2 : nil
         }
         return heightsAreSilent ? 2 : nil
-    }
-
-    /// True when the height planes are silent across both first source
-    /// access units (bounded by the source length). This is the private
-    /// half of the silent-start condition for the 4x128 startup grammar.
-    private var startupWindowHeightsAreSilent: Bool {
-        let windowEnd = min(
-            sourceSampleCount,
-            2 * DTSXPrivateFrameEncoder.frameSampleCount
-        )
-        return sourceHeightPlanes.allSatisfy { plane in
-            plane[0..<windowEnd].allSatisfy { $0 == 0 }
-        }
     }
 
     public func finalize(parallelWorkerCount: Int) throws -> DTSXPrivateEncodedStream {

@@ -437,19 +437,16 @@ public struct DTSHDMAEncoder: Sendable {
                 }
                 // The 4x128 form is the observed Nature's Fury silent-start
                 // grammar, and the references pair it only with fully silent
-                // access units. The private session can see only the height
-                // planes, so a tbh-class start - active bed under silent
-                // heights - would otherwise be forced into a partition the
-                // corpus never pairs with active content, and the terminal
-                // cannot read those first active frames. Gate the startup
-                // nomination on the public compatibility bed as well, and on
-                // the *whole* two-AU window: the corpus exercises the 4x128
-                // startup forms only as a pair over a fully silent start, so
-                // a bed that is active anywhere inside the window turns the
-                // whole start into an ordinary hot start. Its silent-height
-                // frames stay on the mid-stream 2x256 partition, where the
-                // private layer serializes the ordinary code-0x20 source
-                // silence instead of a startup declaration.
+                // access units. The native session now gates its own startup
+                // nomination on whole-access-unit silence across all twelve
+                // source planes, so this rendered-bed check is an independent
+                // second guard: if a 4x128 nomination ever arrives while the
+                // delivered compatibility bed is audible anywhere inside the
+                // two-AU window, the start is an ordinary hot start on the
+                // mid-stream 2x256 partition. Its fully silent access units
+                // use the code-0x20 source silence and its bed-audible
+                // height-silent access units carry ordinary navigated
+                // delivery frames instead of silence declarations.
                 if privatePreferredSegmentCount == 4,
                    !startupWindowBedFramesAreSilent {
                     privatePreferredSegmentCount = 2
