@@ -903,6 +903,19 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-render-guard":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-render-guard takes no arguments")
+            }
+            let renderGuardReport = try DTS714RenderGuardVerifier.verify()
+            print(try jsonString(renderGuardReport))
+            guard renderGuardReport.isVerified else {
+                throw DTSError.malformed(
+                    "rendered 7.1.4 downstream-headroom guard verification failed: "
+                    + "the fold/recovery composites are not closed at hot object motion"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -2347,6 +2360,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
+          hdmax verify-dtsx-render-guard
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]

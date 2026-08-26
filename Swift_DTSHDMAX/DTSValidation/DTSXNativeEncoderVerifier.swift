@@ -37,6 +37,8 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let recoveryClipSampleCount: Int
     public let recoveryMaximumAbsoluteResidual: Int64
     public let recoveryStartupPassed: Bool
+    public let renderGuard: DTS714RenderGuardVerificationReport
+    public let renderGuardPassed: Bool
     public let isStructurallyValid: Bool
     public let isVerified: Bool
 }
@@ -98,6 +100,7 @@ public enum DTSXNativeEncoderVerifier {
         let recoveryHotStart = try verifyHotStartRecoveryWindow()
         let recoveryStartupPassed = recoveryPrimary.isRecoverySafe
             && recoveryHotStart.isRecoverySafe
+        let renderGuard = try DTS714RenderGuardVerifier.verify()
 
         let privateMismatchCount = first.report.privateEncoding.decodedSampleMismatchCount
         let bedMismatchCount = bedComparison.prefix.differentSamples
@@ -121,6 +124,7 @@ public enum DTSXNativeEncoderVerifier {
             && adaptiveXLL.passed
             && hybridXLL.passed
             && recoveryStartupPassed
+            && renderGuard.isVerified
         let report = DTSXNativeEncoderVerificationReport(
             sourceSampleCount: source.sampleCount,
             accessUnitCount: first.report.accessUnitCount,
@@ -166,6 +170,8 @@ public enum DTSXNativeEncoderVerifier {
             recoveryClipSampleCount: recoveryHotStart.recoveryClipSampleCount,
             recoveryMaximumAbsoluteResidual: recoveryHotStart.maximumAbsoluteResidual,
             recoveryStartupPassed: recoveryStartupPassed,
+            renderGuard: renderGuard,
+            renderGuardPassed: renderGuard.isVerified,
             isStructurallyValid: structural.isStructurallyValid,
             isVerified: verified
         )
