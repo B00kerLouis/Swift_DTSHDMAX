@@ -124,10 +124,14 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         publicXLLCodingMode: XLLCodingMode = .terminalOfficialRice,
         publicXLLForcedSegmentCount: Int? = nil,
         // Hardware accepted the Branch-0 Straight-Rice controls while Linear
-        // controls were not recognized and Branch-2 controls clicked. Keep the
-        // product default on fixed-order-zero Branch-0 Rice until the repaired
-        // predictive profile independently clears the terminal gate.
-        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRice
+        // controls were not recognized and Branch-2 controls clicked. The
+        // delivery default stays on fixed-order-zero Branch-0 Rice, but with
+        // the perfect-stream parameter selection: official mean-magnitude
+        // ABIT bounded to the corpus-maximum unary quotient of 22. The
+        // previous exact-minimum ABIT of ``terminalRice`` emitted unary runs
+        // past that bound on heavy-tailed height residuals, which terminal
+        // bounded readers misparse into full-scale pops.
+        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRiceOfficial
     ) {
         self.verificationPolicy = verificationPolicy
         self.publicXLLCoreAssociationPolicy = publicXLLCoreAssociationPolicy

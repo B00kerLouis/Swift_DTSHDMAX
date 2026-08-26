@@ -55,6 +55,19 @@ public enum XLLCodingMode: Sendable, Equatable, Codable {
 }
 
 struct XLLEncoder: Sendable {
+    /// Longest Rice unary quotient observed anywhere in the recovered
+    /// official corpus (public XLL and private XLL-X share the terminal
+    /// bounded-reader family). A minimum-bit Rice parameter minimizes the
+    /// average payload but leaves heavy-tailed residual peaks - Core codec
+    /// error at loud onsets, object transients - with unary runs far past
+    /// this bound, which a terminal bounded reader misparses into
+    /// full-scale pops and sustained early-programme desync on active
+    /// starts. Delivery Rice therefore raises the parameter until every
+    /// emitted quotient fits the official bound; raising ABIT cannot alter
+    /// the decoded residual, it only trades remainder bits for a shorter
+    /// quotient.
+    static let terminalMaximumUnaryQuotient: UInt64 = 22
+
     private enum EntropyMode: Equatable {
         case linear(width: Int)
         case rice(parameter: Int)
@@ -1484,11 +1497,18 @@ struct XLLEncoder: Sendable {
         if codingMode == .terminalRice
             || codingMode == .terminalOfficialRice
             || codingMode == .terminalPredictive {
+            // Official delivery bounds every emitted unary quotient at the
+            // corpus maximum; the experimental terminal Rice modes keep the
+            // historical exact-minimum selection for differential study.
+            let boundsUnaryQuotient = codingMode == .terminalOfficialRice
             return (0..<segmentCount).map { segment in
                 let start = segment * segmentSampleCount
                 let end = start + segmentSampleCount
                 return dtsPlanes.map { plane in
-                    terminalRiceMode(plane[start..<end])
+                    terminalRiceMode(
+                        plane[start..<end],
+                        boundingUnaryQuotient: boundsUnaryQuotient
+                    )
                 }
             }
         }
@@ -1582,8 +1602,16 @@ struct XLLEncoder: Sendable {
     /// Restrict the delivery profile to standard Rice without state reuse,
     /// hybrid exceptions, prediction, or channel transforms. Search the legal
     /// parameter range because active reference XLL frames use ordinary Rice
-    /// even when a linear representation would also fit.
-    private func terminalRiceMode(_ samples: ArraySlice<Int32>) -> EntropyMode {
+    /// even when a linear representation would also fit. Delivery
+    /// (`boundingUnaryQuotient`) additionally raises the parameter until the
+    /// longest emitted unary code fits the official-corpus maximum, exactly
+    /// as the private XLL-X layer already does: a terminal bounded reader
+    /// that stops at that maximum desyncs on longer runs and turns every
+    /// following sample of the segment into full-scale garbage.
+    private func terminalRiceMode(
+        _ samples: ArraySlice<Int32>,
+        boundingUnaryQuotient: Bool
+    ) -> EntropyMode {
         // Preserve the compact zero-width form used by the qualified first
         // XLL frame. Active terminal frames use Rice below.
         guard samples.contains(where: { $0 != 0 }) else {
@@ -1596,6 +1624,17 @@ struct XLLEncoder: Sendable {
             if bitCount < selectedBitCount {
                 selectedParameter = parameter
                 selectedBitCount = bitCount
+            }
+        }
+        if boundingUnaryQuotient {
+            var maximumMapped: UInt64 = 0
+            for sample in samples {
+                maximumMapped = max(maximumMapped, zigZag(sample))
+            }
+            while selectedParameter < 31,
+                  maximumMapped >> UInt64(selectedParameter)
+                    > Self.terminalMaximumUnaryQuotient {
+                selectedParameter += 1
             }
         }
         return .rice(parameter: selectedParameter)

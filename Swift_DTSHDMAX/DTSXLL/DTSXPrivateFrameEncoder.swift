@@ -37,6 +37,17 @@ public enum DTSXPrivateCodingMode: Sendable, Equatable, Codable {
     /// observed in the official corpus. This is a terminal diagnostic and
     /// does not replace ``terminalRice`` before physical qualification.
     case terminalRiceBoundedUnary
+    /// The recovered perfect-stream Rice grammar: Branch-0/fixed-order-zero
+    /// Straight Rice whose ABIT is the official mean-absolute-magnitude
+    /// estimate, raised only as far as needed to keep every emitted unary
+    /// quotient at or below the official-corpus maximum of 22. This combines
+    /// the two properties observed together in the reference streams
+    /// (``terminalRiceMeanMagnitude`` estimator + ``terminalRiceBoundedUnary``
+    /// bound) and is the delivery default: the exact-minimum ABIT of
+    /// ``terminalRice`` leaves heavy-tailed residual peaks with unary runs a
+    /// terminal bounded reader cannot parse, which presented as full-scale
+    /// pops and sustained active-start desync on hardware.
+    case terminalRiceOfficial
 }
 
 /// Encoder-side inverse of the recovered four-plane XLL-X frame grammar.
@@ -175,6 +186,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -222,6 +234,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -269,6 +282,7 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -1689,7 +1703,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             || codingMode == .terminalBranchTwoRice
             || codingMode == .terminalRice
             || codingMode == .terminalRiceMeanMagnitude
-            || codingMode == .terminalRiceBoundedUnary {
+            || codingMode == .terminalRiceBoundedUnary
+            || codingMode == .terminalRiceOfficial {
             return PredictionSelection(
                 residualPlanes: codedPlanes,
                 adaptiveOrders: Array(repeating: 0, count: codedPlanes.count),
@@ -2046,6 +2061,8 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             return .rice(parameter: initialRiceParameter(samples))
         case .terminalRiceBoundedUnary:
             return .rice(parameter: boundedUnaryRiceParameter(samples))
+        case .terminalRiceOfficial:
+            return .rice(parameter: officialRiceParameter(samples))
         case .research, .terminalPredictive:
             break
         }
@@ -2116,10 +2133,14 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         case .linear:
             return .linear(width: minimumLinearWidth(samples))
         case .rice, .hybridRice:
-            return .rice(parameter: codingMode == .terminalPredictive
-                ? optimalRiceParameter(samples)
-                : initialRiceParameter(samples)
-            )
+            switch codingMode {
+            case .terminalPredictive:
+                return .rice(parameter: optimalRiceParameter(samples))
+            case .terminalRiceOfficial:
+                return .rice(parameter: officialRiceParameter(samples))
+            default:
+                return .rice(parameter: initialRiceParameter(samples))
+            }
         }
     }
 
@@ -2162,6 +2183,25 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     /// decoded residual; it only trades remainder bits for a shorter quotient.
     private func boundedUnaryRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
         var parameter = optimalRiceParameter(samples)
+        var maximumMapped: UInt64 = 0
+        for sample in samples {
+            maximumMapped = max(maximumMapped, zigZag(sample))
+        }
+        while parameter < 31,
+              maximumMapped >> UInt64(parameter)
+                > Self.terminalMaximumUnaryQuotient {
+            parameter += 1
+        }
+        return parameter
+    }
+
+    /// The perfect-stream selection: start from the official mean-absolute-
+    /// magnitude ABIT estimate and raise it only as far as needed to keep the
+    /// longest emitted unary code at or below the official-corpus maximum.
+    /// Raising ABIT cannot alter the decoded residual; it only trades
+    /// remainder bits for a shorter quotient.
+    private func officialRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
+        var parameter = initialRiceParameter(samples)
         var maximumMapped: UInt64 = 0
         for sample in samples {
             maximumMapped = max(maximumMapped, zigZag(sample))
@@ -2633,6 +2673,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -2650,6 +2691,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -2667,6 +2709,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 || codingMode == .terminalRice
                 || codingMode == .terminalRiceMeanMagnitude
                 || codingMode == .terminalRiceBoundedUnary
+                || codingMode == .terminalRiceOfficial
                 || codingMode == .terminalBranchTwoConservative
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
@@ -2781,7 +2824,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
              .terminalPredictive,
              .terminalRice,
              .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
             break
         }
         if frameIndex < primingFrameCount { return 2 }
@@ -2890,7 +2934,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
              .terminalBranchTwoRice,
              .terminalRice,
              .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
             terminalPredictionProfileIsAllowed = adaptivePredictionOrderHistogram
                 .dropFirst()
                 .allSatisfy { $0 == 0 }
@@ -2902,7 +2947,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
              .terminalPredictive,
              .terminalRice,
              .terminalRiceMeanMagnitude,
-             .terminalRiceBoundedUnary:
+             .terminalRiceBoundedUnary,
+             .terminalRiceOfficial:
             // Only branch zero has passed real terminal playback. Keep the
             // invariant at stream-finalization time so a future optimizer
             // cannot silently reintroduce the clicking branch-two path.

@@ -903,6 +903,34 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-early-programme":
+            guard (1...2).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-early-programme requires INPUT.dtshd [MAX_ACCESS_UNITS]"
+                )
+            }
+            let earlyWindow: Int?
+            if values.count == 2 {
+                guard let parsedCount = Int(values[1]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_ACCESS_UNITS must be positive")
+                }
+                earlyWindow = parsedCount
+            } else {
+                earlyWindow = nil
+            }
+            let earlyReport = try DTSXEarlyProgrammeGrammarVerifier.verify(
+                inputURL: URL(fileURLWithPath: values[0]),
+                maximumAccessUnitCount: earlyWindow
+            )
+            print(try jsonString(earlyReport))
+            guard earlyReport.isEarlyProgrammeSafe else {
+                throw DTSError.malformed(
+                    "stream diverges from the official DTS:X early-programme grammar: "
+                    + "a terminal bounded Rice reader would desync inside the startup "
+                    + "window and produce sustained garbage or pops"
+                )
+            }
+
         case "verify-dtsx-render-guard":
             guard values.isEmpty else {
                 throw DTSError.invalidArgument("verify-dtsx-render-guard takes no arguments")
@@ -2199,6 +2227,8 @@ public enum DTSHDMACommandLine {
             return .terminalRiceMeanMagnitude
         case "rice-bounded22":
             return .terminalRiceBoundedUnary
+        case "rice-official":
+            return .terminalRiceOfficial
         case "predictive":
             return .terminalPredictive
         case "research":
@@ -2207,7 +2237,7 @@ public enum DTSHDMACommandLine {
             throw DTSError.invalidArgument(
                 "private XLL-X coding mode must be conservative, branch2-conservative, "
                     + "branch2-predictive-linear, branch2-rice, rice, rice-mean, "
-                    + "rice-bounded22, predictive, or research"
+                    + "rice-bounded22, rice-official, predictive, or research"
             )
         }
     }
