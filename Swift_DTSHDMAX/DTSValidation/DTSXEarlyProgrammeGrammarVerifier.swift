@@ -31,6 +31,16 @@ import Foundation
 ///    references never exercise; on hot starts it appears on exactly the
 ///    frames that stay hot, which is the sustained early-programme failure
 ///    shape.
+/// 6. Every silent private XLL-X frame carries the recovered frame-class
+///    silence form: the 48-byte compact zero declaration appears on exactly
+///    the Core-priming access units and never on a source access unit; the
+///    4x128 startup pair (compact navigated + code-0x80 no-NAVI) appears only
+///    on the two silent-start window AUs; every other silent source AU uses
+///    the ordinary 2x256 code-0x20 no-NAVI form. A priming declaration on a
+///    source access unit extends the terminal's priming window over audible
+///    frames - the DTS:X-only "first frame unplayable while the 7.1 bed
+///    plays" hot-start failure that stays invisible to Rice/partition
+///    audits because every byte of the leaked form is individually valid.
 public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let inputPath: String
     public let streamSHA256: String
@@ -60,6 +70,16 @@ public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let hierarchyDeviatingFrameCount: Int
     public let hierarchyFirstDeviatingFrameIndex: Int?
     public let hierarchyDeclarationsFollowOfficialGrammar: Bool
+    /// Access units whose private frame is the 48-byte compact zero form -
+    /// the Core-priming declaration.
+    public let privateCorePrimingFormFrameIndices: [Int]
+    /// Silent private frames whose form violates the recovered frame-class
+    /// timeline (priming form on a source AU, startup form outside the
+    /// silent-start window, generalized navigated silence, or a non-priming
+    /// form on a priming AU).
+    public let privateSilenceFormViolationCount: Int
+    public let privateFirstSilenceFormViolationFrameIndex: Int?
+    public let privateSilenceFormsFollowOfficialTimeline: Bool
     public let isEarlyProgrammeSafe: Bool
 }
 
@@ -115,6 +135,9 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         var hierarchyAuditedFrameCount = 0
         var hierarchyDeviatingFrameCount = 0
         var hierarchyFirstDeviatingFrameIndex: Int?
+        var privateCorePrimingFormFrameIndices: [Int] = []
+        var privateSilenceFormViolationCount = 0
+        var privateFirstSilenceFormViolationFrameIndex: Int?
 
         for (frameIndex, frame) in stream.frames.prefix(window).enumerated() {
             let ast = try XLLFrameASTParser.parse(frame.frame)
@@ -142,6 +165,41 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                     privateUnaryBoundExceededFrameCount += 1
                     if privateFirstUnaryBoundExceededFrameIndex == nil {
                         privateFirstUnaryBoundExceededFrameIndex = frameIndex
+                    }
+                }
+                if audit.silenceForm == .corePrimingCompact {
+                    privateCorePrimingFormFrameIndices.append(frameIndex)
+                }
+                // Frame-class silence timeline (rule 6). Every silent private
+                // frame must carry the recovered form for its access-unit
+                // class; priming AUs must carry exactly the priming form.
+                let isPrimingAccessUnit = frameIndex < primingFrameCount
+                let isSilentStartWindowAccessUnit = frameIndex >= primingFrameCount
+                    && frameIndex < primingFrameCount + 2
+                let formIsTimelineConformant: Bool
+                switch audit.silenceForm {
+                case .corePrimingCompact:
+                    formIsTimelineConformant = isPrimingAccessUnit
+                case .startupNavigated, .startupNoNavigation:
+                    formIsTimelineConformant = isSilentStartWindowAccessUnit
+                case .midStreamNoNavigation:
+                    formIsTimelineConformant = !isPrimingAccessUnit
+                case .navigatedSilence:
+                    // The corpus serializes every silent private frame as one
+                    // of the compact/no-NAVI forms above; generalized
+                    // navigated silence is a grammar the references never
+                    // exercise.
+                    formIsTimelineConformant = false
+                case nil:
+                    // Active frame; priming AUs are silent by construction,
+                    // so an active private frame on a priming AU is itself a
+                    // timeline violation.
+                    formIsTimelineConformant = !isPrimingAccessUnit
+                }
+                if !formIsTimelineConformant {
+                    privateSilenceFormViolationCount += 1
+                    if privateFirstSilenceFormViolationFrameIndex == nil {
+                        privateFirstSilenceFormViolationFrameIndex = frameIndex
                     }
                 }
             } else {
@@ -217,12 +275,24 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             }
         }
 
+        // The corpus exercises 4x128 only as a contiguous run starting at the
+        // first source access unit (the silent-start pair). A lone or
+        // displaced 4x128 window is a startup declaration over a half-active
+        // start that the references never pair.
+        if fourSegmentFrameIndices != Array(
+            primingFrameCount..<(primingFrameCount + fourSegmentFrameIndices.count)
+        ) {
+            partitionsFollowOfficialGrammar = false
+        }
+
         let hierarchyDeclarationsFollowOfficialGrammar = hierarchyDeviatingFrameCount == 0
+        let privateSilenceFormsFollowOfficialTimeline = privateSilenceFormViolationCount == 0
         let isSafe = partitionsFollowOfficialGrammar
             && publicUnaryBoundExceededFrameCount == 0
             && publicResearchSyntaxFrameCount == 0
             && privateUnaryBoundExceededFrameCount == 0
             && hierarchyDeclarationsFollowOfficialGrammar
+            && privateSilenceFormsFollowOfficialTimeline
         return DTSXEarlyProgrammeGrammarReport(
             inputPath: input.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
@@ -247,6 +317,12 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             hierarchyFirstDeviatingFrameIndex: hierarchyFirstDeviatingFrameIndex,
             hierarchyDeclarationsFollowOfficialGrammar:
                 hierarchyDeclarationsFollowOfficialGrammar,
+            privateCorePrimingFormFrameIndices: privateCorePrimingFormFrameIndices,
+            privateSilenceFormViolationCount: privateSilenceFormViolationCount,
+            privateFirstSilenceFormViolationFrameIndex:
+                privateFirstSilenceFormViolationFrameIndex,
+            privateSilenceFormsFollowOfficialTimeline:
+                privateSilenceFormsFollowOfficialTimeline,
             isEarlyProgrammeSafe: isSafe
         )
     }
@@ -284,9 +360,29 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         return true
     }
 
+    /// Recovered silence-form classes of one private XLL-X frame. `nil`
+    /// classifies an active frame.
+    private enum PrivateSilenceForm: Equatable {
+        /// The 48-byte code-15 no-NAVI compact zero declaration - the form
+        /// the corpus uses on exactly the two Core-priming access units.
+        case corePrimingCompact
+        /// The 52-byte compact navigated 4x128 zero form of the first
+        /// silent-start source access unit.
+        case startupNavigated
+        /// The code-0x80/0x10 no-NAVI 4x128 zero form of the second
+        /// silent-start source access unit.
+        case startupNoNavigation
+        /// The ordinary 2x256 code-0x20 no-NAVI source silence.
+        case midStreamNoNavigation
+        /// Generalized navigated all-zero syntax - a silence grammar the
+        /// references never exercise.
+        case navigatedSilence
+    }
+
     private struct PrivateExtensionAudit {
         let maximumQuotient: UInt64
         let planesAreSilent: Bool
+        let silenceForm: PrivateSilenceForm?
     }
 
     /// Measures the exact unary quotients a terminal reads from the embedded
@@ -314,6 +410,22 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         )
         let planesAreSilent = decoded.predictionResidualPlanes.allSatisfy { plane in
             plane.allSatisfy { $0 == 0 }
+        }
+        let silenceForm: PrivateSilenceForm?
+        if !planesAreSilent {
+            silenceForm = nil
+        } else if let sideInfo = decoded.noNavigationZeroSideInfo {
+            silenceForm = sideInfo.controlCode == 0x20
+                ? .midStreamNoNavigation
+                : .startupNoNavigation
+        } else if decoded.usesCompactZeroEntropySyntax {
+            silenceForm = .startupNavigated
+        } else if bytes.count == 48,
+                  privateAST.primarySixBitCode == 15,
+                  (try? privateAST.parseNavigation(segmentCount: segmentCount)) == nil {
+            silenceForm = .corePrimingCompact
+        } else {
+            silenceForm = .navigatedSilence
         }
         var maximumQuotient: UInt64 = 0
         for syntax in decoded.entropySegments {
@@ -361,7 +473,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         }
         return PrivateExtensionAudit(
             maximumQuotient: maximumQuotient,
-            planesAreSilent: planesAreSilent
+            planesAreSilent: planesAreSilent,
+            silenceForm: silenceForm
         )
     }
 

@@ -20,6 +20,7 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let terminalPredictiveXLLSyntaxPassed: Bool
     public let terminalConservativeXLLXSyntaxPassed: Bool
     public let terminalStartupTransitionPassed: Bool
+    public let terminalHotStartStartupTransitionPassed: Bool
     public let terminalActiveStartupSegmentationPolicyPassed: Bool
     public let objectGainUnsmoothedMaximumStepQ30: Int64
     public let objectGainSmoothingMaximumStepQ30: Int64
@@ -99,6 +100,8 @@ public enum DTSXNativeEncoderVerifier {
             && first.report.privateEncoding.hybridRiceParameterCount == 0
             && first.report.privateEncoding.hybridIsolatedSampleCount == 0
         let terminalStartupTransitionPassed = try verifyTerminalStartupTransition()
+        let terminalHotStartStartupTransitionPassed = try
+            verifyTerminalHotStartStartupTransition()
         let terminalActiveStartupSegmentationPolicyPassed = try
             verifyTerminalActiveStartupSegmentationPolicy()
         let objectGainSmoothing = DTS714ObjectGainSmoothingVerifier.verify()
@@ -133,6 +136,7 @@ public enum DTSXNativeEncoderVerifier {
             && terminalPredictiveXLLSyntaxPassed
             && terminalConservativeXLLXSyntaxPassed
             && terminalStartupTransitionPassed
+            && terminalHotStartStartupTransitionPassed
             && terminalActiveStartupSegmentationPolicyPassed
             && objectGainSmoothing.isVerified
             && adaptiveXLL.passed
@@ -162,6 +166,8 @@ public enum DTSXNativeEncoderVerifier {
             terminalPredictiveXLLSyntaxPassed: terminalPredictiveXLLSyntaxPassed,
             terminalConservativeXLLXSyntaxPassed: terminalConservativeXLLXSyntaxPassed,
             terminalStartupTransitionPassed: terminalStartupTransitionPassed,
+            terminalHotStartStartupTransitionPassed:
+                terminalHotStartStartupTransitionPassed,
             terminalActiveStartupSegmentationPolicyPassed:
                 terminalActiveStartupSegmentationPolicyPassed,
             objectGainUnsmoothedMaximumStepQ30:
@@ -457,6 +463,216 @@ public enum DTSXNativeEncoderVerifier {
         // first two source AUs to the unplayable all-2x256 startup grammar.
         return try verifyEncoding(publicForcedSegmentCount: nil)
             && verifyEncoding(publicForcedSegmentCount: 2)
+    }
+
+    /// SHA-256 of the deterministic 48-byte compact zero XLL-X frame - the
+    /// Core-priming declaration. It must appear on exactly the two priming
+    /// access units of every delivery stream.
+    static let corePrimingXLLXFrameSHA256 =
+        "0f9c24a65b214a2a81df643d102e2facf4f176e9fb784c1eb60f6c57cf1c5604"
+    /// SHA-256 of the deterministic 52-byte code-0x20 no-NAVI XLL-X frame -
+    /// the ordinary 2x256 source silence.
+    static let midStreamSilenceXLLXFrameSHA256 =
+        "df3fcd92dc6671572596e9c9ede1ca5a278bf4c9563f80d22c867533bdcc1144"
+
+    private struct HotStartPrivateFrameExpectation {
+        /// nil expects an active navigated frame whose size is content-defined.
+        let byteCount: Int?
+        let code: UInt8
+        let expectsNavigation: Bool
+        let sideInfoControlCode: UInt8?
+        let sha256: String?
+    }
+
+    /// tbh-class hot starts: the bed is active somewhere inside the two-AU
+    /// startup window while the startup heights stay silent. The public
+    /// partition must stay on the ordinary 2x256 delivery form for every
+    /// access unit (the 4x128 startup pair belongs exclusively to fully
+    /// silent starts), and the private silence timeline must leave the
+    /// Core-priming declaration at the first source AU: the 48-byte compact
+    /// zero form on exactly AU0/AU1, then the ordinary code-0x20 source
+    /// silence from AU2 on. The regression this gates is the DTS:X-only
+    /// hot-start failure: with the code-0x20 transition gated at AU4, source
+    /// AU2/AU3 carried byte-identical Core-priming declarations, the
+    /// terminal's priming window extended over the first audible frames, and
+    /// the DTS:X presentation failed while the public 7.1 bed - the same
+    /// downmix - stayed playable.
+    private static func verifyTerminalHotStartStartupTransition() throws -> Bool {
+        let sourceFrameCount = 3
+        let sourceSampleCount = XLLSyntax.frameSampleCount * sourceFrameCount
+        let center = DTS714Channel.allCases.firstIndex(of: .center)!
+        let leftFrontHeight = DTS714Channel.allCases.firstIndex(of: .leftFrontHeight)!
+
+        func silentPlanes() -> [[Int32]] {
+            Array(
+                repeating: Array(repeating: Int32(0), count: sourceSampleCount),
+                count: DTS714Channel.allCases.count
+            )
+        }
+        func writeTone(
+            into planes: inout [[Int32]],
+            channel: Int,
+            samples: Range<Int>,
+            amplitude: Double,
+            frequency: Double
+        ) {
+            for sample in samples {
+                let phase = 2.0 * Double.pi * frequency * Double(sample) / 48_000.0
+                planes[channel][sample] = Int32((sin(phase) * amplitude).rounded())
+            }
+        }
+
+        let corePriming = HotStartPrivateFrameExpectation(
+            byteCount: 48,
+            code: 15,
+            expectsNavigation: false,
+            sideInfoControlCode: nil,
+            sha256: corePrimingXLLXFrameSHA256
+        )
+        let sourceSilence = HotStartPrivateFrameExpectation(
+            byteCount: 52,
+            code: 16,
+            expectsNavigation: false,
+            sideInfoControlCode: 0x20,
+            sha256: midStreamSilenceXLLXFrameSHA256
+        )
+        let activeFrame = HotStartPrivateFrameExpectation(
+            byteCount: nil,
+            code: 17,
+            expectsNavigation: true,
+            sideInfoControlCode: nil,
+            sha256: nil
+        )
+
+        // Hot from sample zero: the tbh shape.
+        var hotFromSampleZero = silentPlanes()
+        writeTone(
+            into: &hotFromSampleZero,
+            channel: center,
+            samples: 0..<sourceSampleCount,
+            amplitude: 5_000_000,
+            frequency: 997.0
+        )
+        // Silent first source AU, bed enters at the second window AU: the
+        // window is half-active, so the 4x128 startup pair must not appear
+        // as a lone declaration.
+        var hotFromSecondWindowAccessUnit = silentPlanes()
+        writeTone(
+            into: &hotFromSecondWindowAccessUnit,
+            channel: center,
+            samples: XLLSyntax.frameSampleCount..<sourceSampleCount,
+            amplitude: 5_000_000,
+            frequency: 997.0
+        )
+        // Silent bed with heights active only at the second window AU: the
+        // private half of the same half-active window.
+        var heightsAtSecondWindowAccessUnit = silentPlanes()
+        writeTone(
+            into: &heightsAtSecondWindowAccessUnit,
+            channel: leftFrontHeight,
+            samples: XLLSyntax.frameSampleCount..<(XLLSyntax.frameSampleCount * 2),
+            amplitude: 3_000_000,
+            frequency: 641.0
+        )
+
+        let scenarios: [(planes: [[Int32]], expected: [HotStartPrivateFrameExpectation])] = [
+            (hotFromSampleZero, [
+                corePriming, corePriming, sourceSilence, sourceSilence, sourceSilence
+            ]),
+            (hotFromSecondWindowAccessUnit, [
+                corePriming, corePriming, sourceSilence, sourceSilence, sourceSilence
+            ]),
+            (heightsAtSecondWindowAccessUnit, [
+                corePriming, corePriming, sourceSilence, activeFrame, sourceSilence
+            ])
+        ]
+        for scenario in scenarios {
+            guard try verifyHotStartScenario(
+                planes: scenario.planes,
+                expected: scenario.expected
+            ) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func verifyHotStartScenario(
+        planes: [[Int32]],
+        expected: [HotStartPrivateFrameExpectation]
+    ) throws -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swift-native-dtsx-hot-startup-\(UUID().uuidString)")
+        let output = root.appendingPathExtension("dtshd")
+        let payload = root.appendingPathExtension("xllx")
+        let index = root.appendingPathExtension("json")
+        defer {
+            try? FileManager.default.removeItem(at: output)
+            try? FileManager.default.removeItem(at: payload)
+            try? FileManager.default.removeItem(at: index)
+        }
+
+        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .integrated)
+            .encode(source: try DTS714PCMBuffer(planes: planes), frameRate: .fps24)
+        try encoded.stream.write(to: output, options: .atomic)
+        let publicStream = try XLLPBRStreamReader.read(inputURL: output)
+        let publicSegments = try publicStream.frames.map {
+            try XLLFrameASTParser.parse($0.frame).segmentCount
+        }
+        guard publicSegments == Array(repeating: 2, count: expected.count) else {
+            return false
+        }
+
+        let extraction = try DTSXObjectExtractor.extract(
+            inputURL: output,
+            payloadOutputURL: payload,
+            indexOutputURL: index
+        )
+        guard extraction.frames.count == expected.count else { return false }
+        let payloadBytes = try Data(contentsOf: payload)
+        for (record, expectation) in zip(extraction.frames, expected) {
+            guard let payloadOffset = record.payloadFileOffset,
+                  payloadOffset >= 0,
+                  payloadOffset + record.payloadByteCount <= payloadBytes.count else {
+                return false
+            }
+            if let byteCount = expectation.byteCount,
+               record.payloadByteCount != byteCount {
+                return false
+            }
+            let frame = payloadBytes.subdata(
+                in: payloadOffset..<(payloadOffset + record.payloadByteCount)
+            )
+            let ast = try DTSXPrivateFrameAST.parse(frame[...])
+            guard ast.headerCRCIsValid,
+                  ast.primarySixBitCode == expectation.code,
+                  try ast.parsePredictionCRC().isValid else {
+                return false
+            }
+            let navigation = try? ast.parseNavigation(
+                segmentCount: record.xllSyntax?.segmentCount ?? 0
+            )
+            if expectation.expectsNavigation {
+                guard navigation?.crcIsValid == true else { return false }
+            }
+            if let controlCode = expectation.sideInfoControlCode {
+                guard let header = try ast.parsePredictionHeaderCandidates().first,
+                      let sideInfo = try DTSXPrivateNoNavigationZeroSideInfo.parse(
+                          ast,
+                          prediction: header,
+                          segmentCount: 2,
+                          segmentSampleCount: 256
+                      ),
+                      sideInfo.controlCode == controlCode else {
+                    return false
+                }
+            }
+            if let sha256 = expectation.sha256,
+               SHA256Hasher.hash(frame) != sha256 {
+                return false
+            }
+        }
+        return true
     }
 
     /// Active-height controlled references do not use Nature's Fury's silent
