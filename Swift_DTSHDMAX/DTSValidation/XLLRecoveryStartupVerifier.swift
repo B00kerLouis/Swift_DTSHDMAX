@@ -45,6 +45,21 @@ public struct XLLRecoveryStartupReport: Sendable, Equatable, Codable {
     /// worst-case dense uniform-noise vector measures a 0.18 mean ratio,
     /// and tonal content is far lower.
     public let residualWithinRecoveryTolerance: Bool
+    /// Recovery-to-lossless handoff audit. While the terminal recovers on an
+    /// access unit it plays the scaled Core alone; on the next access unit it
+    /// switches to exact lossless output, so the coded residual at the *last
+    /// sample* of each access unit is exactly the step the handoff delivers
+    /// on top of the content. This is the pop amplitude of a first-frame or
+    /// seek-re-entry recovery exit at that boundary. Report-only: the
+    /// official calibration for these magnitudes needs the official `.dtshd`
+    /// binaries (see PARENT_UPLOAD_REQUEST).
+    public let maximumHandoffBoundaryResidual: Int64
+    /// Access unit whose exit boundary carries ``maximumHandoffBoundaryResidual``.
+    public let maximumHandoffBoundaryResidualFrameIndex: Int?
+    /// Largest coded residual inside the first non-priming access unit - the
+    /// divergence the terminal plays if it is still recovering when programme
+    /// content starts (the hot-start/object-onset-at-head window).
+    public let firstSourceAccessUnitMaximumResidual: Int64
     public let isRecoverySafe: Bool
 }
 
@@ -73,6 +88,9 @@ public enum XLLRecoveryStartupVerifier {
             stream.frames.count,
             maximumAccessUnitCount ?? stream.frames.count
         )
+        let primingFrameCount = stream.hasBackwardCompatibleCore
+            ? XLLSyntax.coreCompatiblePrimingSampleCount / XLLSyntax.frameSampleCount
+            : 0
 
         var declaredScaleCodes: Set<Int> = []
         var declaredCoefficientCodes: Set<Int> = []
@@ -83,9 +101,12 @@ public enum XLLRecoveryStartupVerifier {
         var maximumAbsolutePrimary: Int64 = 0
         var totalAbsoluteResidual: Int64 = 0
         var totalAbsolutePrimary: Int64 = 0
+        var maximumHandoffBoundaryResidual: Int64 = 0
+        var maximumHandoffBoundaryResidualFrameIndex: Int?
+        var firstSourceAccessUnitMaximumResidual: Int64 = 0
         var globalSample = 0
 
-        for frame in stream.frames.prefix(measuredFrameCount) {
+        for (frameIndex, frame) in stream.frames.prefix(measuredFrameCount).enumerated() {
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
             guard decoded.channelSets.count == 2,
                   decoded.channelSets[0].planes.count == 6,
@@ -152,6 +173,17 @@ public enum XLLRecoveryStartupVerifier {
                     )
                     totalAbsoluteResidual += Swift.abs(residual)
                     totalAbsolutePrimary += Swift.abs(residual + assembledCore)
+                    if sample == decoded.sampleCount - 1,
+                       Swift.abs(residual) > maximumHandoffBoundaryResidual {
+                        maximumHandoffBoundaryResidual = Swift.abs(residual)
+                        maximumHandoffBoundaryResidualFrameIndex = frameIndex
+                    }
+                    if frameIndex == primingFrameCount {
+                        firstSourceAccessUnitMaximumResidual = max(
+                            firstSourceAccessUnitMaximumResidual,
+                            Swift.abs(residual)
+                        )
+                    }
                 }
             }
             globalSample += decoded.sampleCount
@@ -176,6 +208,10 @@ public enum XLLRecoveryStartupVerifier {
             totalAbsoluteResidual: totalAbsoluteResidual,
             totalAbsolutePrimary: totalAbsolutePrimary,
             residualWithinRecoveryTolerance: residualWithinRecoveryTolerance,
+            maximumHandoffBoundaryResidual: maximumHandoffBoundaryResidual,
+            maximumHandoffBoundaryResidualFrameIndex:
+                maximumHandoffBoundaryResidualFrameIndex,
+            firstSourceAccessUnitMaximumResidual: firstSourceAccessUnitMaximumResidual,
             isRecoverySafe: scaleCodesMatchOfficialConstant
                 && recoveryClipSampleCount == 0
                 && residualWithinRecoveryTolerance

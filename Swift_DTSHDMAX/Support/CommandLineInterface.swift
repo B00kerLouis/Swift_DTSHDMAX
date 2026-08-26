@@ -944,6 +944,19 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-onset-guard":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-onset-guard takes no arguments")
+            }
+            let onsetGuardReport = try DTS714HeightOnsetGuardVerifier.verify()
+            print(try jsonString(onsetGuardReport))
+            guard onsetGuardReport.isVerified else {
+                throw DTSError.malformed(
+                    "height-onset continuity guard verification failed: "
+                    + "object-onset conditioning is not closed at the delivery boundary"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -2391,6 +2404,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
           hdmax verify-dtsx-render-guard
+          hdmax verify-dtsx-onset-guard
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]

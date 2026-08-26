@@ -1,18 +1,30 @@
-# Cloud subagent material brief (parent-prepared)
+# Cloud subagent material brief (parent → child)
 
-## Already on `origin/cursor/cloud-materials-3541` (fetch this)
+## Fetch first
+```
+git fetch origin cursor/cloud-materials-3541 cursor/dtsx-five-scheme-object-safety-3541
+```
 
-1. `cloud-fixtures/test_X/pcm-sources/` — controllable 7.1.4 PCM vectors for encode/bitstream grammar
-2. `cloud-fixtures/perfect-stream-grammar/` — Nature's Fury grammar notes + MANIFEST
-3. `docs/reference-streams/DTSX/` — staging docs / project memory excerpts
-4. Code tip to base on: `origin/cursor/dtsx-tbh-perfect-regress-3541` (Rice≤22, active-bed 4x128 refuse, RenderGuard, Core-fold)
+## Already available via git
+| Path | Use |
+| --- | --- |
+| `cloud-fixtures/test_X/pcm-sources/` | Controllable 7.1.4 PCM (mute/sine/impulse/walk/fullscale/…) |
+| `cloud-fixtures/perfect-stream-grammar/` | Nature's Fury grammar notes + MANIFEST |
+| `docs/reference-streams/DTSX/` | Staging docs / memory excerpts |
+| `docs/dtsx-active-start-safety-schemes.md` on five-scheme tip | Prior 6 schemes; **爆音量未明显再降** — do not only re-ship Scheme 1 |
 
-## Must analyze when present under `cloud-fixtures/reference-streams/`
+## Required encode-debug streams (Louis Mac → must be under reference-streams/)
+These are **new software encodes** (not necessarily official Encoder Suite output):
 
-1. `tbh.dtshd` — failing **new encode** (first ~10 seconds)
-2. `Dolby_NaturesFury.dtshd` — playable **new encode** (contrast grammar)
-3. `TBH_offical.dtshd` — official perfect output for byte/declaration regression
+| Commit as | Source on Louis Mac | Role |
+| --- | --- | --- |
+| `cloud-fixtures/reference-streams/tbh.dtshd` | `/Users/sunyun_louis/Downloads/tbh.dtshd` | Failing encode: first ~10s bad; Object-onset 爆音 worst near programme start |
+| `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` | `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd` | Playable control encode |
+| `cloud-fixtures/reference-streams/TBH_offical.dtshd` | `/Volumes/HP_SSD_FX900_Pro /TBH/TBH_offical.dtshd` | Official perfect TBH if available |
 
-## If reference-streams/*.dtshd missing
+Parent VM cannot mount `/Users` or `/Volumes`. If files absent after fetch: escalate PARENT_UPLOAD_REQUIRED — do not silent-pass.
 
-Write/update `cloud-fixtures/PARENT_UPLOAD_REQUEST.md` and stop claiming perfect-output byte regression. Escalate to parent; do not silent-pass.
+## Latest hardware symptom to sync
+- NF playable; TBH first ~10s still broken (prior five-scheme tip insufficient)
+- 爆音量 ≈ last version (not much better)
+- Object data: **closer to object onset / programme head → higher pop probability**; later playback stabilizes

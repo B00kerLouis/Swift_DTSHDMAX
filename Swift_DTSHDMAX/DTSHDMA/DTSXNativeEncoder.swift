@@ -34,6 +34,13 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
     public let sourceGuardPolicy: DTSXSourceGuardPolicy
+    /// Encoder-boundary height-onset continuity conditioning of the 7.1.4
+    /// source (programme-head ramp plus silence-to-active onset slew on the
+    /// four height planes). Present whenever ``sourceGuardPolicy`` is
+    /// ``DTSXSourceGuardPolicy/delivery``; `isTransparent` is true when no
+    /// height onset needed conditioning and the planes passed through
+    /// bit-exact.
+    public let sourceOnsetConditioning: DTS714HeightOnsetConditioningReport?
     /// Encoder-boundary composite-headroom conditioning of the 7.1.4 source.
     /// Present whenever ``sourceGuardPolicy`` is ``DTSXSourceGuardPolicy/delivery``;
     /// `isTransparent` is true when the source never overloaded any
@@ -93,12 +100,15 @@ public enum DTSXNativeVerificationPolicy: String, Sendable, Codable {
 /// passthrough whenever nothing overloads, so double-guarding rendered
 /// content is transparent.
 public enum DTSXSourceGuardPolicy: String, Sendable, Codable {
-    /// Delivery default: apply ``DTS714RenderGuard`` to the source planes.
+    /// Delivery default: run the shared boundary pipeline
+    /// (``DTS714DeliverySourceConditioner``) on the source planes -
+    /// height-onset continuity conditioning followed by
+    /// ``DTS714RenderGuard``.
     case delivery
     /// Differential-study bypass: hand the encoder the raw planes and allow
     /// the historical out-of-contract syntax, so negative controls can keep
-    /// demonstrating the defect this guard exists to prevent. Never a
-    /// delivery configuration.
+    /// demonstrating the defects the delivery pipeline exists to prevent.
+    /// Never a delivery configuration.
     case bypassForDifferential = "bypass-for-differential"
 }
 
@@ -181,7 +191,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     ) throws -> DTSXNativeEncodedResult {
         let progressTotal = 1_000
         progress?(0, progressTotal)
-        let (effectiveSource, sourceGuard) = try conditionedSource(try truncated(
+        let (effectiveSource, sourceOnset, sourceGuard) = try conditionedSource(try truncated(
             source,
             maximumSourceFrameCount: maximumSourceFrameCount
         ))
@@ -246,6 +256,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
             sourceGuardPolicy: sourceGuardPolicy,
+            sourceOnsetConditioning: sourceOnset,
             sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: encodedSampleCount,
@@ -292,7 +303,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         }
         let progressTotal = 1_000
         progress?(0, progressTotal)
-        let (effectiveSource, sourceGuard) = try conditionedSource(try truncated(
+        let (effectiveSource, sourceOnset, sourceGuard) = try conditionedSource(try truncated(
             source,
             maximumSourceFrameCount: maximumSourceFrameCount
         ))
@@ -388,6 +399,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
             sourceGuardPolicy: sourceGuardPolicy,
+            sourceOnsetConditioning: sourceOnset,
             sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: privateStream.report.encodedSourceSampleCount,
@@ -446,28 +458,36 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         return report
     }
 
-    /// Bounds the twelve source planes against every downstream headroom
-    /// contract (plane range, legacy Q15 height fold, Core-residual recovery
-    /// composite) before any layer encodes them. The rendered-Atmos path is
-    /// already guarded inside ``DTS714Renderer``; re-applying the guard to
-    /// in-bounds content is bit-exact passthrough, so this single boundary
-    /// covers stems directories, wave sets, and direct plane callers - the
-    /// entry points that historically hard-clipped the compatibility fold and
-    /// forced per-frame hierarchy declarations the reference corpus never
-    /// exercises for exactly as long as the content stayed hot.
+    /// Conditions the twelve source planes through the shared delivery
+    /// boundary pipeline before any layer encodes them: height-onset
+    /// continuity first (programme-head ramp plus silence-to-active onset
+    /// slew on the four height planes - the object-onset pop carriers), then
+    /// the downstream-headroom composite guard (plane range, legacy Q15
+    /// height fold, Core-residual recovery composite). The rendered-Atmos
+    /// path is already composite-guarded inside ``DTS714Renderer``;
+    /// re-applying either stage to compliant content is bit-exact
+    /// passthrough, so this single boundary covers stems directories, wave
+    /// sets, and direct plane callers. Closed-loop verifiers reproduce the
+    /// same pipeline through ``DTS714DeliverySourceConditioner``.
     private func conditionedSource(
         _ source: DTS714PCMBuffer
-    ) throws -> (source: DTS714PCMBuffer, guardReport: DTS714RenderGuardReport?) {
-        guard sourceGuardPolicy == .delivery else { return (source, nil) }
+    ) throws -> (
+        source: DTS714PCMBuffer,
+        onsetReport: DTS714HeightOnsetConditioningReport?,
+        guardReport: DTS714RenderGuardReport?
+    ) {
+        guard sourceGuardPolicy == .delivery else { return (source, nil, nil) }
         var planes = source.planes
-        let report = DTS714RenderGuard.apply(to: &planes)
-        guard report.isHeadroomSafe else {
+        let reports = DTS714DeliverySourceConditioner.condition(planes: &planes)
+        guard reports.renderGuard.isHeadroomSafe else {
             throw DTSError.malformed(
                 "DTS:X source guard could not close every downstream headroom constraint"
             )
         }
-        if report.isTransparent { return (source, report) }
-        return (try DTS714PCMBuffer(planes: planes), report)
+        if reports.onset.isTransparent && reports.renderGuard.isTransparent {
+            return (source, reports.onset, reports.renderGuard)
+        }
+        return (try DTS714PCMBuffer(planes: planes), reports.onset, reports.renderGuard)
     }
 
     private func truncated(
