@@ -5,6 +5,22 @@ was searched for in this repository, in `origin/cursor/cloud-materials-3541`,
 and in the cloud VM filesystem on 2026-08-26; none of it is present. The Mac
 paths cannot be mounted from the cloud VM.
 
+**Re-verified 2026-08-26 (five-scheme object-safety run):**
+`cloud-fixtures/reference-streams/` on `origin/cursor/cloud-materials-3541`
+still contains only `README.md` — `tbh.dtshd`, `Dolby_NaturesFury.dtshd`, and
+`TBH_offical.dtshd` remain un-uploaded, so official-stream regression is still
+reported as **PARENT_UPLOAD_REQUIRED**. Everything provable without them is
+now green on this VM with controllable vectors: the encoder-boundary source
+guard keeps raw hot 7.1.4 planes inside every corpus invariant
+(`verify-dtsx-render-guard`: zero fold hard clips, zero deviating hierarchy
+frames, negative-control bypass still exhibits the defect), and the
+early-programme declaration audit passes on silent-start, 10-second hot-sine,
+full-scale, channel-walk, and staged `test_X` stem encodes
+(`verify-dtsx-early-programme`: `isEarlyProgrammeSafe` true on every stream,
+unary quotients at most 10 against the corpus ceiling of 22). See
+`docs/dtsx-active-start-safety-schemes.md` for the scheme selection this
+verifies.
+
 ## Files needed
 
 Please upload these exact files to GitHub under
