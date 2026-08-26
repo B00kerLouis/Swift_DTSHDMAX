@@ -21,6 +21,14 @@ import Foundation
 ///    4x128 with active content.
 /// 4. Post-priming delivery frames carry no research-only syntax: no entropy
 ///    state reuse, no hybrid Rice, no pairwise decorrelation, no prediction.
+/// 5. Every access unit that carries the XLL-X private extension declares the
+///    corpus-constant 6+2 hierarchy: primary residual mask `0x00`, secondary
+///    mask `0x03`, 24-bit storage, downmix scale codes 473, and coefficient
+///    codes 256 everywhere except the two constant 473 rear-mix slots. A
+///    coefficient escape or mask flip is a per-frame declaration change the
+///    references never exercise; on hot starts it appears on exactly the
+///    frames that stay hot, which is the sustained early-programme failure
+///    shape.
 public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let inputPath: String
     public let streamSHA256: String
@@ -42,6 +50,14 @@ public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let privateMaximumUnaryQuotient: UInt64
     public let privateUnaryBoundExceededFrameCount: Int
     public let privateFirstUnaryBoundExceededFrameIndex: Int?
+    /// Frames whose hierarchy declarations were audited (those carrying the
+    /// XLL-X private extension).
+    public let hierarchyAuditedFrameCount: Int
+    /// Frames whose declarations left the corpus-constant hierarchy grammar
+    /// (mask, storage depth, scale, or coefficient codes).
+    public let hierarchyDeviatingFrameCount: Int
+    public let hierarchyFirstDeviatingFrameIndex: Int?
+    public let hierarchyDeclarationsFollowOfficialGrammar: Bool
     public let isEarlyProgrammeSafe: Bool
 }
 
@@ -54,6 +70,10 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
     /// ~10.24 s of 512-sample access units at 48 kHz. Louis's tbh symptom is
     /// "the first ~10 seconds do not play"; the default window covers it.
     public static let defaultWindowAccessUnitCount = 960
+    /// The official constant hierarchy matrix: scale and rear-mix coefficient
+    /// code 473 (-3.0103 dB), zero coefficient code 256 in every other slot.
+    public static let officialConstantMatrixCode = 473
+    public static let officialZeroCoefficientCode = 256
     private static let xllXSyncWord: UInt32 = 0x0200_0850
 
     public static func verify(
@@ -90,6 +110,9 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         var privateMaximumQuotient: UInt64 = 0
         var privateUnaryBoundExceededFrameCount = 0
         var privateFirstUnaryBoundExceededFrameIndex: Int?
+        var hierarchyAuditedFrameCount = 0
+        var hierarchyDeviatingFrameCount = 0
+        var hierarchyFirstDeviatingFrameIndex: Int?
 
         for (frameIndex, frame) in stream.frames.prefix(window).enumerated() {
             let ast = try XLLFrameASTParser.parse(frame.frame)
@@ -124,6 +147,20 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 privatePlanesAreSilent = true
             }
             _ = privateQuotient
+
+            // Hierarchy declaration grammar: every DTS:X access unit (any
+            // frame carrying the XLL-X private extension) must declare the
+            // corpus-constant 6+2 hierarchy - no per-frame coefficient
+            // escapes, mask flips, or storage-depth changes.
+            if privateQuotient != nil {
+                hierarchyAuditedFrameCount += 1
+                if !frameDeclaresOfficialHierarchy(decoded) {
+                    hierarchyDeviatingFrameCount += 1
+                    if hierarchyFirstDeviatingFrameIndex == nil {
+                        hierarchyFirstDeviatingFrameIndex = frameIndex
+                    }
+                }
+            }
 
             // Partition grammar. Priming AUs and mid-stream AUs are 2x256;
             // 4x128 is legal only for the first two source AUs of a fully
@@ -175,10 +212,12 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             }
         }
 
+        let hierarchyDeclarationsFollowOfficialGrammar = hierarchyDeviatingFrameCount == 0
         let isSafe = partitionsFollowOfficialGrammar
             && publicUnaryBoundExceededFrameCount == 0
             && publicResearchSyntaxFrameCount == 0
             && privateUnaryBoundExceededFrameCount == 0
+            && hierarchyDeclarationsFollowOfficialGrammar
         return DTSXEarlyProgrammeGrammarReport(
             inputPath: input.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
@@ -198,8 +237,46 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             privateMaximumUnaryQuotient: privateMaximumQuotient,
             privateUnaryBoundExceededFrameCount: privateUnaryBoundExceededFrameCount,
             privateFirstUnaryBoundExceededFrameIndex: privateFirstUnaryBoundExceededFrameIndex,
+            hierarchyAuditedFrameCount: hierarchyAuditedFrameCount,
+            hierarchyDeviatingFrameCount: hierarchyDeviatingFrameCount,
+            hierarchyFirstDeviatingFrameIndex: hierarchyFirstDeviatingFrameIndex,
+            hierarchyDeclarationsFollowOfficialGrammar:
+                hierarchyDeclarationsFollowOfficialGrammar,
             isEarlyProgrammeSafe: isSafe
         )
+    }
+
+    /// True when one decoded frame declares the corpus-constant 6+2
+    /// hierarchy: two channel sets, primary residual mask `0x00`, secondary
+    /// mask `0x03`, 24-bit storage, every downmix scale code 473, and the
+    /// twelve-slot coefficient vector all 256 except the two constant 473
+    /// rear-mix slots (indices 8 and 11).
+    private static func frameDeclaresOfficialHierarchy(
+        _ decoded: XLLDecodedChannelSetFrame
+    ) -> Bool {
+        guard decoded.channelSets.count == 2 else { return false }
+        let primary = decoded.channelSets[0]
+        let secondary = decoded.channelSets[1]
+        guard primary.residualChannelMask == 0,
+              secondary.residualChannelMask == 0x03,
+              primary.storageBitDepth == 24,
+              secondary.storageBitDepth == 24 else {
+            return false
+        }
+        guard secondary.downmixScaleCodes.allSatisfy({
+            $0 == officialConstantMatrixCode
+        }), !secondary.downmixScaleCodes.isEmpty else {
+            return false
+        }
+        let coefficients = secondary.downmixCoefficientCodes
+        guard coefficients.count == 12 else { return false }
+        for (slot, code) in coefficients.enumerated() {
+            let expected = slot == 8 || slot == 11
+                ? officialConstantMatrixCode
+                : officialZeroCoefficientCode
+            if code != expected { return false }
+        }
+        return true
     }
 
     private struct PrivateExtensionAudit {
