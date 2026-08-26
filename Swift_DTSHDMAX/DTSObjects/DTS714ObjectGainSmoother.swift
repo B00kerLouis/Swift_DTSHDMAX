@@ -50,6 +50,23 @@ struct DTS714ObjectGainSmoother: Sendable, Equatable {
         transitioningChannelCount = 0
     }
 
+    /// Programme-start contract: the gain state begins at digital silence
+    /// and approaches the initial declared gains at exactly the reference
+    /// maximum slew (1/480 full scale per sample), so a full-gain object
+    /// reaches its target within 480 samples (10 ms) - inside the first
+    /// source access unit. Sample zero is not exempt from the renderer's
+    /// continuity bound: installing hot initial gains as a step delivered
+    /// the full object mix into the first access unit, exactly the window
+    /// where the terminal is still in first-frame recovery and every
+    /// navigation and entropy structure changes state for the first time.
+    /// Objects whose essence is silent at the head render bit-exactly
+    /// (ramped gains multiply silence), so silent-start programmes are
+    /// unaffected by construction.
+    mutating func beginFromSilence(_ sparseGains: [(outputIndex: Int, q30: Int64)]) {
+        setImmediately([])
+        retarget(sparseGains, over: 1)
+    }
+
     mutating func retarget(
         _ sparseGains: [(outputIndex: Int, q30: Int64)],
         over sampleCount: Int
@@ -80,8 +97,18 @@ struct DTS714ObjectGainSmoother: Sendable, Equatable {
             let requiresSlewLimit = Swift.abs(delta)
                 * Int64(Self.maximumSlewTransitionSampleCount)
                 > Int64(1 << 30) * Int64(ordinaryPeriod)
+            // The reference bound is a rate, not a duration: a limited move
+            // proceeds at exactly 1/480 full scale per sample and therefore
+            // takes ceil(|delta| x 480 / 2^30) samples. A fixed 480-sample
+            // period instead under-ran the reference rate on every
+            // sub-full-scale limited move (target lag under dense fast-move
+            // automation) and exceeded the per-sample bound whenever the
+            // delta was above unity gain.
             let period = requiresSlewLimit
-                ? Self.maximumSlewTransitionSampleCount
+                ? Int(
+                    (Swift.abs(delta) * Int64(Self.maximumSlewTransitionSampleCount)
+                        + Int64((1 << 30) - 1)) >> 30
+                )
                 : ordinaryPeriod
             transitionSampleCounts[channel] = Int64(period)
             remainingSampleCounts[channel] = period

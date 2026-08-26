@@ -944,16 +944,17 @@ public enum DTSHDMACommandLine {
                 )
             }
 
-        case "verify-dtsx-onset-guard":
+        case "verify-dtsx-render-startup":
             guard values.isEmpty else {
-                throw DTSError.invalidArgument("verify-dtsx-onset-guard takes no arguments")
+                throw DTSError.invalidArgument("verify-dtsx-render-startup takes no arguments")
             }
-            let onsetGuardReport = try DTS714HeightOnsetGuardVerifier.verify()
-            print(try jsonString(onsetGuardReport))
-            guard onsetGuardReport.isVerified else {
+            let renderStartupReport = try DTS714RenderStartupVerifier.verify()
+            print(try jsonString(renderStartupReport))
+            guard renderStartupReport.isVerified else {
                 throw DTSError.malformed(
-                    "height-onset continuity guard verification failed: "
-                    + "object-onset conditioning is not closed at the delivery boundary"
+                    "render startup verification failed: the Atmos render path does "
+                    + "not bound programme-start object onsets, or the encode "
+                    + "boundary reshaped an in-headroom source"
                 )
             }
 
@@ -2404,7 +2405,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
           hdmax verify-dtsx-render-guard
-          hdmax verify-dtsx-onset-guard
+          hdmax verify-dtsx-render-startup
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]

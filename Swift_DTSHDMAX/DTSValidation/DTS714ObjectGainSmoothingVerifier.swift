@@ -4,6 +4,7 @@ public struct DTS714ObjectGainSmoothingVerificationReport:
     Sendable, Equatable, Codable {
     public let nominalPanSubBlockSampleCount: Int
     public let largeMoveTransitionSampleCount: Int
+    public let largeMoveReferenceRateSampleCount: Int
     public let smallMoveTransitionSampleCount: Int
     public let unsmoothedMaximumGainStepQ30: Int64
     public let maximumObservedGainStepQ30: Int64
@@ -14,6 +15,16 @@ public struct DTS714ObjectGainSmoothingVerificationReport:
     public let retargetInstallIsContinuous: Bool
     public let retargetTargetReachedExactly: Bool
     public let fadeOutReachedDigitalSilence: Bool
+    /// Programme-start contract: gains begin at silence and approach the
+    /// initial declarations at exactly the reference maximum slew.
+    public let startFromSilenceTransitionSampleCount: Int
+    public let startFromSilenceReferenceRateSampleCount: Int
+    public let startFromSilenceStepWithinBound: Bool
+    public let startFromSilenceTargetReachedExactly: Bool
+    /// An above-unity gain delta (positive object gain trim) must still obey
+    /// the per-sample slew bound instead of stepping faster than 1/480.
+    public let aboveUnityDeltaTransitionSampleCount: Int
+    public let aboveUnityDeltaStepWithinBound: Bool
     public let isVerified: Bool
 }
 
@@ -101,8 +112,62 @@ public enum DTS714ObjectGainSmoothingVerifier {
         let fadeOutReachedDigitalSilence = smoother.isSilent
             && smoother.currentGains.allSatisfy { $0 == 0 }
 
-        let verified = largeMoveTransitionSampleCount
-                == DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount
+        // Programme start: silence to the initial declarations at exactly
+        // the reference maximum slew (the renderer's `beginFromSilence`).
+        var startSmoother = DTS714ObjectGainSmoother()
+        startSmoother.beginFromSilence(first)
+        let startFromSilenceTransitionSampleCount =
+            startSmoother.maximumRemainingSampleCount
+        let startFromSilenceReferenceRateSampleCount =
+            referenceRateSampleCount(from: Array(
+                repeating: Int64(0),
+                count: DTS714ObjectGainSmoother.channelCount
+            ), to: firstDense)
+        var startMaximumStep: Int64 = 0
+        previous = startSmoother.currentGains
+        while startSmoother.isTransitioning {
+            startSmoother.advance()
+            var unusedChannels = Set<Int>()
+            observeStep(
+                from: previous,
+                to: startSmoother.currentGains,
+                maximum: &startMaximumStep,
+                changedHeightChannels: &unusedChannels
+            )
+            previous = startSmoother.currentGains
+        }
+        let startFromSilenceTargetReachedExactly =
+            startSmoother.currentGains == firstDense
+
+        // Above-unity delta (positive gain trim): the fixed-480 period would
+        // have stepped faster than the reference bound; the rate-exact
+        // period must keep every step inside it.
+        var aboveUnity = DTS714ObjectGainSmoother()
+        let aboveUnityTarget: [(outputIndex: Int, q30: Int64)] = [(8, 2 * q30)]
+        aboveUnity.retarget(aboveUnityTarget, over: nominalPeriod)
+        let aboveUnityDeltaTransitionSampleCount =
+            aboveUnity.maximumRemainingSampleCount
+        var aboveUnityMaximumStep: Int64 = 0
+        previous = aboveUnity.currentGains
+        while aboveUnity.isTransitioning {
+            aboveUnity.advance()
+            var unusedChannels = Set<Int>()
+            observeStep(
+                from: previous,
+                to: aboveUnity.currentGains,
+                maximum: &aboveUnityMaximumStep,
+                changedHeightChannels: &unusedChannels
+            )
+            previous = aboveUnity.currentGains
+        }
+        let aboveUnityReached = aboveUnity.currentGains[8] == 2 * q30
+
+        let largeMoveExpected = referenceRateSampleCount(
+            from: firstDense,
+            to: secondDense,
+            requestedPeriod: nominalPeriod
+        )
+        let verified = largeMoveTransitionSampleCount == largeMoveExpected
             && smallMoveTransitionSampleCount == nominalPeriod
             && maximumObservedStep <= maximumAllowedStep
             && changedHeightChannels.count == 4
@@ -110,9 +175,27 @@ public enum DTS714ObjectGainSmoothingVerifier {
             && retargetInstallIsContinuous
             && retargetTargetReachedExactly
             && fadeOutReachedDigitalSilence
+            && startFromSilenceTransitionSampleCount
+                == startFromSilenceReferenceRateSampleCount
+            && startFromSilenceTransitionSampleCount
+                <= DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount
+            && startMaximumStep <= maximumAllowedStep
+            && startFromSilenceTargetReachedExactly
+            && aboveUnityDeltaTransitionSampleCount
+                == referenceRateSampleCount(
+                    from: Array(
+                        repeating: Int64(0),
+                        count: DTS714ObjectGainSmoother.channelCount
+                    ),
+                    to: dense(aboveUnityTarget),
+                    requestedPeriod: nominalPeriod
+                )
+            && aboveUnityMaximumStep <= maximumAllowedStep
+            && aboveUnityReached
         return DTS714ObjectGainSmoothingVerificationReport(
             nominalPanSubBlockSampleCount: nominalPeriod,
             largeMoveTransitionSampleCount: largeMoveTransitionSampleCount,
+            largeMoveReferenceRateSampleCount: largeMoveExpected,
             smallMoveTransitionSampleCount: smallMoveTransitionSampleCount,
             unsmoothedMaximumGainStepQ30: unsmoothedMaximumStep,
             maximumObservedGainStepQ30: maximumObservedStep,
@@ -124,8 +207,42 @@ public enum DTS714ObjectGainSmoothingVerifier {
             retargetInstallIsContinuous: retargetInstallIsContinuous,
             retargetTargetReachedExactly: retargetTargetReachedExactly,
             fadeOutReachedDigitalSilence: fadeOutReachedDigitalSilence,
+            startFromSilenceTransitionSampleCount:
+                startFromSilenceTransitionSampleCount,
+            startFromSilenceReferenceRateSampleCount:
+                startFromSilenceReferenceRateSampleCount,
+            startFromSilenceStepWithinBound: startMaximumStep <= maximumAllowedStep,
+            startFromSilenceTargetReachedExactly: startFromSilenceTargetReachedExactly,
+            aboveUnityDeltaTransitionSampleCount: aboveUnityDeltaTransitionSampleCount,
+            aboveUnityDeltaStepWithinBound: aboveUnityMaximumStep <= maximumAllowedStep,
             isVerified: verified
         )
+    }
+
+    /// Expected transition length under the reference semantics: the
+    /// requested period, stretched per channel to `ceil(|delta| x 480 /
+    /// 2^30)` wherever the requested rate would exceed 1/480 full scale per
+    /// sample, then the maximum across channels. For a maximum-rate start
+    /// (requested period 1) this is the pure rate-exact length.
+    private static func referenceRateSampleCount(
+        from start: [Int64],
+        to target: [Int64],
+        requestedPeriod: Int = 1
+    ) -> Int {
+        let slew = Int64(DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount)
+        var maximum = 0
+        for channel in start.indices {
+            let delta = Swift.abs(target[channel] - start[channel])
+            guard delta != 0 else { continue }
+            let period: Int
+            if delta * slew > q30 * Int64(requestedPeriod) {
+                period = Int((delta * slew + q30 - 1) / q30)
+            } else {
+                period = requestedPeriod
+            }
+            maximum = max(maximum, period)
+        }
+        return maximum
     }
 
     private static func gains(

@@ -56,9 +56,9 @@ public enum XLLCoreOracleVerifier {
               core.layout == .fiveOneSide else {
             throw DTSError.invalidArgument("Core oracle PCM must be 48 kHz integer 5.1(side)")
         }
-        // Match the delivery encoder's boundary conditioning before rendering
-        // the expected legacy fold (bit-exact passthrough for compliant
-        // content).
+        // Match the delivery encoder's boundary headroom guard before
+        // rendering the expected legacy fold (bit-exact passthrough for
+        // in-headroom content).
         var conditionedPlanes = try DTS714SourceSet.load(directory: sourceDirectory).planes
         DTS714DeliverySourceConditioner.condition(planes: &conditionedPlanes)
         let completeSource = try DTS714CompatibilityBedRenderer.render(

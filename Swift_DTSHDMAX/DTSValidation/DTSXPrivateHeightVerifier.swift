@@ -70,13 +70,13 @@ public enum DTSXPrivateHeightVerifier {
         maximumSourceFrameCount: Int? = nil,
         deliveryConditioned: Bool = true
     ) throws -> DTSXPrivateHeightVerificationReport {
-        // Delivery encodes condition the source at the encoder boundary
-        // (height-onset continuity plus the composite headroom guard), so the
-        // closed loop must compare against the identically conditioned
-        // expectation. Both stages are bit-exact passthrough for compliant
-        // content, so this changes nothing for sources that never needed
-        // conditioning. Differential studies of bypass encodes pass `false`
-        // to compare against the raw planes instead.
+        // Delivery encodes bound the source against the composite headroom
+        // guard at the encoder boundary, so the closed loop must compare
+        // against the identically conditioned expectation. The guard is
+        // bit-exact passthrough for in-headroom content, so this changes
+        // nothing for sources that never overloaded. Differential studies of
+        // bypass encodes pass `false` to compare against the raw planes
+        // instead.
         let source: DTS714PCMBuffer
         if deliveryConditioned {
             var conditionedPlanes = rawSource.planes

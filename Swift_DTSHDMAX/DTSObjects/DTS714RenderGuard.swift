@@ -286,3 +286,27 @@ public enum DTS714RenderGuard {
         )
     }
 }
+
+/// The complete delivery-boundary source conditioning pipeline, shared by the
+/// DTS:X encoder and every closed-loop verifier that compares a delivery
+/// stream back to its 7.1.4 source.
+///
+/// The pipeline conditions sources only against *proven downstream
+/// contracts* (plane range, legacy Q15 height fold, Core-residual recovery
+/// composite - ``DTS714RenderGuard``), and is therefore bit-exact
+/// passthrough for every in-headroom source: delivery and differential
+/// bypass encodes of such sources are byte-identical. Onset shaping does
+/// not belong here: the previous delivery-boundary height-onset conditioner
+/// (programme-head ramp plus plane-level silence-to-active slew) measurably
+/// *increased* hardware pops - it could not reach the floor contributions
+/// of hot objects that feed the Core first-frame-recovery burst, and its
+/// 72-AU head ramp manufactured exactly the quiet-content small-parameter
+/// entropy regime that terminals already misparsed once. Object-onset
+/// continuity is owned by ``DTS714Renderer``/``DTS714ObjectGainSmoother``,
+/// the stage that knows the Atmos object structure.
+public enum DTS714DeliverySourceConditioner {
+    @discardableResult
+    public static func condition(planes: inout [[Int32]]) -> DTS714RenderGuardReport {
+        DTS714RenderGuard.apply(to: &planes)
+    }
+}

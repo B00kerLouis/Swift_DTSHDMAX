@@ -120,9 +120,17 @@ public enum DTS714Renderer {
             return (event, index)
         }
         var eventCursor = 0
-        // Initial declarations describe the state at sample zero; installing
-        // them directly avoids an artificial program-start fade.  Every later
-        // update passes through the authoring profile's gain smoother.
+        // Initial declarations describe the state at sample zero. The gain
+        // state itself still starts at digital silence and approaches those
+        // declarations at the reference maximum slew (1/480 full scale per
+        // sample, <= 480 samples), the same continuity bound every later
+        // update obeys: installing hot initial gains as a step slammed the
+        // full object mix - floor and height planes alike - into the first
+        // source access unit, the exact window where the terminal is still
+        // in first-frame recovery and every navigation and entropy structure
+        // changes state for the first time (the hot-start object-onset pop
+        // class). Objects whose essence is silent at the head render
+        // bit-exactly, so silent-start programmes are unaffected.
         while eventCursor < events.count, events[eventCursor].0.samplePosition <= 0 {
             let (event, index) = events[eventCursor]
             states[index].apply(event)
@@ -130,7 +138,7 @@ public enum DTS714Renderer {
         }
         var activeObjects = master.objects.enumerated().map { objectIndex, object in
             var smoother = DTS714ObjectGainSmoother()
-            smoother.setImmediately(objectGains(states[objectIndex]))
+            smoother.beginFromSilence(objectGains(states[objectIndex]))
             return ActiveObject(
                 inputChannel: object.audioChannelIndex,
                 gainSmoother: smoother
