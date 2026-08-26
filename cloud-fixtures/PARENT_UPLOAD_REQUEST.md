@@ -5,6 +5,30 @@ was searched for in this repository, in `origin/cursor/cloud-materials-3541`,
 and in the cloud VM filesystem on 2026-08-26; none of it is present. The Mac
 paths cannot be mounted from the cloud VM.
 
+**Re-verified 2026-08-26 (object-onset-pop run, branch
+`cursor/dtsx-object-onset-pop-3541`):** the tip of
+`origin/cursor/cloud-materials-3541` (`f8a4543`) still carries only
+`cloud-fixtures/reference-streams/README.md` — `tbh.dtshd`,
+`Dolby_NaturesFury.dtshd`, and `TBH_offical.dtshd` remain un-uploaded, so the
+**requested bitstream inspection of Louis's new software encodes**
+(declarations, early ~10 s access units, private/public activity at
+object-like height onsets) is impossible and official-stream regression is
+still **PARENT_UPLOAD_REQUIRED**. The onset analysis that specifically needs
+them now:
+
+1. Whether official hot-start encodes shape the height/object layer at the
+   programme head (an onset envelope in the first ~0.5–1 s) — this run ships
+   a controllable-vector-proven head ramp + onset slew
+   (`docs/dtsx-object-onset-pop-schemes.md`, `verify-dtsx-onset-guard`), but
+   the official constant cannot be confirmed without the binaries.
+2. Whether the official private grammar pre-arms (active-form zero AU before
+   a height onset) or switches silence→active on the onset AU itself —
+   decides scheme O4.
+3. The official calibration of the new recovery-handoff divergence metrics
+   (`verify-dtsx-recovery-window`: `maximumHandoffBoundaryResidual`,
+   `firstSourceAccessUnitMaximumResidual`) on tbh and Nature's Fury — decides
+   whether scheme O5 (Core margin) is worth its risk.
+
 **Re-verified 2026-08-26 (five-scheme object-safety run):**
 `cloud-fixtures/reference-streams/` on `origin/cursor/cloud-materials-3541`
 still contains only `README.md` — `tbh.dtshd`, `Dolby_NaturesFury.dtshd`, and
