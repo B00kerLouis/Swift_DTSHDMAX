@@ -42,9 +42,20 @@ public struct DTS714RenderGuardVerificationReport: Sendable, Equatable, Codable 
     public let guardedDeviatingCoefficientFrameCount: Int
     public let guardedNonzeroPrimaryMaskFrameCount: Int
     public let guardedEncodedFoldHardClipSampleCount: Int
+    /// Encoder-boundary contract: the same raw hot planes fed to the
+    /// delivery encoder (stems/wave/direct-plane entry, no renderer in the
+    /// path) must engage the boundary source guard and keep every official
+    /// invariant - zero fold hard clips, zero coefficient escapes, zero
+    /// primary-mask flips.
+    public let deliveryRawHotGuardEngaged: Bool
+    public let deliveryRawHotFoldHardClipSampleCount: Int
+    public let deliveryRawHotDeviatingCoefficientFrameCount: Int
+    public let deliveryRawHotNonzeroPrimaryMaskFrameCount: Int
     /// Negative control: the same hot content delivered as raw 7.1.4 planes
-    /// (the pre-guard mix law) must show the defect - fold hard clips in the
-    /// delivered bed and hot frames leaving the official constant matrix.
+    /// through the differential guard bypass (the pre-guard mix law) must
+    /// still show the defect - fold hard clips in the delivered bed and hot
+    /// frames leaving the official constant matrix - so this gate cannot go
+    /// green by losing sight of the failure it exists to prevent.
     public let unguardedEncodedFoldHardClipSampleCount: Int
     public let unguardedDeviatingCoefficientFrameCount: Int
     /// Quiet vector on the same trajectory: the guard must be bit-transparent.
@@ -98,15 +109,31 @@ public enum DTS714RenderGuardVerifier {
             }
         }
 
-        let guardedEncoded = try encodeAndInspect(source: hotRender)
+        let guardedEncoded = try encodeAndInspect(
+            source: hotRender,
+            guardPolicy: .delivery
+        )
 
-        // Negative control: raw planes carrying the pre-guard composite
-        // levels. Two floor/height pairs and the side/rear pair are driven
-        // hot simultaneously, which is what an unguarded render mid-crossing
-        // hands the encoder.
-        let unguardedEncoded = try encodeAndInspect(source: hotUnguardedPlanes(
-            sampleCount: sampleCount
-        ))
+        // The composite levels an unguarded render (or a hot stems/wave
+        // source) hands the encoder. Two floor/height pairs and the
+        // side/rear pair are driven hot simultaneously.
+        let rawHotPlanes = try hotUnguardedPlanes(sampleCount: sampleCount)
+
+        // Encoder-boundary contract: raw hot planes through the delivery
+        // default must engage the boundary source guard and keep every
+        // official invariant - this is the stems/wave entry point that
+        // historically bypassed the renderer guard entirely.
+        let deliveryRawEncoded = try encodeAndInspect(
+            source: rawHotPlanes,
+            guardPolicy: .delivery
+        )
+
+        // Negative control through the differential bypass: the defect must
+        // remain measurable so this gate stays anchored to the real failure.
+        let unguardedEncoded = try encodeAndInspect(
+            source: rawHotPlanes,
+            guardPolicy: .bypassForDifferential
+        )
 
         var quietGuard: DTS714RenderGuardReport?
         _ = try renderTrajectoryVector(
@@ -127,6 +154,11 @@ public enum DTS714RenderGuardVerifier {
             && guardedEncoded.deviatingCoefficientFrameCount == 0
             && guardedEncoded.nonzeroPrimaryMaskFrameCount == 0
             && guardedEncoded.frameCount > 0
+            && deliveryRawEncoded.sourceGuardEngaged
+            && deliveryRawEncoded.foldHardClipSampleCount == 0
+            && deliveryRawEncoded.deviatingCoefficientFrameCount == 0
+            && deliveryRawEncoded.nonzeroPrimaryMaskFrameCount == 0
+            && deliveryRawEncoded.frameCount > 0
             && unguardedEncoded.foldHardClipSampleCount > 0
             && unguardedEncoded.deviatingCoefficientFrameCount > 0
             && quietTransparent
@@ -150,6 +182,13 @@ public enum DTS714RenderGuardVerifier {
                 guardedEncoded.nonzeroPrimaryMaskFrameCount,
             guardedEncodedFoldHardClipSampleCount:
                 guardedEncoded.foldHardClipSampleCount,
+            deliveryRawHotGuardEngaged: deliveryRawEncoded.sourceGuardEngaged,
+            deliveryRawHotFoldHardClipSampleCount:
+                deliveryRawEncoded.foldHardClipSampleCount,
+            deliveryRawHotDeviatingCoefficientFrameCount:
+                deliveryRawEncoded.deviatingCoefficientFrameCount,
+            deliveryRawHotNonzeroPrimaryMaskFrameCount:
+                deliveryRawEncoded.nonzeroPrimaryMaskFrameCount,
             unguardedEncodedFoldHardClipSampleCount:
                 unguardedEncoded.foldHardClipSampleCount,
             unguardedDeviatingCoefficientFrameCount:
@@ -254,19 +293,23 @@ public enum DTS714RenderGuardVerifier {
     }
 
     private static func encodeAndInspect(
-        source: DTS714PCMBuffer
+        source: DTS714PCMBuffer,
+        guardPolicy: DTSXSourceGuardPolicy
     ) throws -> (
         frameCount: Int,
         deviatingCoefficientFrameCount: Int,
         nonzeroPrimaryMaskFrameCount: Int,
-        foldHardClipSampleCount: Int
+        foldHardClipSampleCount: Int,
+        sourceGuardEngaged: Bool
     ) {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent(
             "swift-dtsx-render-guard-\(UUID().uuidString).dtshd"
         )
         defer { try? FileManager.default.removeItem(at: output) }
-        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .none)
-            .encode(source: source, frameRate: .fps24)
+        let encoded = try DTSXNativeHDMAEncoder(
+            verificationPolicy: .none,
+            sourceGuardPolicy: guardPolicy
+        ).encode(source: source, frameRate: .fps24)
         do {
             try encoded.stream.write(to: output, options: .atomic)
         } catch {
@@ -292,11 +335,14 @@ public enum DTS714RenderGuardVerifier {
                 deviatingCoefficientFrameCount += 1
             }
         }
+        let sourceGuardEngaged = encoded.report.sourceRenderGuard
+            .map { $0.isHeadroomSafe && !$0.isTransparent } ?? false
         return (
             stream.frames.count,
             deviatingCoefficientFrameCount,
             nonzeroPrimaryMaskFrameCount,
-            encoded.report.compatibilityBedFoldHardClipSampleCount
+            encoded.report.compatibilityBedFoldHardClipSampleCount,
+            sourceGuardEngaged
         )
     }
 }
