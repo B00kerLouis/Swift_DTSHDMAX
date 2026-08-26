@@ -1,29 +1,28 @@
-# Material brief for cloud subagent (2026-08-26)
+# Material brief (2026-08-26 — post xllx-only tip)
 
 ## Fetch
 ```
-git fetch origin cursor/cloud-materials-3541 cursor/dtsx-tbh-firstframe-atmos-3541
+git fetch origin cursor/cloud-materials-3541 cursor/dtsx-xllx-only-defect-3541
 ```
 
-## AVAILABLE NOW (parent pushed — USE THESE)
+## AVAILABLE (parent pushed — USE)
 | Path | Role |
 | --- | --- |
-| `cloud-fixtures/test_X/pcm-sources/` | Controllable 7.1.4 PCM vectors (ALL_MUTE, ALL_SINE, impulses, CHANNEL_WALK, FULLSCALE, LFH_*, SILENCE, FRAME_EDGE, …) — **134 files** |
-| `cloud-fixtures/test_X/MANIFEST.json` | Vector inventory |
-| `cloud-fixtures/perfect-stream-grammar/` | Nature's Fury perfect-stream grammar notes + MANIFEST |
-| `cloud-fixtures/PROJECT_MEMORY.md` | Project memory |
-| `docs/reference-streams/DTSX/` | Staging docs (if checked out) |
-| Code tip | `origin/cursor/dtsx-tbh-firstframe-atmos-3541` |
+| `cloud-fixtures/test_X/pcm-sources/` | Controllable 7.1.4 PCM (134 files) |
+| `cloud-fixtures/test_X/MANIFEST.json` | Inventory |
+| `cloud-fixtures/perfect-stream-grammar/` | NF perfect-stream grammar |
+| Code tip | `origin/cursor/dtsx-xllx-only-defect-3541` (S1–S5 private silence timeline) |
 
-## MISSING — PARENT_UPLOAD_REQUIRED (Mac Downloads not on cloud VM)
-Louis's branch-updated **software encodes** (refresh each tip):
-- Desired repo path: `cloud-fixtures/reference-streams/tbh.dtshd` ← `/Users/sunyun_louis/Downloads/tbh.dtshd`
-- Desired repo path: `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` ← Downloads NF encode
-See `reference-streams/WHERE_TO_PUT_ENCODES.md`. Parent cannot mount `/Users`. Do not silent-pass encode bitstream对照.
+## MISSING encode-debug (Mac Downloads — PARENT_UPLOAD_REQUIRED)
+Desired after Louis pushes from Mac:
+- `cloud-fixtures/reference-streams/tbh.dtshd` ← `/Users/sunyun_louis/Downloads/tbh.dtshd`
+- `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd`
+See `WHERE_TO_PUT_ENCODES.md`. Parent VM has no `/Users`.
 
-## Hardware sync (critical)
-1. NF playable; **TBH first frame still unplayable**
-2. Click/Clip + 爆音; **this tip: 没有任何进展也没有任何退步** (flat vs previous)
-3. Atmos **master** Object onset/fast-move correlate (NOT DTS:X/XLL-X objects)
-4. Louis insight: **same downmix → 7.1 DTSHD/XLL compatibility bed is OK; only DTS:X path fails** → prefer defects unique to DTS:X (XLL-X heights, private grammar, DTS:X packaging/priming interaction with heights), not shared Core/7.1 HDMA fold
-5. No ffmpeg; hunt remaining unsafe DTS:X-only implementations
+## Hardware sync AFTER last tip (partial win)
+1. NF still 可播
+2. TBH: **仅 bed 发声的位置不可播** — 前约 10 秒 **和片尾** 都有（heights 有声段改善？）
+3. **爆音更少** vs previous（Atmos master Object 首几帧 / 快速切声道仍有）
+4. 7.1 HDMA/XLL 兼容层仍 OK；仅 DTS:X 私有层嫌疑
+5. Hypothesis to test: mid-stream / terminal private silence forms when **bed active + heights silent** (and possibly **end-of-programme** trailing silence grammar) still wrong — not only AU0–3
+6. No ffmpeg; Atmos master Object ≠ DTS:X objects
