@@ -2668,6 +2668,25 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // non-priming silent 4x128 access unit: it uses code 16 with no NAVI.
         // Keep this state transition explicit and frame-indexed so parallel
         // workers cannot accidentally reuse it for later silence.
+        //
+        // The 2x256 code-0x20 form below is the *ordinary* delivery silence
+        // for every source access unit whose height planes are silent - the
+        // official stream uses it whenever a non-priming AU carries silent
+        // heights on the mid-stream partition. It must therefore be
+        // available from the very first source AU: a hot start (active bed,
+        // silent heights) keeps the public partition on 2x256, and gating
+        // this form at `primingFrameCount + 2` made source AU2/AU3 fall
+        // through to the generic zero path, which serializes the 48-byte
+        // canonical compact zero form - the Core-priming declaration. The
+        // delivered private timeline then read priming, priming, priming,
+        // priming, source: four byte-identical priming declarations with
+        // the first grammar change at AU4, which is the recorded
+        // "first frames unplayable until AU3" / unplayable all-2x256
+        // startup failure, now confined to the DTS:X private layer (the
+        // public bed plays, only the DTS:X presentation fails). The
+        // compact zero form is exclusively the two Core-priming AUs'
+        // declaration; source silence transitions to code 0x20 at the
+        // first source AU.
         let frame: Data
         if (codingMode == .terminalConservative
                 || codingMode == .terminalRice
@@ -2714,7 +2733,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
                 || codingMode == .terminalBranchTwoPredictiveLinear
                 || codingMode == .terminalBranchTwoRice
                 || codingMode == .terminalPredictive),
-           frameIndex >= primingFrameCount + 2,
+           frameIndex >= primingFrameCount,
            segmentationPlan.segmentCount == 2,
            segmentationPlan.segmentSampleCount == 256,
            codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
@@ -2843,10 +2862,33 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // Official active-height controlled vectors enter ordinary 2x256
         // coding immediately, so active startup frames must remain available
         // to the public encoder's normal segmentation search.
+        //
+        // The corpus exercises the 4x128 startup forms only as a pair
+        // covering both first source access units of a fully silent start.
+        // A start whose heights are silent at one window frame but active
+        // at the other would otherwise emit a lone startup declaration the
+        // references never pair with a half-active window, so the window is
+        // nominated only when the height planes are silent across the whole
+        // two-AU window; any other start is an ordinary hot start whose
+        // silent-height frames use the mid-stream 2x256 code-0x20 form.
         if frameIndex < primingFrameCount + 2 {
-            return heightsAreSilent ? 4 : nil
+            if startupWindowHeightsAreSilent { return 4 }
+            return heightsAreSilent ? 2 : nil
         }
         return heightsAreSilent ? 2 : nil
+    }
+
+    /// True when the height planes are silent across both first source
+    /// access units (bounded by the source length). This is the private
+    /// half of the silent-start condition for the 4x128 startup grammar.
+    private var startupWindowHeightsAreSilent: Bool {
+        let windowEnd = min(
+            sourceSampleCount,
+            2 * DTSXPrivateFrameEncoder.frameSampleCount
+        )
+        return sourceHeightPlanes.allSatisfy { plane in
+            plane[0..<windowEnd].allSatisfy { $0 == 0 }
+        }
     }
 
     public func finalize(parallelWorkerCount: Int) throws -> DTSXPrivateEncodedStream {

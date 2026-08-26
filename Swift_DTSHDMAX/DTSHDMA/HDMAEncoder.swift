@@ -336,6 +336,25 @@ public struct DTSHDMAEncoder: Sendable {
             throw DTSError.unsupported("DTS HDMA requires 5.1(side) or 7.1 PCM")
         }
 
+        // The public half of the silent-start condition: the 4x128 startup
+        // grammar may be nominated only when the compatibility bed is silent
+        // across both first source access units (bounded by the source
+        // length), matching the private session's whole-window height check.
+        let startupWindowBedFramesAreSilent: Bool
+        if privateXLLXSource != nil {
+            startupWindowBedFramesAreSilent = try (0..<min(2, sourceFrameCount))
+                .allSatisfy { sourceFrameIndex in
+                    try sourceFrame(
+                        from: pcm,
+                        sourceFrameIndex: sourceFrameIndex
+                    ).planes.allSatisfy { plane in
+                        plane.allSatisfy { $0 == 0 }
+                    }
+                }
+        } else {
+            startupWindowBedFramesAreSilent = true
+        }
+
         // Core QMF/ADPCM/LFE history is advanced serially. XLL and ExSS work is
         // parallelized in bounded batches, so a feature-length encode no longer
         // retains the padded PCM, complete Core stream, every decoded frame and
@@ -423,13 +442,17 @@ public struct DTSHDMAEncoder: Sendable {
                 // heights - would otherwise be forced into a partition the
                 // corpus never pairs with active content, and the terminal
                 // cannot read those first active frames. Gate the startup
-                // force on the public compatibility bed as well; an active
-                // bed start follows the ordinary 2x256 delivery search.
+                // nomination on the public compatibility bed as well, and on
+                // the *whole* two-AU window: the corpus exercises the 4x128
+                // startup forms only as a pair over a fully silent start, so
+                // a bed that is active anywhere inside the window turns the
+                // whole start into an ordinary hot start. Its silent-height
+                // frames stay on the mid-stream 2x256 partition, where the
+                // private layer serializes the ordinary code-0x20 source
+                // silence instead of a startup declaration.
                 if privatePreferredSegmentCount == 4,
-                   item.frame.planes.contains(where: { plane in
-                       plane.contains(where: { $0 != 0 })
-                   }) {
-                    privatePreferredSegmentCount = nil
+                   !startupWindowBedFramesAreSilent {
+                    privatePreferredSegmentCount = 2
                 }
                 let nativeSessionStartupSegmentCount = item.frameIndex >= primingFrameCount
                     && item.frameIndex < primingFrameCount + 2
