@@ -1,0 +1,41 @@
+# Canonical location for Louis's new software encodes
+
+Cloud agents **must** read these paths after `git fetch origin cursor/cloud-materials-3541`:
+
+```
+cloud-fixtures/reference-streams/tbh.dtshd
+cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
+```
+
+Optional official perfect TBH:
+
+```
+cloud-fixtures/reference-streams/TBH_offical.dtshd
+```
+
+## Parent status (2026-08-26)
+
+Parent cloud VM cannot mount `/Users/sunyun_louis/Downloads` or `/Volumes/...`.
+Files were **not** present on the VM, so they could not be committed from the parent.
+Louis must run the Mac-side commands below, then ask the parent to re-spawn the child.
+
+## Mac-side upload (run on Louis's machine)
+
+```bash
+cd /path/to/Swift_DTSHDMAX
+git fetch origin
+git checkout cursor/cloud-materials-3541
+mkdir -p cloud-fixtures/reference-streams
+cp "/Users/sunyun_louis/Downloads/tbh.dtshd" \
+   cloud-fixtures/reference-streams/tbh.dtshd
+cp "/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd" \
+   cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
+# optional:
+# cp "/Volumes/HP_SSD_FX900_Pro /TBH/TBH_offical.dtshd" \
+#    cloud-fixtures/reference-streams/TBH_offical.dtshd
+git add -f cloud-fixtures/reference-streams/*.dtshd
+git commit -m "Add encode-debug tbh and Nature's Fury dtshd for cloud agents"
+git push origin cursor/cloud-materials-3541
+```
+
+Use Git LFS if GitHub rejects large blobs. First ~15s AU-aligned cuts are enough.
