@@ -39,3 +39,11 @@ git push origin cursor/cloud-materials-3541
 ```
 
 Use Git LFS if GitHub rejects large blobs. First ~15s AU-aligned cuts are enough.
+
+## Parent re-check 2026-08-26T07:15Z
+
+Local + cloud VM full-filesystem search: **NOT_FOUND** for
+`/Users/sunyun_louis/Downloads/tbh.dtshd` and
+`/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd`.
+No `/Users` or `/Volumes` mounts. Parent cannot commit binaries it cannot read.
+Louis must push from Mac using the commands above, then ask parent to re-fetch.
