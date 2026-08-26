@@ -46,6 +46,12 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
 }
 
 public enum DTSXNativeEncoderVerifier {
+    /// Byte count of one delivery-grammar zero priming access unit: the same
+    /// explicit-entropy silent 2x256 form every mid-stream silent delivery
+    /// frame uses (eight bytes larger than the research-only compact zero
+    /// form it replaces).
+    public static let deliveryPrimingFrameByteCount = 140
+
     public static func verify() throws -> DTSXNativeEncoderVerificationReport {
         let source = try syntheticSource()
         let encoder = DTSXNativeHDMAEncoder(verificationPolicy: .integrated)
@@ -226,15 +232,20 @@ public enum DTSXNativeEncoderVerifier {
     }
 
     /// Gates the official-corpus delivery grammar of the public XLL residual
-    /// path. After the two compact zero priming frames, every segment that
-    /// carries residual content must be ordinary Rice with an explicit
-    /// per-channel parameter, and only all-zero segments may keep the compact
-    /// zero-width linear form. A nonzero-width linear active segment is the
-    /// one grammar the recovered references never exercise; once the Core
-    /// carried the declared downmix fold, the shrunken residuals put an
-    /// all-linear encode permanently inside that unexercised form, which the
-    /// terminal presented as noise-gate-like dropouts on quiet content and an
-    /// unreadable first active frame.
+    /// path. Every frame - the two zero priming frames included - must keep
+    /// the delivery channel-set declarations: every segment that carries
+    /// residual content must be ordinary Rice with an explicit per-channel
+    /// parameter, and only all-zero segments may keep the compact zero-width
+    /// linear form. A nonzero-width linear active segment is the one grammar
+    /// the recovered references never exercise; once the Core carried the
+    /// declared downmix fold, the shrunken residuals put an all-linear
+    /// encode permanently inside that unexercised form, which the terminal
+    /// presented as noise-gate-like dropouts on quiet content and an
+    /// unreadable first active frame. Priming AUs additionally pin the
+    /// canonical silent delivery form: research-only compact priming
+    /// (pairwise-decorrelation declaration, permuted channel order, shared
+    /// entropy parameters) latched terminals onto a configuration no later
+    /// frame repeats and made hot-start first frames unplayable until AU3.
     private static func verifyTerminalOfficialRiceXLLSyntax(inputURL: URL) throws -> Bool {
         let stream = try XLLPBRStreamReader.read(inputURL: inputURL)
         guard !stream.frames.isEmpty else { return false }
@@ -244,18 +255,17 @@ public enum DTSXNativeEncoderVerifier {
         for (frameIndex, frame) in stream.frames.enumerated() {
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
             if frameIndex < primingFrameCount {
-                // The DTS:X Core pre-roll uses the compact zero-XLL grammar
-                // seen in the reference stream. It is the only delivery frame
-                // allowed to use common entropy parameters and identity
-                // pairwise decorrelation in this profile.
-                guard decoded.frameByteCount == 132,
+                // Delivery-grammar priming: identical channel-set
+                // declarations to every later silent delivery frame, with
+                // all-zero planes and no research-only syntax.
+                guard decoded.frameByteCount == deliveryPrimingFrameByteCount,
                       decoded.entropyStateReuseSegmentCount == 0,
-                      decoded.entropyCommonParameterSegmentCount == 4,
+                      decoded.entropyCommonParameterSegmentCount == 0,
                       decoded.entropyRiceParameterCount == 0,
                       decoded.hybridRiceParameterCount == 0,
                       decoded.hybridIsolatedSampleCount == 0,
                       decoded.channelSets.allSatisfy({ channelSet in
-                          channelSet.decorrelationEnabled
+                          !channelSet.decorrelationEnabled
                               && channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.planes.allSatisfy { plane in
@@ -323,11 +333,12 @@ public enum DTSXNativeEncoderVerifier {
                 return false
             }
             if frameIndex < primingFrameCount {
-                guard decoded.frameByteCount == 132,
-                      decoded.entropyCommonParameterSegmentCount == 4,
+                guard decoded.frameByteCount == deliveryPrimingFrameByteCount,
+                      decoded.entropyCommonParameterSegmentCount == 0,
                       decoded.entropyRiceParameterCount == 0,
                       decoded.channelSets.allSatisfy({ channelSet in
-                          channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
+                          !channelSet.decorrelationEnabled
+                              && channelSet.adaptivePredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.fixedPredictionOrders.allSatisfy { $0 == 0 }
                               && channelSet.planes.allSatisfy { plane in
                                   plane.allSatisfy { $0 == 0 }
@@ -590,12 +601,18 @@ public enum DTSXNativeEncoderVerifier {
     /// onset; both directions fail this regression.
     private static func verifyHotStartRecoveryWindow() throws -> XLLRecoveryStartupReport {
         let sourceSampleCount = XLLSyntax.frameSampleCount * 3
-        // Amplitudes are chosen so the 7.1 compatibility bed peaks near
+        // The centre runs at exact full scale: what recovery plays is the
+        // *decoded* Core times sqrt(2), and the decoded Core carries codec
+        // error on top of the ideal fold, so a full-scale plane clips the
+        // recovery intermediate unless the source guard's Core-codec-error
+        // recovery reserve holds the Core-mapped values below full scale
+        // (the FULLSCALE_C controllable-vector failure, +0.14 dB measured).
+        // The other amplitudes keep the 7.1 compatibility bed near
         // -0.3 dBFS (far above the -3.0103 dB recovery headroom) while the
         // hierarchy fold target (Lss + Lsr-with-height) stays inside the
         // signed 24-bit range, keeping the official constant matrix in use.
         let amplitudes: [Double] = [
-            6_000_000, 6_000_000, 6_000_000, 6_000_000,
+            6_000_000, 6_000_000, 8_388_607, 6_000_000,
             3_000_000, 3_000_000, 2_000_000, 2_000_000,
             3_000_000, 3_000_000, 3_000_000, 3_000_000
         ]

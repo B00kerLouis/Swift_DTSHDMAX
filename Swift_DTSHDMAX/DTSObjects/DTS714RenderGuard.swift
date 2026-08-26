@@ -23,12 +23,29 @@ import Foundation
 /// hierarchy coefficient search away from the official constant matrix,
 /// a per-frame grammar the reference corpus never exercises.
 ///
+/// The Core-recovery constraint carries one additional reserve. What the
+/// terminal actually plays during forced recovery is
+/// `clip23(decodedCore x sqrt(2))`, and the *decoded* Core is the ideal
+/// -3.0103 dB fold plus Core codec error, which peaks at loud transients -
+/// exactly the hot starts and object onsets under investigation. An ideal
+/// composite held at exact full scale therefore still hard-clips on
+/// playback by the codec error (measured: a full-scale sine overshoots
+/// ~136k LSBs, +0.14 dB, through the sqrt(2) recovery scale). Every
+/// Core-mapped recovery value (C and LFE planes, the front L/R height
+/// folds, and the side+rear recovery sums) is bounded at full scale minus
+/// ``coreCodecErrorRecoveryReserve`` so recovery playback stays inside
+/// signed 24-bit through the codec error at every stream start and seek
+/// re-entry.
+///
 /// This guard measures every constraint and, only where a composite actually
-/// exceeds the signed 24-bit range, applies one shared anticipatory gain
-/// envelope to all twelve planes. The envelope approaches each overload no
-/// faster than the reference renderer's slew (1/480 full scale per sample)
-/// and releases at 1/4800 per sample, so protection itself cannot introduce
-/// zipper steps. Content that never overloads any constraint passes through
+/// exceeds its bound, applies one shared anticipatory gain envelope to all
+/// twelve planes. The envelope approaches each overload no faster than the
+/// reference renderer's slew (1/480 full scale per sample), holds its
+/// deepest reduction for 10 ms after the last reduced sample (so sustained
+/// periodic overloads scale by one flat plateau instead of a per-cycle
+/// ripple the Core codec re-encodes as modulation error), and then releases
+/// at 1/4800 per sample, so protection itself cannot introduce zipper
+/// steps. Content that never overloads any constraint passes through
 /// bit-exact.
 public struct DTS714RenderGuardReport: Sendable, Equatable, Codable {
     public let sampleCount: Int
@@ -38,11 +55,13 @@ public struct DTS714RenderGuardReport: Sendable, Equatable, Codable {
     /// Samples where a legacy Q15 height fold (`floor + q15(23170) x height`)
     /// exceeded signed 24-bit before guarding.
     public let foldOverloadSampleCount: Int
-    /// Samples where a Core-residual recovery sum (`side + foldedRear`)
-    /// exceeded signed 24-bit before guarding. This is the intermediate the
-    /// reference decoder plays on first-frame recovery; it also bounds the
-    /// hierarchy coefficient target that keeps the official constant matrix
-    /// code 473 selected.
+    /// Samples where a Core-mapped recovery value (C or LFE plane, front
+    /// L/R height fold, or `side + foldedRear` sum) exceeded the reserved
+    /// recovery range (signed 24-bit minus the Core-codec-error reserve)
+    /// before guarding. These are the intermediates the reference decoder
+    /// plays as `clip23(decodedCore x sqrt(2))` on first-frame recovery;
+    /// the side+rear sum also bounds the hierarchy coefficient target that
+    /// keeps the official constant matrix code 473 selected.
     public let recoveryOverloadSampleCount: Int
     /// Samples where any constraint exceeded signed 24-bit before guarding.
     public let overloadSampleCount: Int
@@ -72,6 +91,17 @@ public enum DTS714RenderGuard {
     public static let attackStepQ30: Int64 = (unityQ30 + 479) / 480
     /// Gentle 100 ms full-scale release keeps the envelope free of pumping.
     public static let releaseStepQ30: Int64 = unityQ30 / 4_800
+    /// Samples the envelope stays at its deepest reduction after the last
+    /// reduced sample before releasing (10 ms). A steady hot sine overloads
+    /// once per half cycle; without the hold, the release recovered ~0.7%
+    /// of full scale between consecutive peaks and the envelope turned into
+    /// a per-cycle amplitude ripple. The fixed-allocation Core codec encodes
+    /// that modulation poorly: the ripple measurably doubled the decoded
+    /// Core error of a guarded full-scale sine (~282k vs ~136k LSBs through
+    /// the sqrt(2) recovery scale), consuming exactly the reserve the
+    /// recovery constraint exists to protect. With the hold, a periodic
+    /// overload produces one flat gain plateau - a clean constant scale.
+    public static let holdSampleCount = 480
     static let positiveCeiling: Int64 = 8_388_607
     static let negativeFloor: Int64 = -8_388_608
     /// Rescale targets below the exact bounds absorb the +/-1 LSB rounding
@@ -80,17 +110,43 @@ public enum DTS714RenderGuard {
     static let positiveRescaleTarget: Int64 = 8_388_605
     static let negativeRescaleMagnitude: Int64 = 8_388_606
 
+    /// Headroom reserved on every Core-mapped recovery value for Core codec
+    /// error. The terminal's forced recovery plays
+    /// `clip23(decodedCore x sqrt(2))`, and the decoded Core carries codec
+    /// error on top of the ideal fold, so an ideal composite at exact full
+    /// scale still clips on playback. The worst measured overshoot is the
+    /// FULLSCALE_C controllable vector - a full-scale Nyquist square wave,
+    /// the digital worst case for the fixed-allocation Core - at ~282k LSBs
+    /// (~3.4% of level) through the sqrt(2) recovery scale, and the error is
+    /// quantizer-alignment sensitive rather than level-proportional.
+    /// 458,752 LSBs (-0.49 dB, ~5.5% of full scale) covers the measured
+    /// worst case with ~1.6x margin. Only content within the reserve of
+    /// full scale on a Core-mapped constraint is touched; everything else
+    /// passes bit-exact.
+    public static let coreCodecErrorRecoveryReserve: Int64 = 458_752
+    static let recoveryPositiveCeiling = positiveCeiling - coreCodecErrorRecoveryReserve
+    static let recoveryNegativeFloor = negativeFloor + coreCodecErrorRecoveryReserve
+    static let recoveryPositiveRescaleTarget =
+        positiveRescaleTarget - coreCodecErrorRecoveryReserve
+    static let recoveryNegativeRescaleMagnitude =
+        negativeRescaleMagnitude - coreCodecErrorRecoveryReserve
+
     static let q15HeightGain: Int64 = 23_170
     static let q15Half: Int64 = 1 << 14
 
     /// (floor, height) plane index pairs of the legacy Q15 compatibility
-    /// fold, in `DTS714Channel.allCases` order.
-    static let foldPairs: [(floor: Int, height: Int)] = [
-        (0, 8),   // L   + Lfh
-        (1, 9),   // R   + Rfh
-        (6, 10),  // Lsr + Lrh
-        (7, 11)   // Rsr + Rrh
+    /// fold, in `DTS714Channel.allCases` order. The front pairs are the
+    /// recovery playback values for Core L and R and therefore also enter
+    /// the reserved recovery constraint.
+    static let foldPairs: [(floor: Int, height: Int, feedsCoreFront: Bool)] = [
+        (0, 8, true),    // L   + Lfh -> Core L
+        (1, 9, true),    // R   + Rfh -> Core R
+        (6, 10, false),  // Lsr + Lrh (enters Core Ls via the recovery sum)
+        (7, 11, false)   // Rsr + Rrh (enters Core Rs via the recovery sum)
     ]
+    /// Core-mapped pass-through planes (C, LFE) whose recovery playback is
+    /// the plane value itself.
+    static let recoveryPassThroughPlanes: [Int] = [2, 3]
     /// (side, foldedRear) construction of the Core-residual recovery sum.
     static let recoveryPairs: [(side: Int, rearFloor: Int, rearHeight: Int)] = [
         (4, 6, 10), // Lss + fold(Lsr, Lrh)
@@ -117,7 +173,8 @@ public enum DTS714RenderGuard {
             foldMaximum > positiveCeiling || foldMinimum < negativeFloor
         }
         var recoveryOverloads: Bool {
-            recoveryMaximum > positiveCeiling || recoveryMinimum < negativeFloor
+            recoveryMaximum > recoveryPositiveCeiling
+                || recoveryMinimum < recoveryNegativeFloor
         }
         var overloads: Bool { planeOverloads || foldOverloads || recoveryOverloads }
         var maximumMagnitude: Int64 {
@@ -128,17 +185,25 @@ public enum DTS714RenderGuard {
             )
         }
 
-        /// Q30 gain that brings every constraint back inside the signed
-        /// 24-bit bounds with rounding margin; unity when nothing overloads.
+        /// Q30 gain that brings every constraint back inside its bound with
+        /// rounding margin (signed 24-bit for planes and folds, the reserved
+        /// recovery range for Core-mapped recovery values); unity when
+        /// nothing overloads.
         var requiredGainQ30: Int64 {
             var gain = unityQ30
-            let positive = max(planeMaximum, foldMaximum, recoveryMaximum)
+            let positive = max(planeMaximum, foldMaximum)
             if positive > positiveCeiling {
                 gain = min(gain, (positiveRescaleTarget << 30) / positive)
             }
-            let negative = min(planeMinimum, foldMinimum, recoveryMinimum)
+            let negative = min(planeMinimum, foldMinimum)
             if negative < negativeFloor {
                 gain = min(gain, (negativeRescaleMagnitude << 30) / -negative)
+            }
+            if recoveryMaximum > recoveryPositiveCeiling {
+                gain = min(gain, (recoveryPositiveRescaleTarget << 30) / recoveryMaximum)
+            }
+            if recoveryMinimum < recoveryNegativeFloor {
+                gain = min(gain, (recoveryNegativeRescaleMagnitude << 30) / -recoveryMinimum)
             }
             return gain
         }
@@ -164,6 +229,15 @@ public enum DTS714RenderGuard {
             )
             extremes.foldMinimum = min(extremes.foldMinimum, fold)
             extremes.foldMaximum = max(extremes.foldMaximum, fold)
+            if pair.feedsCoreFront {
+                extremes.recoveryMinimum = min(extremes.recoveryMinimum, fold)
+                extremes.recoveryMaximum = max(extremes.recoveryMaximum, fold)
+            }
+        }
+        for plane in recoveryPassThroughPlanes {
+            let value = Int64(planes[plane][sample])
+            extremes.recoveryMinimum = min(extremes.recoveryMinimum, value)
+            extremes.recoveryMaximum = max(extremes.recoveryMaximum, value)
         }
         for pair in recoveryPairs {
             let foldedRear = q15Fold(
@@ -232,10 +306,26 @@ public enum DTS714RenderGuard {
             if ramped < Int64(gains[sample]) { gains[sample] = Int32(min(ramped, unityQ30)) }
             sample -= 1
         }
-        // Forward release.
-        for sample in 1..<sampleCount {
-            let ramped = Int64(gains[sample - 1]) + releaseStepQ30
-            if ramped < Int64(gains[sample]) { gains[sample] = Int32(min(ramped, unityQ30)) }
+        // Forward hold-and-release: any reduced sample re-arms the hold at
+        // the deepest reduction seen, so periodic overloads (a steady hot
+        // sine peaking every half cycle) hold one flat plateau instead of
+        // rippling with the release between peaks; see ``holdSampleCount``.
+        // Gains only ever move down here, so every per-sample requirement
+        // stays satisfied, and the plateau/release shape keeps the final
+        // per-sample step inside the attack bound.
+        var heldGain = unityQ30
+        var holdRemaining = 0
+        for sample in 0..<sampleCount {
+            let gain = Int64(gains[sample])
+            if gain < unityQ30 {
+                heldGain = min(heldGain, gain)
+                holdRemaining = holdSampleCount
+            } else if holdRemaining > 0 {
+                holdRemaining -= 1
+            } else if heldGain < unityQ30 {
+                heldGain = min(unityQ30, heldGain + releaseStepQ30)
+            }
+            if heldGain < Int64(gains[sample]) { gains[sample] = Int32(heldGain) }
         }
 
         var gainReduced = 0

@@ -3,18 +3,18 @@ import Foundation
 /// End-to-end audit of the Atmos-object onset contract in the render path
 /// and of the encode-boundary passthrough invariant.
 ///
-/// Louis's refined hardware pattern: pops track Atmos **master** objects
-/// (essence plus automation) - the closer to an object essence onset or the
-/// programme head, the higher the pop rate - and the previous
-/// delivery-boundary height-onset conditioner made the pops **worse**. The
-/// contract verified here is therefore render-native and object-scoped:
+/// Hardware history, in order: the delivery-boundary height-onset
+/// conditioner made pops **worse**; the render-native programme-start fade
+/// that replaced it (`beginFromSilence` plus rate-exact slews) also made
+/// pops worse and did not make the tbh first frame playable, because that
+/// failure is the priming-grammar defect at the encode stage. Official
+/// renders deliver hot programme heads unfaded. The contract verified here
+/// is therefore *no onset reshaping anywhere in the render or encode path*:
 ///
-/// 1. **Hot start bounded in the renderer.** An object that is active with
-///    hot essence at sample zero rises at the reference maximum slew (1/480
-///    full scale per sample) and converges bit-exactly to the static-gain
-///    mix within 480 samples - inside the first source access unit, in all
-///    planes the object feeds (floor and height alike, unlike the removed
-///    height-only conditioner).
+/// 1. **Hot starts are delivered unfaded.** An object that is active with
+///    hot essence at sample zero renders at the full static-gain mix from
+///    the first sample, bit-exactly - no programme-start fade in any plane
+///    the object feeds.
 /// 2. **Beds are never faded.** The bed mix is bit-exact from sample zero.
 /// 3. **Silent starts are bit-exact.** An object whose essence is silent
 ///    through the head window renders untouched (the Nature's Fury class).
@@ -27,17 +27,13 @@ import Foundation
 ///    byte-identical, and the delivery encode stays closed-loop bit-exact
 ///    and early-programme grammar safe.
 public struct DTS714RenderStartupVerificationReport: Sendable, Equatable, Codable {
-    /// Samples until the hot-start object plane equals the static-gain mix.
-    public let hotStartRiseSampleCount: Int
     /// First rendered sample magnitude of the hot-start object plane.
     public let hotStartFirstSampleMagnitude: Int64
-    /// Magnitude the same sample would have carried with step-installed
-    /// initial gains (the removed behavior).
-    public let hotStartUnboundedFirstSampleMagnitude: Int64
-    /// Hot-start samples that escape the reference-slew rise envelope.
-    public let hotStartEnvelopeViolationCount: Int
-    /// After the rise the output must equal the static-gain mix bit-exactly.
-    public let hotStartConvergedToStaticMix: Bool
+    /// Static-gain mix magnitude the first sample must carry.
+    public let hotStartStaticMixFirstSampleMagnitude: Int64
+    /// The object plane must equal the static-gain mix bit-exactly from
+    /// sample zero (no programme-start fade).
+    public let hotStartBitExactFromSampleZero: Bool
     /// The bed plane must be bit-exact from sample zero (no fade).
     public let hotStartBedBitExact: Bool
     /// Silent-essence head window must render as digital silence.
@@ -63,9 +59,6 @@ public enum DTS714RenderStartupVerifier {
     private static let silentHeadSampleCount = XLLSyntax.frameSampleCount * 12
 
     public static func verify() throws -> DTS714RenderStartupVerificationReport {
-        let maximumStepQ30 = (unityQ30
-            + Int64(DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount - 1))
-            / Int64(DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount)
         var state = AtmosObjectState(elementID: 10)
         state.active = true
         state.position = AtmosPosition(x: -1, y: 1, z: 1)
@@ -77,20 +70,7 @@ public enum DTS714RenderStartupVerifier {
         // MARK: Hot start (the tbh class): active object, hot essence at 0.
         let hotRendered = try renderTestMaster(essenceSilentUntil: 0)
         let hotPlane = hotRendered.planes[objectPlane]
-        let risePeriod = DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount
-        var envelopeViolations = 0
-        for sample in 0..<risePeriod {
-            let bound = roundQ30(
-                essenceMagnitude * min(unityQ30, Int64(sample + 1) * maximumStepQ30)
-            ) + 2
-            if Int64(abs(Int64(hotPlane[sample]))) > bound { envelopeViolations += 1 }
-        }
-        var riseSampleCount = risePeriod
-        while riseSampleCount > 0,
-              Int64(hotPlane[riseSampleCount - 1]) == staticExpected {
-            riseSampleCount -= 1
-        }
-        let converged = hotPlane[risePeriod...].allSatisfy { Int64($0) == staticExpected }
+        let hotStartBitExact = hotPlane.allSatisfy { Int64($0) == staticExpected }
         let bedBitExact = hotRendered.planes[bedPlane].indices.allSatisfy { sample in
             Int64(hotRendered.planes[bedPlane][sample]) == roundQ30(
                 Int64(bedSample(sample)) * DTS714ChannelMapper.renderHeadroomQ30
@@ -143,14 +123,8 @@ public enum DTS714RenderStartupVerifier {
         )
 
         let hotStartFirstSampleMagnitude = Int64(abs(Int64(hotPlane[0])))
-        let unboundedFirstSampleMagnitude = Swift.abs(staticExpected)
-        let isVerified = hotStartFirstSampleMagnitude
-                <= roundQ30(essenceMagnitude * maximumStepQ30) + 2
-            && hotStartFirstSampleMagnitude < unboundedFirstSampleMagnitude / 100
-            && envelopeViolations == 0
-            && riseSampleCount > 0
-            && riseSampleCount <= risePeriod
-            && converged
+        let isVerified = hotStartFirstSampleMagnitude == Swift.abs(staticExpected)
+            && hotStartBitExact
             && bedBitExact
             && headWindowSilent
             && onsetUnfaded
@@ -160,11 +134,9 @@ public enum DTS714RenderStartupVerifier {
             && earlyProgramme.isEarlyProgrammeSafe
 
         return DTS714RenderStartupVerificationReport(
-            hotStartRiseSampleCount: riseSampleCount,
             hotStartFirstSampleMagnitude: hotStartFirstSampleMagnitude,
-            hotStartUnboundedFirstSampleMagnitude: unboundedFirstSampleMagnitude,
-            hotStartEnvelopeViolationCount: envelopeViolations,
-            hotStartConvergedToStaticMix: converged,
+            hotStartStaticMixFirstSampleMagnitude: Swift.abs(staticExpected),
+            hotStartBitExactFromSampleZero: hotStartBitExact,
             hotStartBedBitExact: bedBitExact,
             silentStartHeadWindowSilent: headWindowSilent,
             midProgrammeEssenceOnsetUnfaded: onsetUnfaded,

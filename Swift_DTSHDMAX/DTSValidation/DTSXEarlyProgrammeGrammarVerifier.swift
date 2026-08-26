@@ -19,8 +19,10 @@ import Foundation
 ///    first two source access units when the access unit is fully silent
 ///    (the Nature's Fury silent-start transition). The references never pair
 ///    4x128 with active content.
-/// 4. Post-priming delivery frames carry no research-only syntax: no entropy
-///    state reuse, no hybrid Rice, no pairwise decorrelation, no prediction.
+/// 4. No delivery frame - the two Core-priming AUs included - carries
+///    research-only syntax: no entropy state reuse, no hybrid Rice, no
+///    pairwise decorrelation, no prediction. Priming declarations must
+///    match the delivery channel-set configuration.
 /// 5. Every access unit that carries the XLL-X private extension declares the
 ///    corpus-constant 6+2 hierarchy: primary residual mask `0x00`, secondary
 ///    mask `0x03`, 24-bit storage, downmix scale codes 473, and coefficient
@@ -190,24 +192,27 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 }
             }
 
-            // Research-only syntax must stay out of post-priming delivery
-            // frames. The compact priming form legitimately declares identity
-            // pairwise decorrelation and common entropy parameters.
-            if frameIndex >= primingFrameCount {
-                let usesResearchSyntax = decoded.entropyStateReuseSegmentCount > 0
-                    || decoded.hybridRiceParameterCount > 0
-                    || decoded.hybridIsolatedSampleCount > 0
-                    || decoded.entropyCommonParameterSegmentCount > 0
-                    || decoded.channelSets.contains { channelSet in
-                        channelSet.decorrelationEnabled
-                            || channelSet.adaptivePredictionOrders.contains { $0 > 0 }
-                            || channelSet.fixedPredictionOrders.contains { $0 > 0 }
-                    }
-                if usesResearchSyntax {
-                    publicResearchSyntaxFrameCount += 1
-                    if publicFirstResearchSyntaxFrameIndex == nil {
-                        publicFirstResearchSyntaxFrameIndex = frameIndex
-                    }
+            // Research-only syntax must stay out of every delivery frame,
+            // the two Core-priming AUs included: priming declarations must
+            // match the delivery channel-set configuration. The removed
+            // research-only compact priming form (pairwise-decorrelation
+            // declaration, permuted channel order, shared entropy
+            // parameters) latched terminals onto a configuration no later
+            // frame repeats and made hot-start first frames unplayable
+            // until AU3.
+            let usesResearchSyntax = decoded.entropyStateReuseSegmentCount > 0
+                || decoded.hybridRiceParameterCount > 0
+                || decoded.hybridIsolatedSampleCount > 0
+                || decoded.entropyCommonParameterSegmentCount > 0
+                || decoded.channelSets.contains { channelSet in
+                    channelSet.decorrelationEnabled
+                        || channelSet.adaptivePredictionOrders.contains { $0 > 0 }
+                        || channelSet.fixedPredictionOrders.contains { $0 > 0 }
+                }
+            if usesResearchSyntax {
+                publicResearchSyntaxFrameCount += 1
+                if publicFirstResearchSyntaxFrameIndex == nil {
+                    publicFirstResearchSyntaxFrameIndex = frameIndex
                 }
             }
         }

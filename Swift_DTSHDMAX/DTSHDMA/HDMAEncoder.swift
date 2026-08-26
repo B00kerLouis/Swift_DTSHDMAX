@@ -373,15 +373,22 @@ public struct DTSHDMAEncoder: Sendable {
                 let xllCoreReconstruction = item.isPriming
                     ? silentCoreFrame
                     : item.decodedCore
-                // DTS:X reference streams use the standard compact zero-XLL
-                // declaration during the two Core-priming access units.  The
-                // terminal-conservative payload keeps later frames free of
-                // unqualified transforms, but its all-explicit zero entropy
-                // state is eight bytes larger and differs from the observed
-                // priming grammar.  Use the independently verified compact
-                // zero form only for those silent pre-roll frames.
-                let frameXLLEncoder = (privateXLLXSource != nil
-                    || configuration.compactXLLPriming)
+                // Priming declarations must match the delivery channel-set
+                // configuration. The research-only compact zero form saves
+                // eight bytes but declares pairwise decorrelation with a
+                // permuted original channel order and shared entropy
+                // parameters - a channel-set configuration no later delivery
+                // access unit repeats. Terminals latch that first
+                // configuration and reconfigure when the first source AU
+                // arrives with different declarations, so hot-start
+                // programmes (tbh class) lose their first audible frames
+                // ("first frames unplayable until AU3") while silent starts
+                // (Nature's Fury) mask the window. Ordinary HDMA - reported
+                // OK on hardware - always primed with its delivery encoder;
+                // DTS:X now does the same. The compact research form remains
+                // available only as the explicit `compactXLLPriming`
+                // differential control.
+                let frameXLLEncoder = configuration.compactXLLPriming
                     && item.isPriming
                     && configuration.xllCodingMode != .research
                     ? XLLEncoder(
