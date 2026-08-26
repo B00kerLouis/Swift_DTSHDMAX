@@ -15,7 +15,8 @@ public enum DTS714Renderer {
         master: AtmosMaster,
         maximumSampleCount: Int? = nil,
         blockSampleCount: Int = 4_096,
-        progress: ((Int64, Int64) -> Void)? = nil
+        progress: ((Int64, Int64) -> Void)? = nil,
+        guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
     ) throws -> DTS714PCMBuffer {
         guard master.audioFormat.container != .iabMXF else {
             throw DTSError.invalidArgument("IAB masters render via render(iab:)")
@@ -30,7 +31,8 @@ public enum DTS714Renderer {
             master: master,
             maximumSampleCount: maximumSampleCount,
             blockSampleCount: blockSampleCount,
-            progress: progress
+            progress: progress,
+            guardReport: guardReport
         ) { byteCount in
             do { return try handle.read(upToCount: byteCount) ?? Data() }
             catch { throw DTSError.io("cannot read Atmos PCM: \(error.localizedDescription)") }
@@ -41,7 +43,8 @@ public enum DTS714Renderer {
         iab: IABMaster,
         maximumSampleCount: Int? = nil,
         blockSampleCount: Int = 4_096,
-        progress: ((Int64, Int64) -> Void)? = nil
+        progress: ((Int64, Int64) -> Void)? = nil,
+        guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
     ) throws -> DTS714PCMBuffer {
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: iab.master.audioURL) }
@@ -53,7 +56,8 @@ public enum DTS714Renderer {
             master: iab.master,
             maximumSampleCount: maximumSampleCount,
             blockSampleCount: blockSampleCount,
-            progress: progress
+            progress: progress,
+            guardReport: guardReport
         ) { byteCount in
             while pending.count < byteCount, frameIndex < iab.frames.count {
                 pending.append(try IMFIABReader.decodeFrameAudio(iab: iab, frameIndex: frameIndex, handle: handle))
@@ -82,6 +86,7 @@ public enum DTS714Renderer {
         maximumSampleCount: Int?,
         blockSampleCount: Int,
         progress: ((Int64, Int64) -> Void)?,
+        guardReport: ((DTS714RenderGuardReport) -> Void)? = nil,
         readBlock: (Int) throws -> Data
     ) throws -> DTS714PCMBuffer {
         guard blockSampleCount > 0,
@@ -194,7 +199,12 @@ public enum DTS714Renderer {
                         }
                         let outputSample = blockStart + localSample
                         for index in output.indices {
-                            output[index][outputSample] = saturate24(roundQ30(accumulators[index]))
+                            // Full Int32 range here: the downstream-headroom
+                            // guard below sees unsaturated mix values and is
+                            // the only stage allowed to bound them.
+                            output[index][outputSample] = Int32(
+                                clamping: roundQ30(accumulators[index])
+                            )
                         }
                     }
                     sample = runEnd
@@ -203,6 +213,14 @@ public enum DTS714Renderer {
             blockStart += blockCount
             progress?(Int64(blockStart), Int64(sampleCount))
         }
+        // Bound the mix against every downstream headroom contract (plane
+        // range, legacy Q15 height fold, Core-residual recovery sum) with the
+        // shared anticipatory envelope. Content that never overloads passes
+        // through bit-exact; the previous per-sample `saturate24` silently
+        // hard-clipped exactly the hot object peaks that the lossless
+        // XLL/XLL-X layers then delivered as clicks.
+        let report = DTS714RenderGuard.apply(to: &output)
+        guardReport?(report)
         return try DTS714PCMBuffer(planes: output)
     }
 
@@ -234,10 +252,6 @@ public enum DTS714Renderer {
         // while the former half-away rule produced 3322.
         let bias = (q30 >> 1) - 1
         return value >= 0 ? (value + bias) >> 30 : -((-value + bias) >> 30)
-    }
-
-    @inline(__always) private static func saturate24(_ value: Int64) -> Int32 {
-        Int32(min(Int64(8_388_607), max(Int64(-8_388_608), value)))
     }
 
     @inline(__always) private static func packed24(_ pointer: UnsafePointer<UInt8>) -> Int32 {
