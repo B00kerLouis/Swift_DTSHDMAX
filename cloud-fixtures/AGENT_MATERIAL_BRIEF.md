@@ -1,25 +1,29 @@
-# Material brief for cloud subagent
+# Material brief for cloud subagent (2026-08-26)
 
-## 1. Fetch materials + code tip
+## Fetch
 ```
-git fetch origin cursor/cloud-materials-3541 cursor/dtsx-atmos-object-onset-3541
+git fetch origin cursor/cloud-materials-3541 cursor/dtsx-tbh-firstframe-atmos-3541
 ```
 
-## 2. Encode-debug streams (REQUIRED) — exact repo paths
-After fetch/checkout of materials:
-- `cloud-fixtures/reference-streams/tbh.dtshd` ← from `/Users/sunyun_louis/Downloads/tbh.dtshd`
-- `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` ← from Downloads Nature's Fury encode
-- See `cloud-fixtures/reference-streams/WHERE_TO_PUT_ENCODES.md`
+## AVAILABLE NOW (parent pushed — USE THESE)
+| Path | Role |
+| --- | --- |
+| `cloud-fixtures/test_X/pcm-sources/` | Controllable 7.1.4 PCM vectors (ALL_MUTE, ALL_SINE, impulses, CHANNEL_WALK, FULLSCALE, LFH_*, SILENCE, FRAME_EDGE, …) — **134 files** |
+| `cloud-fixtures/test_X/MANIFEST.json` | Vector inventory |
+| `cloud-fixtures/perfect-stream-grammar/` | Nature's Fury perfect-stream grammar notes + MANIFEST |
+| `cloud-fixtures/PROJECT_MEMORY.md` | Project memory |
+| `docs/reference-streams/DTSX/` | Staging docs (if checked out) |
+| Code tip | `origin/cursor/dtsx-tbh-firstframe-atmos-3541` |
 
-If these `.dtshd` files are missing: write/update `PARENT_UPLOAD_REQUEST.md`, set **PARENT_UPLOAD_REQUIRED** in final report, do **not** silent-pass bitstream对照 against Louis's encodes. Continue with controllable vectors + Atmos render unsafe-path hunt.
+## MISSING — PARENT_UPLOAD_REQUIRED (Mac Downloads not on cloud VM)
+Louis's branch-updated **software encodes** (refresh each tip):
+- Desired repo path: `cloud-fixtures/reference-streams/tbh.dtshd` ← `/Users/sunyun_louis/Downloads/tbh.dtshd`
+- Desired repo path: `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` ← Downloads NF encode
+See `reference-streams/WHERE_TO_PUT_ENCODES.md`. Parent cannot mount `/Users`. Do not silent-pass encode bitstream对照.
 
-## 3. Also available
-- `cloud-fixtures/test_X/pcm-sources/` controllable 7.1.4 PCM
-- `cloud-fixtures/perfect-stream-grammar/` NF grammar notes
-- Code tip: `origin/cursor/dtsx-atmos-object-onset-3541`
-
-## 4. Hardware sync
-- NF playable; TBH first ~10s still broken
-- 爆音 **more** than previous tip
-- Correlate: **Atmos master objects** (not DTS:X/XLL-X objects); nearer Atmos-object onset/head → more pops
-- Hunt remaining unsafe implementations in Atmos→7.1.4 and encode handoff
+## Hardware sync (critical)
+1. NF playable; **TBH first frame still unplayable**
+2. Click/Clip + 爆音; **this tip: 没有任何进展也没有任何退步** (flat vs previous)
+3. Atmos **master** Object onset/fast-move correlate (NOT DTS:X/XLL-X objects)
+4. Louis insight: **same downmix → 7.1 DTSHD/XLL compatibility bed is OK; only DTS:X path fails** → prefer defects unique to DTS:X (XLL-X heights, private grammar, DTS:X packaging/priming interaction with heights), not shared Core/7.1 HDMA fold
+5. No ffmpeg; hunt remaining unsafe DTS:X-only implementations
