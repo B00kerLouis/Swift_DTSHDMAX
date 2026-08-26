@@ -37,6 +37,8 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let recoveryClipSampleCount: Int
     public let recoveryMaximumAbsoluteResidual: Int64
     public let recoveryStartupPassed: Bool
+    public let earlyProgramme: DTSXEarlyProgrammeGrammarReport
+    public let earlyProgrammePassed: Bool
     public let renderGuard: DTS714RenderGuardVerificationReport
     public let renderGuardPassed: Bool
     public let isStructurallyValid: Bool
@@ -100,6 +102,12 @@ public enum DTSXNativeEncoderVerifier {
         let recoveryHotStart = try verifyHotStartRecoveryWindow()
         let recoveryStartupPassed = recoveryPrimary.isRecoverySafe
             && recoveryHotStart.isRecoverySafe
+        let earlyProgrammePrimary = try DTSXEarlyProgrammeGrammarVerifier.verify(
+            inputURL: output
+        )
+        let earlyProgrammeHostile = try verifyHostileStartEarlyProgramme()
+        let earlyProgrammePassed = earlyProgrammePrimary.isEarlyProgrammeSafe
+            && earlyProgrammeHostile.isEarlyProgrammeSafe
         let renderGuard = try DTS714RenderGuardVerifier.verify()
 
         let privateMismatchCount = first.report.privateEncoding.decodedSampleMismatchCount
@@ -124,6 +132,7 @@ public enum DTSXNativeEncoderVerifier {
             && adaptiveXLL.passed
             && hybridXLL.passed
             && recoveryStartupPassed
+            && earlyProgrammePassed
             && renderGuard.isVerified
         let report = DTSXNativeEncoderVerificationReport(
             sourceSampleCount: source.sampleCount,
@@ -170,6 +179,8 @@ public enum DTSXNativeEncoderVerifier {
             recoveryClipSampleCount: recoveryHotStart.recoveryClipSampleCount,
             recoveryMaximumAbsoluteResidual: recoveryHotStart.maximumAbsoluteResidual,
             recoveryStartupPassed: recoveryStartupPassed,
+            earlyProgramme: earlyProgrammeHostile,
+            earlyProgrammePassed: earlyProgrammePassed,
             renderGuard: renderGuard,
             renderGuardPassed: renderGuard.isVerified,
             isStructurallyValid: structural.isStructurallyValid,
@@ -617,6 +628,75 @@ public enum DTSXNativeEncoderVerifier {
             )
         }
         return try XLLRecoveryStartupVerifier.verify(inputURL: output)
+    }
+
+    /// tbh-class hostile start: sparse full-scale transients over a hot bed
+    /// with silent startup heights, held across several access units. Without
+    /// the perfect-stream bounds this content class produced public XLL Rice
+    /// unary quotients past 100 (terminal bounded readers stop at 22) and
+    /// forced the silent-start 4x128 partition onto active bed frames - the
+    /// exact "first ~10 seconds unplayable, pops at every later transient"
+    /// hardware failure. The whole window must satisfy the multi-access-unit
+    /// early-programme grammar, not just the first access unit.
+    private static func verifyHostileStartEarlyProgramme() throws
+        -> DTSXEarlyProgrammeGrammarReport {
+        let sourceFrameCount = 8
+        let sourceSampleCount = XLLSyntax.frameSampleCount * sourceFrameCount
+        var planes = Array(
+            repeating: Array(repeating: Int32(0), count: sourceSampleCount),
+            count: DTS714Channel.allCases.count
+        )
+        let left = DTS714Channel.allCases.firstIndex(of: .left)!
+        let center = DTS714Channel.allCases.firstIndex(of: .center)!
+        let leftRearSurround = DTS714Channel.allCases.firstIndex(of: .leftRearSurround)!
+        let heights = [
+            DTS714Channel.leftFrontHeight, .rightFrontHeight,
+            .leftRearHeight, .rightRearHeight
+        ].map { DTS714Channel.allCases.firstIndex(of: $0)! }
+
+        // Sparse transients are the heavy-tailed residual class: a mostly
+        // quiet segment drives the mean-magnitude Rice parameter down, and
+        // the lone loud sample must then still fit the bounded unary reader.
+        for frame in 0..<sourceFrameCount {
+            let offset = frame * XLLSyntax.frameSampleCount
+            planes[left][offset] = frame.isMultiple(of: 2) ? 4_000_000 : -4_000_000
+            if frame > 0 {
+                planes[leftRearSurround][offset - 1] = 4_000_000
+                planes[leftRearSurround][offset] = -4_000_000
+            }
+        }
+        // A hot bed from sample zero keeps the start active (the tbh shape)
+        // while the startup heights stay silent, so the private session still
+        // nominates the silent-start 4x128 form that delivery must refuse.
+        for sample in 0..<sourceSampleCount {
+            let phase = 2.0 * Double.pi * 997.0 * Double(sample) / 48_000.0
+            planes[center][sample] = Int32((sin(phase) * 5_000_000.0).rounded())
+        }
+        // Heights enter late and hot so the private XLL-X path also codes
+        // heavy-tailed residuals inside the audited window.
+        for (heightOrdinal, channel) in heights.enumerated() {
+            let frequency = 503.0 + Double(heightOrdinal) * 137.0
+            for sample in (XLLSyntax.frameSampleCount * 2)..<sourceSampleCount {
+                let phase = 2.0 * Double.pi * frequency * Double(sample) / 48_000.0
+                planes[channel][sample] = Int32((sin(phase) * 3_000_000.0).rounded())
+            }
+        }
+
+        let source = try DTS714PCMBuffer(planes: planes)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "swift-native-dtsx-early-programme-\(UUID().uuidString).dtshd"
+        )
+        defer { try? FileManager.default.removeItem(at: output) }
+        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .integrated)
+            .encode(source: source, frameRate: .fps24)
+        do {
+            try encoded.stream.write(to: output, options: .atomic)
+        } catch {
+            throw DTSError.io(
+                "cannot write early-programme verification stream: \(error.localizedDescription)"
+            )
+        }
+        return try DTSXEarlyProgrammeGrammarVerifier.verify(inputURL: output)
     }
 
     private static func syntheticSource() throws -> DTS714PCMBuffer {
