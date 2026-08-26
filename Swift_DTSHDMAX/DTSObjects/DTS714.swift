@@ -502,20 +502,42 @@ public struct DTS714CompatibilityBedDiagnostics: Sendable, Equatable, Codable {
 
 public enum DTS714CompatibilityBedRenderer {
     public static func render(_ source: DTS714PCMBuffer) throws -> PCMBuffer {
+        try renderWithDiagnostics(source).bed
+    }
+
+    /// Renders the legacy fold and returns the hard-clip statistics that the
+    /// fold itself measured, without a second pass. Any nonzero clip count
+    /// means the delivered bed differs irreversibly from the linear fold of
+    /// the (losslessly carried) 7.1.4 planes - the terminal reproduces that
+    /// difference as clicks at exactly the hot samples.
+    public static func renderWithDiagnostics(
+        _ source: DTS714PCMBuffer
+    ) throws -> (bed: PCMBuffer, diagnostics: DTS714CompatibilityBedDiagnostics) {
         let format = try PCMFormat(sampleRate: 48_000, bitDepth: 24, layout: .sevenOne)
-        return try PCMBuffer(
+        let left = mixLegacyHeight(source[.left], source[.leftFrontHeight])
+        let right = mixLegacyHeight(source[.right], source[.rightFrontHeight])
+        let leftRear = mixLegacyHeight(source[.leftRearSurround], source[.leftRearHeight])
+        let rightRear = mixLegacyHeight(source[.rightRearSurround], source[.rightRearHeight])
+        let bed = try PCMBuffer(
             format: format,
             planes: [
-                mixLegacyHeight(source[.left], source[.leftFrontHeight]).plane,
-                mixLegacyHeight(source[.right], source[.rightFrontHeight]).plane,
+                left.plane,
+                right.plane,
                 source[.center],
                 source[.lfe],
-                mixLegacyHeight(source[.leftRearSurround], source[.leftRearHeight]).plane,
-                mixLegacyHeight(source[.rightRearSurround], source[.rightRearHeight]).plane,
+                leftRear.plane,
+                rightRear.plane,
                 source[.leftSideSurround],
                 source[.rightSideSurround]
             ]
         )
+        let diagnostics = DTS714CompatibilityBedDiagnostics(channels: [
+            left.diagnostics(outputChannel: .left),
+            right.diagnostics(outputChannel: .right),
+            leftRear.diagnostics(outputChannel: .leftRearSurround),
+            rightRear.diagnostics(outputChannel: .rightRearSurround)
+        ])
+        return (bed, diagnostics)
     }
 
     /// Reports every hard clamp that the fixed Q15 legacy-height fold would

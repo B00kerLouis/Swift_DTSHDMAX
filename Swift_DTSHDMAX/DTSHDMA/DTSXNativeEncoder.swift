@@ -39,6 +39,14 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let streamByteCount: Int
     public let streamSHA256: String
     public let privateEncoding: DTSXPrivateStreamEncodingReport
+    /// Hard clips the legacy Q15 height fold applied while building the
+    /// public 7.1 compatibility bed from the 7.1.4 source. Renders produced
+    /// by ``DTS714Renderer`` are guarded and always report zero; a nonzero
+    /// count means externally supplied 7.1.4 planes overload the fold and the
+    /// delivered bed is irreversibly cracked at exactly those samples.
+    public let compatibilityBedFoldHardClipSampleCount: Int
+    public let compatibilityBedFoldMaximumExcess: Int64
+    public let compatibilityBedFoldFirstHardClipSample: Int?
     /// Populated only when the caller explicitly requests integrated
     /// encode/decode verification. Production encoding deliberately leaves
     /// these fields nil so a complete program is not decoded a second time
@@ -144,7 +152,8 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             source: effectiveSource,
             codingMode: privateXLLXCodingMode
         )
-        let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
+        let (compatibilityBed, foldDiagnostics) =
+            try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
         progress?(100, progressTotal)
         let publicEncoder = DTSHDMAEncoder(configuration: DTSHDMAEncoderConfiguration(
             format: compatibilityBed.format,
@@ -204,6 +213,12 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             streamByteCount: stream.count,
             streamSHA256: SHA256Hasher.hash(stream),
             privateEncoding: privateStream.report,
+            compatibilityBedFoldHardClipSampleCount: foldDiagnostics.hardClipCount,
+            compatibilityBedFoldMaximumExcess: foldDiagnostics.channels.map {
+                max($0.maximumPositiveExcess, $0.maximumNegativeExcess)
+            }.max() ?? 0,
+            compatibilityBedFoldFirstHardClipSample: foldDiagnostics.channels
+                .compactMap(\.firstHardClipSample).min(),
             compatibilityBedComparison: bedComparison,
             compatibilitySafety: compatibilitySafety,
             isNativePrivateEncoding: true,
@@ -245,7 +260,8 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             source: effectiveSource,
             codingMode: privateXLLXCodingMode
         )
-        let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
+        let (compatibilityBed, foldDiagnostics) =
+            try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
         let writer = try DTSHDFileContainer.StreamingWriter(
             outputURL: output,
             format: compatibilityBed.format,
@@ -336,6 +352,12 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             streamByteCount: streamByteCount,
             streamSHA256: try SHA256Hasher.hash(fileAt: output),
             privateEncoding: privateStream.report,
+            compatibilityBedFoldHardClipSampleCount: foldDiagnostics.hardClipCount,
+            compatibilityBedFoldMaximumExcess: foldDiagnostics.channels.map {
+                max($0.maximumPositiveExcess, $0.maximumNegativeExcess)
+            }.max() ?? 0,
+            compatibilityBedFoldFirstHardClipSample: foldDiagnostics.channels
+                .compactMap(\.firstHardClipSample).min(),
             compatibilityBedComparison: bedComparison,
             compatibilitySafety: compatibilitySafety,
             isNativePrivateEncoding: true,
