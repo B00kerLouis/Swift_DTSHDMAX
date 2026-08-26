@@ -38,12 +38,18 @@ public struct XLLRecoveryStartupReport: Sendable, Equatable, Codable {
     public let totalAbsoluteResidual: Int64
     public let totalAbsolutePrimary: Int64
     /// The aggregate recovery divergence is at least 12 dB below the
-    /// aggregate content level (sum|residual| * 4 <= sum|primary|). A Core
-    /// that does not carry the declared fold diverges by `(1 - 1/sqrt(2))`
-    /// of every sample (-7.66 dB, ratio 0.414) and fails on any content.
-    /// Legitimate Core codec error stays well under the gate: even a
-    /// worst-case dense uniform-noise vector measures a 0.18 mean ratio,
-    /// and tonal content is far lower.
+    /// aggregate content level (sum|residual| * 4 <= sum|primary|), or the
+    /// peak divergence sits at the codec noise floor
+    /// (``XLLRecoveryStartupVerifier/recoveryNoiseFloorResidualMagnitude``).
+    /// A Core that does not carry the declared fold diverges by
+    /// `(1 - 1/sqrt(2))` of every sample (-7.66 dB, ratio 0.414) and fails
+    /// on any audible content. Legitimate Core codec error stays well under
+    /// the gate: even a worst-case dense uniform-noise vector measures a
+    /// 0.18 mean ratio, and tonal content is far lower. The ratio is
+    /// meaningless on near-silent windows where both sides are a few LSBs
+    /// of codec noise, so those pass on the absolute floor instead (the
+    /// removed encode-boundary head ramp passed this gate only by deleting
+    /// the content it was supposed to measure).
     public let residualWithinRecoveryTolerance: Bool
     /// Recovery-to-lossless handoff audit. While the terminal recovers on an
     /// access unit it plays the scaled Core alone; on the next access unit it
@@ -69,6 +75,11 @@ public struct XLLRecoveryStartupReport: Sendable, Equatable, Codable {
 /// intermediates, Core-codec-sized residuals).
 public enum XLLRecoveryStartupVerifier {
     public static let officialScaleCode = 473
+    /// Peak recovery divergence that counts as codec noise floor rather than
+    /// content-proportional fold divergence: 64 LSBs is -102 dBFS on the
+    /// 24-bit delivery grid, far below terminal audibility, while a missing
+    /// fold on any audible content diverges orders of magnitude above it.
+    public static let recoveryNoiseFloorResidualMagnitude: Int64 = 64
     private static let coreWaveToPrimaryOrder = [2, 0, 1, 3, 4, 5]
 
     public static func verify(
@@ -189,9 +200,10 @@ public enum XLLRecoveryStartupVerifier {
             globalSample += decoded.sampleCount
         }
 
-        let residualWithinRecoveryTolerance = totalAbsolutePrimary == 0
-            ? totalAbsoluteResidual == 0
-            : totalAbsoluteResidual * 4 <= totalAbsolutePrimary
+        let residualWithinRecoveryTolerance =
+            maximumAbsoluteResidual <= recoveryNoiseFloorResidualMagnitude
+                || (totalAbsolutePrimary > 0
+                    && totalAbsoluteResidual * 4 <= totalAbsolutePrimary)
         return XLLRecoveryStartupReport(
             inputPath: input.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),

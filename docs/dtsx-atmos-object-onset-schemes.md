@@ -241,4 +241,37 @@ conditioning with render-native continuity.
 4. `DTS714ObjectGainSmoothingVerifier` extended for the rate-exact periods,
    the maximum-rate start path, and the above-unity-delta bound.
 5. `XLLRecoveryStartupVerifier` handoff diagnostics (O3) unchanged,
-   report-only, awaiting the official binaries for calibration.
+   report-only, awaiting the official binaries for calibration. Its
+   aggregate-ratio gate additionally accepts peak divergence at the codec
+   noise floor (<= 64 LSBs, -102 dBFS): the ratio exists to catch a Core
+   that does not carry the declared fold (content-proportional divergence)
+   and is meaningless when both sides are a few LSBs of codec noise. The
+   removed O1 head ramp had been "passing" this gate on height vectors only
+   by zeroing their content outright - a live demonstration of the
+   PROJECT_MEMORY warning that green verifiers can hide deleted content.
+
+## Verification on this VM (no ffmpeg anywhere)
+
+- `verify-dtsx-render-startup` (new): green. Hot-start object first sample
+  12,476 versus 5,988,281 unbounded (the removed step), rise completes in
+  479 samples, zero envelope violations, converged bit-exactly to the
+  static mix, bed bit-exact, silent head window bit-silent, mid-programme
+  essence onset delivered unfaded, delivery == bypass bytes, closed-loop
+  bit-exact, early-programme grammar safe.
+- `verify-dtsx-render-guard`, `verify-xllx-native-encoder`,
+  `verify-dtsx-native-encoder` (includes the extended gain-smoothing
+  regression: rate-exact slew periods, maximum-rate start, above-unity
+  delta bound): green.
+- All 11 controllable `test_X` vectors encode and pass
+  `verify-dtsx-early-programme`, `verify-dtsx-private-heights-native`, and
+  `verify-dtsx-714-native` (closed-loop bit-exact, grammar safe).
+- `verify-dtsx-recovery-window` on the 11 vectors: silent and height-onset
+  classes pass. Pre-existing failures, byte-identical to the base tip and
+  untouched by this change: `FULLSCALE_C` (16 recovery-clip samples -
+  deferred Core-margin scheme O5), `IMPULSE_L`, `FRAME_EDGE_Lsr`,
+  `CHANNEL_WALK_COMPACT` (aggregate-ratio false positives on sparse
+  synthetic transients where Core codec error dominates). `IMPULSE_LFH`
+  "passed" at the base tip only because the O1 head ramp deleted the
+  impulse; with real content restored it joins the same pre-existing
+  transient-ratio class.
+- Official-binary regression: **PARENT_UPLOAD_REQUIRED** (unchanged).

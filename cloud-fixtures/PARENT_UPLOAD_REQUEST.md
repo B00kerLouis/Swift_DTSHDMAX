@@ -29,6 +29,19 @@ them now:
    `firstSourceAccessUnitMaximumResidual`) on tbh and Nature's Fury — decides
    whether scheme O5 (Core margin) is worth its risk.
 
+**Re-verified 2026-08-26 (Atmos-object onset run, branch
+`cursor/dtsx-atmos-object-onset-3541`):** `cloud-fixtures/reference-streams/`
+on `origin/cursor/cloud-materials-3541` (`c33adac`) still carries only
+`README.md` — the binaries remain un-uploaded and official-stream regression
+is still **PARENT_UPLOAD_REQUIRED**. Note for the O1/O2 questions below:
+hardware answered question 1 empirically - the delivery-boundary head
+ramp/onset slews made the pops **worse** and have been removed
+(`docs/dtsx-atmos-object-onset-schemes.md`); the binaries are still needed to
+(a) confirm whether the official renderer's programme-start gain state slews
+from silence (scheme A2, now shipped render-side), (b) decide the deferred
+startup-grammar scheme A6, and (c) calibrate the recovery-handoff divergence
+metrics that remain report-only.
+
 **Re-verified 2026-08-26 (five-scheme object-safety run):**
 `cloud-fixtures/reference-streams/` on `origin/cursor/cloud-materials-3541`
 still contains only `README.md` — `tbh.dtshd`, `Dolby_NaturesFury.dtshd`, and
