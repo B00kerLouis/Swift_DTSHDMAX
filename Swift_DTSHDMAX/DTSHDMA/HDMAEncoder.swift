@@ -387,11 +387,24 @@ public struct DTSHDMAEncoder: Sendable {
                 } else {
                     legacyFrameStartupSegmentCount = nil
                 }
-                let privatePreferredSegmentCount: Int?
+                var privatePreferredSegmentCount: Int?
                 if case .session(let session) = privateXLLXSource {
                     privatePreferredSegmentCount = session
                         .terminalPreferredPublicSegmentCount(at: item.frameIndex)
-                } else {
+                }
+                // The 4x128 form is the observed Nature's Fury silent-start
+                // grammar, and the references pair it only with fully silent
+                // access units. The private session can see only the height
+                // planes, so a tbh-class start - active bed under silent
+                // heights - would otherwise be forced into a partition the
+                // corpus never pairs with active content, and the terminal
+                // cannot read those first active frames. Gate the startup
+                // force on the public compatibility bed as well; an active
+                // bed start follows the ordinary 2x256 delivery search.
+                if privatePreferredSegmentCount == 4,
+                   item.frame.planes.contains(where: { plane in
+                       plane.contains(where: { $0 != 0 })
+                   }) {
                     privatePreferredSegmentCount = nil
                 }
                 let nativeSessionStartupSegmentCount = item.frameIndex >= primingFrameCount
