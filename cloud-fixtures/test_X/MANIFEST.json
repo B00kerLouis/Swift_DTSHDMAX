@@ -1,0 +1,1231 @@
+{
+  "binariesFromMacStaged": false,
+  "bitDepth": 24,
+  "channelOrder": [
+    "L",
+    "R",
+    "C",
+    "LFE",
+    "Lss",
+    "Rss",
+    "Lsr",
+    "Rsr",
+    "Lfh",
+    "Rfh",
+    "Lrh",
+    "Rrh"
+  ],
+  "cloudMountStatus": "unavailable",
+  "expectedOfficialEncodedNames": [
+    "ALL_MUTE.dtshd",
+    "LFH_ONLY.dtshd",
+    "LFH_RFH.dtshd"
+  ],
+  "frameCount": 4,
+  "frameSampleCount": 512,
+  "package": "test_X-controllable-vectors-cloud-handoff",
+  "perfectStreamGrammarHints": {
+    "corePrimingAccessUnits": 2,
+    "corePrimingSamples": 1024,
+    "midStreamPublicPartition": "2x256",
+    "nuInitLLDecDlyFrames": 0,
+    "privateRice": "terminalRiceOfficial (unary quotient <= 22)",
+    "privateRouting": "branch-zero stable routing word",
+    "silentStartupPublicPartition": "4x128"
+  },
+  "purpose": "Cloud-readable controllable DTS:X 7.1.4 PCM vectors staged because Mac Research/test_X is not mounted",
+  "reason": "Mac research volume not mounted in cloud VM; /Research is gitignored. Staged regenerable PCM sources matching DTSXOracleVectorGenerator / SyntheticPCM.controlledDTS714 patterns for subagent use.",
+  "requestedLocalMacPath": "/Volumes/HP_SSD_FX900_Pro /Xcode_WorkSpace/Swift_DTSHDMAX/Research/test_X",
+  "sampleCount": 2048,
+  "sampleRate": 48000,
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "activeChannels": [],
+      "aggregatePCM_SHA256": "484eaa327eae22dd9073858b0599e43fb5e06cabfbc8de88c83763edcb8d2446",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "ALL_MUTE/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "ALL_MUTE",
+      "identifier": "ALL_MUTE"
+    },
+    {
+      "activeChannels": [
+        "Lfh"
+      ],
+      "aggregatePCM_SHA256": "854239c6ff10656d24bed591818ec3d7d1d8fe7ca2c64933024e18fcda71ae26",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "b4585f5a58252142fd70e49ccbaabdf048e9fcb2077f9f87585a5979544cb550",
+          "relativePath": "LFH_ONLY/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6829cb5f6439061f0ff0927ebc9f56181ba6c2a605c7418f66097a67941ff356"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_ONLY/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "LFH_ONLY",
+      "identifier": "LFH_ONLY"
+    },
+    {
+      "activeChannels": [
+        "Lfh",
+        "Rfh"
+      ],
+      "aggregatePCM_SHA256": "663ec55810f9ffc03d9195a80a2b3a3e6ce9b3223f193810692810edc4392a63",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "b4585f5a58252142fd70e49ccbaabdf048e9fcb2077f9f87585a5979544cb550",
+          "relativePath": "LFH_RFH/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6829cb5f6439061f0ff0927ebc9f56181ba6c2a605c7418f66097a67941ff356"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "b4585f5a58252142fd70e49ccbaabdf048e9fcb2077f9f87585a5979544cb550",
+          "relativePath": "LFH_RFH/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6829cb5f6439061f0ff0927ebc9f56181ba6c2a605c7418f66097a67941ff356"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "LFH_RFH",
+      "identifier": "LFH_RFH"
+    },
+    {
+      "activeChannels": [
+        "Lfh",
+        "Rfh"
+      ],
+      "aggregatePCM_SHA256": "8d9d4fe69e97fac5c4f4e21f036167fe6b119701483ee856f111647b52cb3281",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "b4585f5a58252142fd70e49ccbaabdf048e9fcb2077f9f87585a5979544cb550",
+          "relativePath": "LFH_RFH_OPPOSED/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6829cb5f6439061f0ff0927ebc9f56181ba6c2a605c7418f66097a67941ff356"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "7deacf0670ac29d9b855fcc0820d20260eb4c1a515a48b5411ca13ded137cc79",
+          "relativePath": "LFH_RFH_OPPOSED/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "7748600a03a7eebe6b928fde023a52f17db4f1059e5a7cbcff6b1acfdf88ff41"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "LFH_RFH_OPPOSED/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "LFH_RFH_OPPOSED",
+      "identifier": "LFH_RFH_OPPOSED"
+    },
+    {
+      "activeChannels": [
+        "Lfh"
+      ],
+      "aggregatePCM_SHA256": "2010e59512d6bcec32da953efafa9f70bd8443dd090d76917281f8c4f292021b",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "c19f8e1a8b313fe93238617da8f1513cbe635f87be15f878789c9979f97573c2",
+          "relativePath": "IMPULSE_LFH/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "41e8d35368867837279149c092c9888f6abe9aa3d96ec895e7cd79b1088d43b8"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_LFH/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "IMPULSE_LFH",
+      "identifier": "IMPULSE_LFH"
+    },
+    {
+      "activeChannels": [
+        "L"
+      ],
+      "aggregatePCM_SHA256": "d58d7d99fe1ed2ce7f4fa72cdb051fd0877666d06d54deb0285f489d3c9f0339",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "c19f8e1a8b313fe93238617da8f1513cbe635f87be15f878789c9979f97573c2",
+          "relativePath": "IMPULSE_L/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "41e8d35368867837279149c092c9888f6abe9aa3d96ec895e7cd79b1088d43b8"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "IMPULSE_L/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "IMPULSE_L",
+      "identifier": "IMPULSE_L"
+    },
+    {
+      "activeChannels": [
+        "C"
+      ],
+      "aggregatePCM_SHA256": "87161decc31bfba65b1a061db89fd519e91838dd191f60090df132f8ab746af7",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "6936db5d9cb4edee5bb05c6c50b91b43d0989fc657b443ff4bad69eaf23875bf",
+          "relativePath": "FULLSCALE_C/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "ed7cf4423c1f67d7dfe506086c24c77a74c6e3bd996c82acc72d7090bd69c045"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FULLSCALE_C/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "FULLSCALE_C",
+      "identifier": "FULLSCALE_C"
+    },
+    {
+      "activeChannels": [],
+      "aggregatePCM_SHA256": "484eaa327eae22dd9073858b0599e43fb5e06cabfbc8de88c83763edcb8d2446",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "SILENCE/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "SILENCE",
+      "identifier": "SILENCE"
+    },
+    {
+      "activeChannels": [
+        "L",
+        "R",
+        "C",
+        "LFE",
+        "Lss",
+        "Rss",
+        "Lsr",
+        "Rsr",
+        "Lfh",
+        "Rfh",
+        "Lrh",
+        "Rrh"
+      ],
+      "aggregatePCM_SHA256": "6ba414778201d3859aa4a3a26944d52b5fea3785cbae67f34c058cb16a17ed5b",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "b5fc30d0058f50100f9d6aa552fc2d3580cd44c1dcf627a2c0cc6b5813ddb22a",
+          "relativePath": "ALL_SINE/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "584ab4b30dd944c65a0aadbaabddeaf1f32978c34666c28b9978ec47e634fe41"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "bd39780f138e3a99599da82458e4146bc714bbc9049c3214a4269f1839eed8f3",
+          "relativePath": "ALL_SINE/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "edd227b38ee3dc52c83136cf153d3832765ad0ae2fb7cf714cbbc0451e9be645"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "d6cc531ff7fd8c3eba0c0c3209621edc8f6e7aa24d4495ee74cfe82fd352ec26",
+          "relativePath": "ALL_SINE/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "f6707fc5268793485611f537bc549eb180c436edcaa701fabe2317b04daa31dc"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "308150683d97737684a85fde512464505c84b188e149bbdc4d901b10eee53cba",
+          "relativePath": "ALL_SINE/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "93ecac03f611db5aa2f9a25f3ebf4a6e9e129d9312bdffe397eded4837f0b180"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "064d0179eb0d931bc1644e83067ccb135981efadc088bfbd5fda30e7d18d8d24",
+          "relativePath": "ALL_SINE/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "b8a9d7b5c0b5315c33f56d08eb38ad1dfdeab99396adf510c946b5edb5e3c4a7"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "36922c4f1cdc5b3f2a73c404190a61cfe5ed9ee2efbfa75ea817c9f2929750ab",
+          "relativePath": "ALL_SINE/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "34fecb50b980a50d7bffb31beb16870e4540c803ed3d14945b654d3ee272edb6"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "998022b95d410f05c66d164297b146989579a2bb8d779403c83ce0e8309f4171",
+          "relativePath": "ALL_SINE/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "4e5e070df5b2457f9554e3ab3400195161f6ca8e6bfcb513b1c5b2e66cf1ae58"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "94d4743959150ffb45d57eebd401cef966dd3bfcc9a6d125fafd1d4647402b50",
+          "relativePath": "ALL_SINE/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "5cda41b9a2520afb150b13625f0c9268621b92a3ccbdd9d68edc2c80184a6ccd"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "a1eb48340c8a8519ac6a5ad67af42b2edc2052a2ad74371ed2b3160323770260",
+          "relativePath": "ALL_SINE/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "aee7bd1e32d8a6fd827c07ddc1c8bfd3dcb50c226353cf00a30782805376320e"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "76374f4c3eeee29d4d8b413d114aa8b09218db343a7e87f5593c602a223d8eee",
+          "relativePath": "ALL_SINE/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "3d98ead743c78c0299a736c60a3ca2309d8224e495ef4a4d1fa48652328973df"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "b2954189a87bd64d5b8b6e6baabef1097ccdba8bc3f92ecf5d062ea5a9c057b5",
+          "relativePath": "ALL_SINE/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "c8ea9856ce3cd51f741da50e87106c514fec97d37b056031f0fc11fa87dc9814"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "f987ed093aee46c4f07f669d7b2756aeeb1bc18ddf51227ab78856795d45f770",
+          "relativePath": "ALL_SINE/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "54462f70a1d37daa3f2355fd05770817bad21cc2cba03cbda65de856281c64b8"
+        }
+      ],
+      "description": "ALL_SINE",
+      "identifier": "ALL_SINE"
+    },
+    {
+      "activeChannels": [
+        "Lsr"
+      ],
+      "aggregatePCM_SHA256": "7b8bcb0670aefe47a78a2c0459c6f3c3cb55f44a093e9917bde45068d320be8d",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "1a0959cfb96f80cce26833417f58e4132a17a6413a260e6888af6b9748717765",
+          "relativePath": "FRAME_EDGE_Lsr/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "c466ec683e3a517f3cd1be06bd530d3087fc288bbce1617a52a239fa872bc7e2"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fd9243e1ba57263ed469c3bdbd7ade6ec5254e7ed924a9f5737fa44749933cc0",
+          "relativePath": "FRAME_EDGE_Lsr/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2fd0f5e2727c6192e790e9ae44d645013bd35d853d359658f30abc56762ad386"
+        }
+      ],
+      "description": "FRAME_EDGE_Lsr",
+      "identifier": "FRAME_EDGE_Lsr"
+    },
+    {
+      "activeChannels": [
+        "L",
+        "R",
+        "C",
+        "LFE",
+        "Lss",
+        "Rss",
+        "Lsr",
+        "Rsr",
+        "Lfh",
+        "Rfh",
+        "Lrh",
+        "Rrh"
+      ],
+      "aggregatePCM_SHA256": "623abbd99312773e64a1f96c32f4d1e5c9aa71dcec5a23ae487a68dac3dae445",
+      "channels": [
+        {
+          "channel": "L",
+          "pcmSHA256": "112edfc445a6cd2f1ff1e37fb4001e935f895fbc67bd2a3324bc5bbf69a18254",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.L.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "8a40f3e3e366be1b96b844ca1545e934a24cd6cc24f78031f7fced6573035e41"
+        },
+        {
+          "channel": "R",
+          "pcmSHA256": "5c65ab40eba32837f421d535e5ad9051bd6c5fc5e1ed4da1d3392961971d0c0c",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.R.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "176e83870707832f19632b0df1c3d901a86dc2209383f62ab0ca7ad2b83b9d24"
+        },
+        {
+          "channel": "C",
+          "pcmSHA256": "56710a68c8773a32029d0237e0990289404a15a928b2b84943799313a6cc60a7",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.C.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "a3b34825efea79c7e72c3749fcdc29ac1d257d15ede55494115e05bf144f343d"
+        },
+        {
+          "channel": "LFE",
+          "pcmSHA256": "967ae5413d45a7c35d71396b5dd314e4353fd4f3ed9f7f57c3cd68f196641c04",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.LFE.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "38a2a6d661cfcdcf8808010a9959a566e763f5e62fd0516efdd0d0c127d8cc89"
+        },
+        {
+          "channel": "Lss",
+          "pcmSHA256": "2d9ec655201e39d5275e2e07bf24dcfb240ddc26ab64eeadc4a5be2880003c81",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Lss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "875534f02757cdc3b061a76bd5e224a470ff300f5541ea9bfd057f4aa949a7ca"
+        },
+        {
+          "channel": "Rss",
+          "pcmSHA256": "eeeeed50f45e97355e72386f77991ee512ad670fd02e451c257a1c4fc957679c",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Rss.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6129bbc6cb46df380cf9af7eb76d5dfe7b17efc347abc8137406072dfb9d41b9"
+        },
+        {
+          "channel": "Lsr",
+          "pcmSHA256": "565d4654325ff1c066baee532e97b302aa9cd5730eca4d9a34e81b9be284ebc2",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Lsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6dede7cc1344209c87d6b4f92f4e6bc8489e54912aa1734904c47cf0ea7bc5b4"
+        },
+        {
+          "channel": "Rsr",
+          "pcmSHA256": "5c9ac8118899c447a37dd09a3933a9681b0d91314cabcb159bb10ba0cb203cf4",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Rsr.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "2452da1ef4e28915e35a9493813b17e89cba2dad32f51240edf90fce2fbf36fc"
+        },
+        {
+          "channel": "Lfh",
+          "pcmSHA256": "0d9a8df94a37b08ebf87c112b567d7547361c105c57ac56832b7f3bcc07247b0",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Lfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "289db8378d419a4f120db62ed757e2960e23d613fee1c7ac977acdf15b9f076f"
+        },
+        {
+          "channel": "Rfh",
+          "pcmSHA256": "570a2954cfb71970873663fbfde94ea9a093350c6cbe69cf4c260dbf3d1450aa",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Rfh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "b1f01013bf711c6afa8d236e3b3e4340548693e462aae3f89f2c947380ee2a9e"
+        },
+        {
+          "channel": "Lrh",
+          "pcmSHA256": "f1691a9171838ee5984817969dd93868a2040abd7097279bd28185061281c0a8",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Lrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "84f798a0e2c29c5cd3231ec7135569869e9aabb7929c895fde5a6b265520b390"
+        },
+        {
+          "channel": "Rrh",
+          "pcmSHA256": "fec278fd952255f73a56a04afadf537748186685db219f1fe6fb1730538fc718",
+          "relativePath": "CHANNEL_WALK_COMPACT/input.Rrh.wav",
+          "sampleCount": 2048,
+          "waveByteCount": 6188,
+          "waveSHA256": "6d785bf9cdd8033b37b8ddabc5e7284563968bb84a02024a94e1c3d75669b588"
+        }
+      ],
+      "description": "CHANNEL_WALK_COMPACT",
+      "identifier": "CHANNEL_WALK_COMPACT"
+    }
+  ],
+  "workspaceRelativePath": "Research/test_X"
+}
