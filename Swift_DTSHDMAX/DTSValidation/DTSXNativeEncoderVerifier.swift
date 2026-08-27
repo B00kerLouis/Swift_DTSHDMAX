@@ -490,15 +490,24 @@ public enum DTSXNativeEncoderVerifier {
     ///
     /// The frame's entropy segments carry the corpus zero-plane declaration
     /// (shared-parameter signed-linear width 0: `0x80 0x00` then `0x40`),
-    /// the same segment bytes as every recovered official zero declaration.
-    /// The previous 316-byte pin
+    /// the same segment bytes as every recovered official zero declaration,
+    /// and its NAVI sits on the canonical mid-stream width 11
+    /// (`0x00 0x20 0x00` plus CRC16 `0xca 0x7a` for segments `[2, 1]`).
+    /// The previous 52-byte pin
+    /// (`b320058985299c06b9164545d88ac85415ce31183e8647126e542b6486eba542`)
+    /// carried the same zero declaration but declared the NAVI at bit width
+    /// 12 (`0x00 0x10 0x00`) - the strict parse-back uniqueness guard used
+    /// to reject width 11 because the compact `[2, 1]` word collides
+    /// byte-identically with `[3, 1]` at width 12, and 12 is a width no
+    /// recovered corpus frame attests on this class. The earlier 316-byte
+    /// pin
     /// (`7c312a858b6517e76082f6529524b1946031412359c1ed128f1fb4d28b7da82c`)
-    /// carried the same navigated class but Rice-coded each digital-zero
-    /// plane at ABIT 0 - 256 unary terminator bits per plane per segment, a
-    /// run form no recovered corpus frame exercises anywhere.
+    /// Rice-coded each digital-zero plane at ABIT 0 - 256 unary terminator
+    /// bits per plane per segment, a run form no recovered corpus frame
+    /// exercises anywhere.
     static let bedAudibleZeroHeightsXLLXFrameByteCount = 52
     static let bedAudibleZeroHeightsXLLXFrameSHA256 =
-        "b320058985299c06b9164545d88ac85415ce31183e8647126e542b6486eba542"
+        "65de036d3373bb3c619a0e27d84ed69b4a0acb3f6b7836bbe0f02597d0e68c46"
 
     private struct HotStartPrivateFrameExpectation {
         /// nil expects an active navigated frame whose size is content-defined.
