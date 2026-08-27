@@ -2,6 +2,12 @@ import Foundation
 
 public struct DTSXPrivateFrameAST: Sendable, Equatable {
     public static let syncWord: UInt32 = 0x0200_0850
+    /// Primary six-bit code of the ordinary navigated 2x256 delivery class
+    /// (a ten-byte prediction header; the encoder derives the code as the
+    /// prediction byte count plus seven). The no-NAVI silence classes carry
+    /// codes 15/16, and only frames declaring this class may resolve an
+    /// ambiguous NAVI word to the canonical mid-stream width.
+    public static let ordinaryNavigatedDeliveryPrimarySixBitCode: UInt8 = 17
 
     public let fixedHeaderBytes: Data
     public let headerCRC16: UInt16
@@ -821,17 +827,24 @@ public enum DTSXPrivateIsolatedFrameDecoder {
         segmentSampleCount: Int = 256,
         collectEntropyDiagnostics: Bool = false
     ) throws -> DTSXPrivateIsolatedDecodedFrame {
-        if let navigation = try? ast.parseNavigation(segmentCount: segmentCount) {
-            return try decodeWithPredictionCandidates(
-                ast,
-                predictions: try ast.parsePredictionHeaderCandidates(),
-                entropyPrefixByteCount: 2 + navigation.serializedByteCount,
-                segmentByteCounts: navigation.segmentByteCounts,
-                requireTrailingBitsToBeZero: true,
-                segmentCount: segmentCount,
-                segmentSampleCount: segmentSampleCount,
-                collectEntropyDiagnostics: collectEntropyDiagnostics
-            )
+        // A navigation-guided decode that fails must not become terminal:
+        // compact NAVI words can collide byte-identically across adjacent
+        // widths, and the parser resolves that collision to the canonical
+        // mid-stream width. A frame whose true form is the wider colliding
+        // reading still decodes through the entropy-boundary autodetect
+        // paths below, exactly as ambiguous frames always have.
+        if let navigation = try? ast.parseNavigation(segmentCount: segmentCount),
+           let decoded = try? decodeWithPredictionCandidates(
+               ast,
+               predictions: ast.parsePredictionHeaderCandidates(),
+               entropyPrefixByteCount: 2 + navigation.serializedByteCount,
+               segmentByteCounts: navigation.segmentByteCounts,
+               requireTrailingBitsToBeZero: true,
+               segmentCount: segmentCount,
+               segmentSampleCount: segmentSampleCount,
+               collectEntropyDiagnostics: collectEntropyDiagnostics
+           ) {
+            return decoded
         }
         if ast.candidateSecondaryBranchCode == 1
             || ast.candidateSecondaryBranchCode == 2

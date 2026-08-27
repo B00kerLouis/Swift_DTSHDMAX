@@ -745,10 +745,17 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                             && $0.trailingFrameByteCount == trailingFrameByteCount
                     }) else { continue }
                 } else {
+                    // Parse-back mirrors the decoder's navigated-delivery
+                    // rule: an ambiguous compact word resolves to the
+                    // canonical mid-stream width instead of forcing the
+                    // serialized form off-corpus (the width-12 escape the
+                    // strict uniqueness guard used to produce on the
+                    // bed-audible zero-height window frames).
                     guard let parsed = try? DTSXPrivateNavigation.parse(
                         body: validationBody,
                         navigationStartByteOffset: navigationStartByteOffset,
-                        segmentCount: segmentByteCounts.count
+                        segmentCount: segmentByteCounts.count,
+                        preferringCanonicalMidStreamWidth: true
                     ),
                         parsed.bitWidth == bitWidth,
                         parsed.segmentByteCounts == segmentByteCounts,
