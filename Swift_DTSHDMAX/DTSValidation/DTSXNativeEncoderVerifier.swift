@@ -481,15 +481,24 @@ public enum DTSXNativeEncoderVerifier {
     /// heights) source access units.
     static let midStreamSilenceXLLXFrameSHA256 =
         "df3fcd92dc6671572596e9c9ede1ca5a278bf4c9563f80d22c867533bdcc1144"
-    /// SHA-256 of the deterministic 316-byte ordinary navigated 2x256
+    /// SHA-256 of the deterministic 52-byte ordinary navigated 2x256
     /// delivery frame that decodes to zero heights - the required private
     /// frame class for every bed-audible height-silent access unit (tbh's
     /// bed-only head and tail). A compact/no-NAVI silence declaration on
     /// such an access unit is the DTS:X-only "bed plays, DTS:X presentation
     /// fails" defect.
-    static let bedAudibleZeroHeightsXLLXFrameByteCount = 316
+    ///
+    /// The frame's entropy segments carry the corpus zero-plane declaration
+    /// (shared-parameter signed-linear width 0: `0x80 0x00` then `0x40`),
+    /// the same segment bytes as every recovered official zero declaration.
+    /// The previous 316-byte pin
+    /// (`7c312a858b6517e76082f6529524b1946031412359c1ed128f1fb4d28b7da82c`)
+    /// carried the same navigated class but Rice-coded each digital-zero
+    /// plane at ABIT 0 - 256 unary terminator bits per plane per segment, a
+    /// run form no recovered corpus frame exercises anywhere.
+    static let bedAudibleZeroHeightsXLLXFrameByteCount = 52
     static let bedAudibleZeroHeightsXLLXFrameSHA256 =
-        "7c312a858b6517e76082f6529524b1946031412359c1ed128f1fb4d28b7da82c"
+        "b320058985299c06b9164545d88ac85415ce31183e8647126e542b6486eba542"
 
     private struct HotStartPrivateFrameExpectation {
         /// nil expects an active navigated frame whose size is content-defined.

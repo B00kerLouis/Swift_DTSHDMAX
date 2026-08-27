@@ -1344,6 +1344,54 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 samples: plane[start..<(start + (segment == 0 ? adaptiveOrders[channel] : 0))]
             )
         }
+
+        // Corpus all-zero segment declaration. When every plane of the
+        // segment is digital zero, the recovered official grammar declares
+        // one shared parameter set (`ncSegType = 1`) with the linear
+        // width-0 code: 12 header bits on the first segment (`0x80 0x00`
+        // byte-aligned) and 8 bits on later segments (`0x40`) - the exact
+        // entropy bytes of the no-NAVI silence forms and of the compact
+        // navigated startup silence. The per-channel declaration below
+        // re-states four flags and four allocations for the same zeros, a
+        // shape the corpus never pairs with an all-zero segment, so the
+        // delivery profile emits the attested shared form. Restricted to
+        // the delivery mode; research and hardware-isolation profiles keep
+        // their historical per-channel emission.
+        if codingMode == .terminalRiceOfficial,
+           segment == 0 ? adaptiveOrders.allSatisfy({ $0 == 0 }) : true,
+           residualPlanes.allSatisfy({ plane in
+               plane[start..<end].allSatisfy { $0 == 0 }
+           }) {
+            var writer = BitWriter(reservingCapacity: 8)
+            if segment > 0 {
+                try writer.write(
+                    0,
+                    bitCount: 1,
+                    field: "XLL-X bUseSegStateCodeParm[\(segment)]"
+                )
+            }
+            try writer.write(1, bitCount: 1, field: "XLL-X ncSegType[\(segment)]")
+            try writer.write(
+                0,
+                bitCount: 1,
+                field: "XLL-X bRiceCodeFlag[\(segment)][common]"
+            )
+            if segment == 0 {
+                try writer.write(
+                    0,
+                    bitCount: Self.bitAllocationWidth,
+                    field: "XLL-X ABIT0[common]"
+                )
+            }
+            try writer.write(
+                0,
+                bitCount: Self.bitAllocationWidth,
+                field: "XLL-X ABIT[\(segment)][common]"
+            )
+            writer.alignToByte()
+            return writer.data()
+        }
+
         var writer = BitWriter(
             reservingCapacity: max(
                 64,
@@ -2073,6 +2121,22 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         case .terminalRiceBoundedUnary:
             return .rice(parameter: boundedUnaryRiceParameter(samples))
         case .terminalRiceOfficial:
+            // Corpus zero-plane declaration. Every recovered official
+            // digital-zero plane segment - the no-NAVI silence forms and the
+            // compact navigated startup silence - declares its planes as
+            // signed-linear width 0 (`bRiceCodeFlag = 0`, allocation 0, zero
+            // payload bits). Straight Rice at ABIT 0 decodes to the same
+            // zeros but spends one unary terminator bit per sample - a
+            // 256-bit-per-segment run form that no recovered corpus frame
+            // exercises anywhere. Silent planes inside navigated active
+            // frames occur exactly where object automation flips the
+            // active-plane mask (the hardware-flagged pop windows), so the
+            // delivery profile must stay on the corpus-attested zero
+            // declaration instead of the off-corpus unary-run form.
+            if samples.allSatisfy({ $0 == 0 }),
+               initializationSamples.allSatisfy({ $0 == 0 }) {
+                return .linear(width: 0)
+            }
             return .rice(parameter: officialRiceParameter(samples))
         case .research, .terminalPredictive:
             break
