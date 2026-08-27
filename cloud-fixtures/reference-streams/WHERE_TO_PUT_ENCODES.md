@@ -73,3 +73,16 @@ on `cursor/cloud-materials-3541` via Mac-side `cp` + `git add -f` + push (see ab
 Still **PARENT_UPLOAD_REQUIRED** (zero `*.dtshd` on VM). Hardware rejected both
 NAVI-ladder tip branches as fully wrong render; next child needs byte-level
 perfect-stream diffs. Upload priority unchanged — push Downloads encodes first.
+
+## Parent re-check 2026-08-27T06:31Z
+
+Still **PARENT_UPLOAD_REQUIRED**. New child needs TBH **pop windows** analysis:
+
+| Asset | Source | Dest |
+| --- | --- | --- |
+| Encode-debug TBH | `/Users/sunyun_louis/Downloads/tbh.dtshd` | `cloud-fixtures/reference-streams/tbh.dtshd` |
+| Encode-debug NF | `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd` | `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` |
+| TBH IAB master | `/Volumes/HP_SSD_FX900_Pro /TBH/QWER_TBH_IAB.mxf` | `cloud-fixtures/reference-streams/QWER_TBH_IAB.mxf` |
+
+Pop TC: `00:00:21:06`–`00:00:24:00` and `00:02:51:00`–`00:02:56:00`.
+See `UPLOAD_BLOCKED.md` for Mac push commands (MXF extract OK if full file too large).

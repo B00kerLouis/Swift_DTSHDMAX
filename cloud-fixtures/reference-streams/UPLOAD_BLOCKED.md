@@ -1,19 +1,36 @@
-# PARENT_UPLOAD_REQUIRED — encode binaries not on cloud
+# PARENT_UPLOAD_REQUIRED — encodes + TBH master
 
-**Recheck:** 2026-08-27T05:29Z (parent orchestrator)
+**Recheck:** 2026-08-27T06:31Z
 
-Cloud VM still cannot read:
+Cloud VM has **zero** `*.dtshd` / `*.mxf` under `cloud-fixtures/reference-streams/`.
 
-- `/Users/sunyun_louis/Downloads/tbh.dtshd`
-- `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd`
-- `/Volumes/HP_SSD_FX900_Pro /TBH/TBH_offical.dtshd`
-- Research Nature’s Fury perfect delivery `.dtshd` (see `perfect-stream-grammar/`)
+## Required for next child (TBH pop windows)
 
-No `*.dtshd` under `cloud-fixtures/reference-streams/` on this branch.
+```bash
+git checkout cursor/cloud-materials-3541
+mkdir -p cloud-fixtures/reference-streams
 
-**Hardware update:** NAVI-ladder tip branches render completely wrong. Next fix child
-starts from `main` only and needs these binaries for byte-level perfect-stream
-comparison. Please push from Mac (commands in `WHERE_TO_PUT_ENCODES.md`).
+cp "/Users/sunyun_louis/Downloads/tbh.dtshd" \
+   cloud-fixtures/reference-streams/tbh.dtshd
+cp "/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd" \
+   cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
 
-Child agents must **not** invent reference bitstreams. Use `test_X` + grammar
-notes meanwhile and escalate PARENT_UPLOAD_REQUIRED — no silent pass.
+# TBH Atmos/IAB master (full or TC-window extract preferred if size blocks GitHub)
+cp "/Volumes/HP_SSD_FX900_Pro /TBH/QWER_TBH_IAB.mxf" \
+   cloud-fixtures/reference-streams/QWER_TBH_IAB.mxf
+# If full MXF is too large: upload an extract covering
+#   00:00:20:00–00:00:25:00 and 00:02:50:00–00:02:57:00
+# and note the cut in a README beside the file. Use Git LFS if needed.
+
+git add -f cloud-fixtures/reference-streams/tbh.dtshd \
+           cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd \
+           cloud-fixtures/reference-streams/QWER_TBH_IAB.mxf
+git commit -m "Add TBH/NF encode-debug streams and TBH IAB master for cloud agents"
+git push origin cursor/cloud-materials-3541
+```
+
+## Hardware windows to analyze after upload
+- `00:00:21:06`–`00:00:24:00`
+- `00:02:51:00`–`00:02:56:00`
+
+Do not invent binaries. Escalate PARENT_UPLOAD_REQUIRED — no silent pass.
