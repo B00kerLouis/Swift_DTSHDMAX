@@ -67,3 +67,9 @@ cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
 ```
 
 on `cursor/cloud-materials-3541` via Mac-side `cp` + `git add -f` + push (see above).
+
+## Parent re-check 2026-08-27T05:29Z
+
+Still **PARENT_UPLOAD_REQUIRED** (zero `*.dtshd` on VM). Hardware rejected both
+NAVI-ladder tip branches as fully wrong render; next child needs byte-level
+perfect-stream diffs. Upload priority unchanged — push Downloads encodes first.
