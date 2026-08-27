@@ -187,18 +187,35 @@ NAVI widths to the official 11/13/14-bit ladder") onto this branch — treated
 here as the implementation of Scheme 1, still **not** hardware-proven until
 Louis plays the two re-encodes.
 
-## Test results (this branch, Linux Debug CLI)
+## Test results (this branch, Linux Debug CLI, Swift 6.0.3)
 
-See the final report in the pull-request description for the exact command
-outputs; summary:
-
-- `verify-xllx-native-encoder` — pass, including the new
-  `deliveryNavigationWidthLadderPassed` gate (moderate vector 11-bit,
-  full-scale vector 13-bit with all extents inside the former hole).
-- `verify-dtsx-native-encoder` — pass (all closed-loop, startup-transition,
-  bed-timeline, early-programme, render-guard and smoothing gates).
-- Controlled probes: `all-sine` active frames 12-bit → **13-bit**;
-  `channel-walk` stays 11-bit and **byte-identical** to the `main` encode;
-  integrated encode verification (`isVerified`) passes for both.
+- `verify-xllx-native-encoder` — pass; `allVectorsBitExact` and the new
+  `deliveryNavigationWidthLadderPassed` gate both true (moderate vector stays
+  canonical 11-bit; incompressible full-scale vector lands 13-bit with every
+  segment extent inside the former 2,049–4,096-byte hole and decodes
+  bit-exactly).
+- `verify-dtsx-native-encoder` — pass; every reported gate true, including
+  `earlyProgrammePassed`, `terminalHotStartStartupTransitionPassed`,
+  `terminalBedOnlyProgrammeTimelinePassed`, `renderGuardPassed`,
+  `objectGainSmoothingPassed`, `recoveryStartupPassed`.
+- Controlled probes (`encode-dtsx-control` with integrated verification, then
+  `extract-xllx` + `inspect-xllx-private-frame`):
+  - `all-sine` (dense onset shape): active frames **12-bit on `main` →
+    13-bit on this branch**, segment extents ~2,720 bytes (inside the former
+    hole); `isVerified` true; `verify-dtsx-early-programme` reports
+    `privateNavigationWidthsFollowOfficialLadder: true`,
+    `isEarlyProgrammeSafe: true`.
+  - Negative control: the same branch verifier run against the **`main`**
+    `all-sine` encode reports `isEarlyProgrammeSafe: false` with 16
+    off-ladder frames, first at frame index 2 — the first programme AU,
+    matching the hardware locus.
+  - `channel-walk` (fast single-plane motion): stays 11-bit and
+    **byte-identical** (SHA-256 equal) to the `main` encode.
+  - `impulse:Lfh`, `fullscale:Lfh`, `sine:Lfh`: 11-bit, ladder-safe,
+    `isVerified` true.
+- HDMA/Core intact: `generate 7.1` + `verify-hdma` passes
+  (`isBitExact: true`) and the HDMA output is **byte-identical** between
+  `main` and this branch; `verify-core-syntax` clean;
+  `verify-dtsx-recovery-window` reports `isRecoverySafe: true`.
 - Hardware/commercial-stream differential: **external** until the
   PARENT_UPLOAD_REQUIRED binaries land.
