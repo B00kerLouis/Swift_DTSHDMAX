@@ -47,7 +47,11 @@ public enum DTSXReferenceStreamGate {
     public static let completeStatus = "COMPLETE"
 
     /// (fileName, role, required) for the encodes Louis named. The optional
-    /// official perfect TBH is reported but does not block completion.
+    /// official perfect TBH is reported but does not block completion. The
+    /// TBH Atmos/IAB master is required for the pop-window investigation:
+    /// only it carries the object automation that the two flagged timecode
+    /// windows render, so render-path evidence is blocked until it (or a
+    /// documented timecode-window extract) lands.
     private static let expectedEntries: [(String, String, Bool)] = [
         (
             "tbh.dtshd",
@@ -57,6 +61,13 @@ public enum DTSXReferenceStreamGate {
         (
             "Dolby_NaturesFury.dtshd",
             "encode-debug / perfect Nature's Fury (Mac Downloads)",
+            true
+        ),
+        (
+            "QWER_TBH_IAB.mxf",
+            "TBH Atmos/IAB master for the pop-window render investigation "
+                + "(full MXF or a documented extract covering both flagged "
+                + "timecode windows with margin)",
             true
         ),
         (
