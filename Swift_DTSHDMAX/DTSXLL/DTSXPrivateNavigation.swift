@@ -282,7 +282,7 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
         return writer.data()
     }
 
-    private static func navigationDataBitCount(bitWidth: Int, segmentCount: Int) -> Int {
+    static func navigationDataBitCount(bitWidth: Int, segmentCount: Int) -> Int {
         let alignedBitCount = ((bitWidth * segmentCount + 7) / 8) * 8
         // The recovered two-segment form reserves at least three data bytes,
         // but it is not fixed at three bytes. Official active frames grow to
@@ -291,6 +291,25 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
             ? max(24, alignedBitCount)
             : alignedBitCount
     }
+
+    /// Exact serialized navigation size (data bytes plus trailing CRC16) for
+    /// one width/segment-count pair. This follows the same minimum-three-byte
+    /// rule as ``serialize()`` so size accounting can never diverge from the
+    /// emitted bytes (the previous encoder-side `(width x segments + 7) / 8`
+    /// estimate undercounted the reserved two-segment data area below 12-bit
+    /// widths).
+    static func serializedByteCount(bitWidth: Int, segmentCount: Int) -> Int {
+        navigationDataBitCount(bitWidth: bitWidth, segmentCount: segmentCount) / 8 + 2
+    }
+
+    /// Two-segment NAVI widths the official corpus exercises: the canonical
+    /// three-data-byte word carries 11-bit extents, and large active frames
+    /// grow to the four-data-byte word with 13/14-bit extents. 8-10 and
+    /// 12-bit words also fit three data bytes - and 15/16-bit words four -
+    /// but no reference stream emits them, and a terminal bounded reader
+    /// keyed to the recovered forms misparses exactly those frames. Delivery
+    /// encoding must therefore never select a width outside this ladder.
+    static let officialTwoSegmentBitWidths = [11, 13, 14]
 }
 
 public extension DTSXPrivateFrameAST {

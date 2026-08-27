@@ -47,6 +47,14 @@ import Foundation
 ///    (tbh's bed-only head and tail) while the public 7.1 bed keeps playing,
 ///    and it stays invisible to Rice/partition audits because every byte of
 ///    the misplaced form is individually valid.
+/// 7. Every navigated two-segment private frame carries a NAVI bit width the
+///    official corpus exercises: the 11-bit three-data-byte word, or the
+///    13/14-bit four-data-byte words of large active frames. 8-10 and 12-bit
+///    words are representable and CRC-valid, but no reference stream emits
+///    them; a terminal bounded reader keyed to the recovered ladder misparses
+///    exactly those frames - and the 12-bit hole sits precisely on
+///    2,049-4,096-byte segments, i.e. the first dense height-active access
+///    units after silence, which is the residual object-onset pop shape.
 ///
 /// Rules are enforced over two windows: the startup window (default ~10 s)
 /// and an equally sized end-of-programme window, so trailing bed-only
@@ -104,6 +112,16 @@ public struct DTSXEarlyProgrammeGrammarReport: Sendable, Equatable, Codable {
     public let privateSilenceFormViolationCount: Int
     public let privateFirstSilenceFormViolationFrameIndex: Int?
     public let privateSilenceFormsFollowOfficialTimeline: Bool
+    /// Audited private frames carrying a parsed two-segment NAVI (active
+    /// frames and navigated zero-height frames).
+    public let privateTwoSegmentNavigationFrameCount: Int
+    /// Distinct two-segment NAVI bit widths observed inside the windows.
+    public let privateTwoSegmentNavigationBitWidths: [Int]
+    /// Two-segment NAVI words whose bit width is off the official
+    /// 11/13/14 ladder (rule 7).
+    public let privateOffLadderNavigationFrameCount: Int
+    public let privateFirstOffLadderNavigationFrameIndex: Int?
+    public let privateNavigationWidthsFollowOfficialLadder: Bool
     public let isEarlyProgrammeSafe: Bool
 }
 
@@ -199,6 +217,10 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         var privateBedAudibleZeroHeightFrameCount = 0
         var privateSilenceFormViolationCount = 0
         var privateFirstSilenceFormViolationFrameIndex: Int?
+        var privateTwoSegmentNavigationFrameCount = 0
+        var privateTwoSegmentNavigationBitWidths: Set<Int> = []
+        var privateOffLadderNavigationFrameCount = 0
+        var privateFirstOffLadderNavigationFrameIndex: Int?
 
         for frameIndex in auditedFrameIndices {
             let frame = stream.frames[frameIndex]
@@ -231,6 +253,19 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 }
                 if audit.silenceForm == .corePrimingCompact {
                     privateCorePrimingFormFrameIndices.append(frameIndex)
+                }
+                // NAVI width ladder (rule 7): every parsed two-segment NAVI
+                // must use one of the recovered official widths.
+                if let navigationBitWidth = audit.twoSegmentNavigationBitWidth {
+                    privateTwoSegmentNavigationFrameCount += 1
+                    privateTwoSegmentNavigationBitWidths.insert(navigationBitWidth)
+                    if !DTSXPrivateNavigation.officialTwoSegmentBitWidths
+                        .contains(navigationBitWidth) {
+                        privateOffLadderNavigationFrameCount += 1
+                        if privateFirstOffLadderNavigationFrameIndex == nil {
+                            privateFirstOffLadderNavigationFrameIndex = frameIndex
+                        }
+                    }
                 }
                 // Frame-class timeline (rule 6). Every private frame must
                 // carry the recovered class for its access unit, keyed on
@@ -363,12 +398,15 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
 
         let hierarchyDeclarationsFollowOfficialGrammar = hierarchyDeviatingFrameCount == 0
         let privateSilenceFormsFollowOfficialTimeline = privateSilenceFormViolationCount == 0
+        let privateNavigationWidthsFollowOfficialLadder =
+            privateOffLadderNavigationFrameCount == 0
         let isSafe = partitionsFollowOfficialGrammar
             && publicUnaryBoundExceededFrameCount == 0
             && publicResearchSyntaxFrameCount == 0
             && privateUnaryBoundExceededFrameCount == 0
             && hierarchyDeclarationsFollowOfficialGrammar
             && privateSilenceFormsFollowOfficialTimeline
+            && privateNavigationWidthsFollowOfficialLadder
         return DTSXEarlyProgrammeGrammarReport(
             inputPath: input.path,
             streamSHA256: try SHA256Hasher.hash(fileAt: input),
@@ -403,6 +441,14 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 privateFirstSilenceFormViolationFrameIndex,
             privateSilenceFormsFollowOfficialTimeline:
                 privateSilenceFormsFollowOfficialTimeline,
+            privateTwoSegmentNavigationFrameCount: privateTwoSegmentNavigationFrameCount,
+            privateTwoSegmentNavigationBitWidths:
+                privateTwoSegmentNavigationBitWidths.sorted(),
+            privateOffLadderNavigationFrameCount: privateOffLadderNavigationFrameCount,
+            privateFirstOffLadderNavigationFrameIndex:
+                privateFirstOffLadderNavigationFrameIndex,
+            privateNavigationWidthsFollowOfficialLadder:
+                privateNavigationWidthsFollowOfficialLadder,
             isEarlyProgrammeSafe: isSafe
         )
     }
@@ -466,6 +512,9 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         let maximumQuotient: UInt64
         let planesAreSilent: Bool
         let silenceForm: PrivateSilenceForm?
+        /// Bit width of the parsed two-segment NAVI word, or nil for no-NAVI
+        /// forms and non-two-segment partitions.
+        let twoSegmentNavigationBitWidth: Int?
     }
 
     /// Measures the exact unary quotients a terminal reads from the embedded
@@ -509,6 +558,23 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             silenceForm = .corePrimingCompact
         } else {
             silenceForm = .navigatedSilence
+        }
+        // NAVI width of navigated two-segment frames (rule 7). The generic
+        // parse resolves unambiguous words; frame-size-ambiguous words are
+        // qualified against the decoded entropy segment boundaries so the
+        // audited width is exactly the one that closed the frame.
+        let twoSegmentNavigationBitWidth: Int?
+        let carriesNavigation = silenceForm == nil || silenceForm == .navigatedSilence
+        if segmentCount == DTSXPrivateNavigation.segmentCount, carriesNavigation {
+            let navigation = (try? privateAST.parseNavigation(
+                segmentCount: segmentCount
+            )) ?? (try? privateAST.parseNavigation(
+                segmentCount: segmentCount,
+                matching: decoded
+            ))
+            twoSegmentNavigationBitWidth = navigation?.bitWidth
+        } else {
+            twoSegmentNavigationBitWidth = nil
         }
         var maximumQuotient: UInt64 = 0
         for syntax in decoded.entropySegments {
@@ -557,7 +623,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         return PrivateExtensionAudit(
             maximumQuotient: maximumQuotient,
             planesAreSilent: planesAreSilent,
-            silenceForm: silenceForm
+            silenceForm: silenceForm,
+            twoSegmentNavigationBitWidth: twoSegmentNavigationBitWidth
         )
     }
 
