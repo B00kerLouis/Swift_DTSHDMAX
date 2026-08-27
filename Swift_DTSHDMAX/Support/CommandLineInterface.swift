@@ -875,6 +875,89 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-dtsx-recovery-window":
+            guard (1...2).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-recovery-window requires INPUT.dtshd [MAX_ACCESS_UNITS]"
+                )
+            }
+            let maximumAccessUnits: Int?
+            if values.count == 2 {
+                guard let parsedCount = Int(values[1]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_ACCESS_UNITS must be positive")
+                }
+                maximumAccessUnits = parsedCount
+            } else {
+                maximumAccessUnits = nil
+            }
+            let report = try XLLRecoveryStartupVerifier.verify(
+                inputURL: URL(fileURLWithPath: values[0]),
+                maximumAccessUnitCount: maximumAccessUnits
+            )
+            print(try jsonString(report))
+            guard report.isRecoverySafe else {
+                throw DTSError.malformed(
+                    "stream diverges from the official DTS:X recovery grammar: "
+                    + "the reference decoder's forced first-frame Core playback "
+                    + "would clip or misrepresent this content"
+                )
+            }
+
+        case "verify-dtsx-early-programme":
+            guard (1...2).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "verify-dtsx-early-programme requires INPUT.dtshd [MAX_ACCESS_UNITS]"
+                )
+            }
+            let earlyWindow: Int?
+            if values.count == 2 {
+                guard let parsedCount = Int(values[1]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_ACCESS_UNITS must be positive")
+                }
+                earlyWindow = parsedCount
+            } else {
+                earlyWindow = nil
+            }
+            let earlyReport = try DTSXEarlyProgrammeGrammarVerifier.verify(
+                inputURL: URL(fileURLWithPath: values[0]),
+                maximumAccessUnitCount: earlyWindow
+            )
+            print(try jsonString(earlyReport))
+            guard earlyReport.isEarlyProgrammeSafe else {
+                throw DTSError.malformed(
+                    "stream diverges from the official DTS:X early-programme grammar: "
+                    + "a terminal bounded Rice reader would desync inside the startup "
+                    + "window and produce sustained garbage or pops"
+                )
+            }
+
+        case "verify-dtsx-render-guard":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-render-guard takes no arguments")
+            }
+            let renderGuardReport = try DTS714RenderGuardVerifier.verify()
+            print(try jsonString(renderGuardReport))
+            guard renderGuardReport.isVerified else {
+                throw DTSError.malformed(
+                    "rendered 7.1.4 downstream-headroom guard verification failed: "
+                    + "the fold/recovery composites are not closed at hot object motion"
+                )
+            }
+
+        case "verify-dtsx-render-startup":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-render-startup takes no arguments")
+            }
+            let renderStartupReport = try DTS714RenderStartupVerifier.verify()
+            print(try jsonString(renderStartupReport))
+            guard renderStartupReport.isVerified else {
+                throw DTSError.malformed(
+                    "render startup verification failed: the Atmos render path does "
+                    + "not bound programme-start object onsets, or the encode "
+                    + "boundary reshaped an in-headroom source"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -2127,13 +2210,15 @@ public enum DTSHDMACommandLine {
             return .terminalLegacyLinear
         case "rice":
             return .terminalRice
+        case "official-rice":
+            return .terminalOfficialRice
         case "predictive":
             return .terminalPredictive
         case "research":
             return .research
         default:
             throw DTSError.invalidArgument(
-                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, predictive, or research"
+                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, official-rice, predictive, or research"
             )
         }
     }
@@ -2156,6 +2241,8 @@ public enum DTSHDMACommandLine {
             return .terminalRiceMeanMagnitude
         case "rice-bounded22":
             return .terminalRiceBoundedUnary
+        case "rice-official":
+            return .terminalRiceOfficial
         case "predictive":
             return .terminalPredictive
         case "research":
@@ -2164,7 +2251,7 @@ public enum DTSHDMACommandLine {
             throw DTSError.invalidArgument(
                 "private XLL-X coding mode must be conservative, branch2-conservative, "
                     + "branch2-predictive-linear, branch2-rice, rice, rice-mean, "
-                    + "rice-bounded22, predictive, or research"
+                    + "rice-bounded22, rice-official, predictive, or research"
             )
         }
     }
@@ -2316,6 +2403,9 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-compatibility-bed-oracle INPUT.dtshd CORE_ORACLE_5.1.wav SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
+          hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
+          hdmax verify-dtsx-render-guard
+          hdmax verify-dtsx-render-startup
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]

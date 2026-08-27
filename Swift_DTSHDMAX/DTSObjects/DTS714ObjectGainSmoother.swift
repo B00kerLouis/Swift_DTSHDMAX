@@ -80,8 +80,23 @@ struct DTS714ObjectGainSmoother: Sendable, Equatable {
             let requiresSlewLimit = Swift.abs(delta)
                 * Int64(Self.maximumSlewTransitionSampleCount)
                 > Int64(1 << 30) * Int64(ordinaryPeriod)
+            // A slew-limited move spreads over the full 480-sample window
+            // (10 ms), so its per-sample rate is |delta|/480 - at or below
+            // the 1/480 full-scale reference bound, and gentler the smaller
+            // the move. This is the fixed-period behavior hardware measured
+            // as least-bad; the later "rate-exact" variant ran every
+            // limited move at the maximum rate for the shortest legal
+            // duration, which steepened each of the dense fast-move
+            // retargets and measurably increased pops. Only an above-unity
+            // delta (a positive object gain trim) stretches the window
+            // beyond 480 samples, because a fixed 480-sample period would
+            // step faster than the reference bound there.
+            let referenceRatePeriod = Int(
+                (Swift.abs(delta) * Int64(Self.maximumSlewTransitionSampleCount)
+                    + Int64((1 << 30) - 1)) >> 30
+            )
             let period = requiresSlewLimit
-                ? Self.maximumSlewTransitionSampleCount
+                ? max(Self.maximumSlewTransitionSampleCount, referenceRatePeriod)
                 : ordinaryPeriod
             transitionSampleCounts[channel] = Int64(period)
             remainingSampleCounts[channel] = period

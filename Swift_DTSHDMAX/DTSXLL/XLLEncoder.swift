@@ -33,9 +33,41 @@ public enum XLLCodingMode: Sendable, Equatable, Codable {
     /// Experimental fixed-segmentation Rice syntax. It is retained for
     /// reference-stream experiments and is not a product default.
     case terminalRice
+    /// Official-corpus delivery grammar for the DTS:X Core-residual path:
+    /// active segments use ordinary Rice with explicit per-channel
+    /// parameters (the recovered reference streams code every observed
+    /// active segment as Rice even when a linear width would also fit),
+    /// all-zero segments keep the compact zero-width linear form, and the
+    /// free partition search is pinned to the ordinary 2x256 delivery form
+    /// (the references reach 4x128 only through the frame-indexed
+    /// silent-start transition, which arrives as a forced segment count).
+    /// Prediction, decorrelation, hybrid Rice, shared allocation and
+    /// state reuse remain disabled exactly as in ``terminalConservative``.
+    ///
+    /// This exists because the previous all-linear delivery emitted a
+    /// grammar the official corpus never exercises for active content; the
+    /// same terminal family already failed to recognize Linear controls in
+    /// the private XLL-X layer, and once the Core carries the declared
+    /// downmix fold the residuals shrink into small linear widths on all
+    /// quiet content, which presented as noise-gate-like dropouts and an
+    /// unreadable first active frame on hardware.
+    case terminalOfficialRice
 }
 
 struct XLLEncoder: Sendable {
+    /// Longest Rice unary quotient observed anywhere in the recovered
+    /// official corpus (public XLL and private XLL-X share the terminal
+    /// bounded-reader family). A minimum-bit Rice parameter minimizes the
+    /// average payload but leaves heavy-tailed residual peaks - Core codec
+    /// error at loud onsets, object transients - with unary runs far past
+    /// this bound, which a terminal bounded reader misparses into
+    /// full-scale pops and sustained early-programme desync on active
+    /// starts. Delivery Rice therefore raises the parameter until every
+    /// emitted quotient fits the official bound; raising ABIT cannot alter
+    /// the decoded residual, it only trades remainder bits for a shorter
+    /// quotient.
+    static let terminalMaximumUnaryQuotient: UInt64 = 22
+
     private enum EntropyMode: Equatable {
         case linear(width: Int)
         case rice(parameter: Int)
@@ -73,9 +105,21 @@ struct XLLEncoder: Sendable {
     }
 
     private let codingMode: XLLCodingMode
+    /// DTS:X delivery invariant: the Core-residual hierarchy must keep the
+    /// official constant matrix (coefficient code 473) and the all-zero
+    /// primary residual mask on every frame, exactly as the reference corpus
+    /// does. The encoder-boundary source guard makes both hold by
+    /// construction, so under enforcement an escape is reported as a
+    /// diagnosable encode defect instead of being serialized as syntax a
+    /// terminal has never been shown to parse.
+    private let enforcesOfficialHierarchyGrammar: Bool
 
-    init(codingMode: XLLCodingMode = .research) {
+    init(
+        codingMode: XLLCodingMode = .research,
+        enforcesOfficialHierarchyGrammar: Bool = false
+    ) {
         self.codingMode = codingMode
+        self.enforcesOfficialHierarchyGrammar = enforcesOfficialHierarchyGrammar
     }
 
     func encode(
@@ -162,6 +206,13 @@ struct XLLEncoder: Sendable {
                     (count: 4, samples: 128)
                 ]
             case .terminalRice:
+                segmentationCandidates = [(count: 2, samples: 256)]
+            case .terminalOfficialRice:
+                // The official corpus uses 4x128 only around the frame-indexed
+                // silent-start transition, which reaches this encoder through
+                // ``forcedSegmentCount``. Every freely searched delivery frame
+                // in the references is 2x256, so the compression-cost search
+                // must not be allowed to discover the other partitions.
                 segmentationCandidates = [(count: 2, samples: 256)]
             }
         }
@@ -410,6 +461,16 @@ struct XLLEncoder: Sendable {
                 defaultCode: surroundCoefficientCode,
                 coreAssociationPolicy: coreAssociationPolicy
             )
+            if enforcesOfficialHierarchyGrammar,
+               selectedLeftCoefficient != surroundCoefficientCode
+                || selectedRightCoefficient != surroundCoefficientCode {
+                throw DTSError.malformed(
+                    "XLL hierarchy coefficient escaped the official constant matrix "
+                        + "(left \(selectedLeftCoefficient), right \(selectedRightCoefficient), "
+                        + "expected \(surroundCoefficientCode)): the 7.1.4 source reached the "
+                        + "delivery encoder without composite-headroom guarding"
+                )
+            }
             let leftUndoCoefficient = try XLLSyntax.undoDownmixCoefficientQ15(
                 scaleCode: scaleCode,
                 coefficientCode: selectedLeftCoefficient
@@ -481,6 +542,14 @@ struct XLLEncoder: Sendable {
                         selectedMask |= UInt64(1) << UInt64(channel)
                         selected[channel] = primaryFull[channel]
                     }
+                }
+                if enforcesOfficialHierarchyGrammar, selectedMask != 0 {
+                    throw DTSError.malformed(
+                        "XLL primary residual mask escaped the corpus-constant 0x00 "
+                            + "(selected 0x\(String(selectedMask, radix: 16))): the 7.1.4 "
+                            + "source reached the delivery encoder without "
+                            + "composite-headroom guarding"
+                    )
                 }
                 residualChannelMask = selectedMask
                 primary = selected
@@ -645,7 +714,9 @@ struct XLLEncoder: Sendable {
             // syntax only and the decoder reconstructs the same direct PCM.
             return inputs
         }
-        if codingMode == .terminalConservative || codingMode == .terminalRice {
+        if codingMode == .terminalConservative
+            || codingMode == .terminalRice
+            || codingMode == .terminalOfficialRice {
             // Terminal delivery keeps the channel-set syntax explicit and
             // independently invertible.  Do not ask a hardware decoder to
             // reproduce a locally selected prediction/decorrelation transform
@@ -1453,12 +1524,21 @@ struct XLLEncoder: Sendable {
                 }
             }
         }
-        if codingMode == .terminalRice || codingMode == .terminalPredictive {
+        if codingMode == .terminalRice
+            || codingMode == .terminalOfficialRice
+            || codingMode == .terminalPredictive {
+            // Official delivery bounds every emitted unary quotient at the
+            // corpus maximum; the experimental terminal Rice modes keep the
+            // historical exact-minimum selection for differential study.
+            let boundsUnaryQuotient = codingMode == .terminalOfficialRice
             return (0..<segmentCount).map { segment in
                 let start = segment * segmentSampleCount
                 let end = start + segmentSampleCount
                 return dtsPlanes.map { plane in
-                    terminalRiceMode(plane[start..<end])
+                    terminalRiceMode(
+                        plane[start..<end],
+                        boundingUnaryQuotient: boundsUnaryQuotient
+                    )
                 }
             }
         }
@@ -1552,8 +1632,16 @@ struct XLLEncoder: Sendable {
     /// Restrict the delivery profile to standard Rice without state reuse,
     /// hybrid exceptions, prediction, or channel transforms. Search the legal
     /// parameter range because active reference XLL frames use ordinary Rice
-    /// even when a linear representation would also fit.
-    private func terminalRiceMode(_ samples: ArraySlice<Int32>) -> EntropyMode {
+    /// even when a linear representation would also fit. Delivery
+    /// (`boundingUnaryQuotient`) additionally raises the parameter until the
+    /// longest emitted unary code fits the official-corpus maximum, exactly
+    /// as the private XLL-X layer already does: a terminal bounded reader
+    /// that stops at that maximum desyncs on longer runs and turns every
+    /// following sample of the segment into full-scale garbage.
+    private func terminalRiceMode(
+        _ samples: ArraySlice<Int32>,
+        boundingUnaryQuotient: Bool
+    ) -> EntropyMode {
         // Preserve the compact zero-width form used by the qualified first
         // XLL frame. Active terminal frames use Rice below.
         guard samples.contains(where: { $0 != 0 }) else {
@@ -1566,6 +1654,17 @@ struct XLLEncoder: Sendable {
             if bitCount < selectedBitCount {
                 selectedParameter = parameter
                 selectedBitCount = bitCount
+            }
+        }
+        if boundingUnaryQuotient {
+            var maximumMapped: UInt64 = 0
+            for sample in samples {
+                maximumMapped = max(maximumMapped, zigZag(sample))
+            }
+            while selectedParameter < 31,
+                  maximumMapped >> UInt64(selectedParameter)
+                    > Self.terminalMaximumUnaryQuotient {
+                selectedParameter += 1
             }
         }
         return .rice(parameter: selectedParameter)

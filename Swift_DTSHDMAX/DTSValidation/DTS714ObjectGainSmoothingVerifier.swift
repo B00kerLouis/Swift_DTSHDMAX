@@ -14,6 +14,11 @@ public struct DTS714ObjectGainSmoothingVerificationReport:
     public let retargetInstallIsContinuous: Bool
     public let retargetTargetReachedExactly: Bool
     public let fadeOutReachedDigitalSilence: Bool
+    /// An above-unity gain delta (positive object gain trim) must still obey
+    /// the per-sample slew bound instead of stepping faster than 1/480; the
+    /// window stretches beyond 480 samples only in that case.
+    public let aboveUnityDeltaTransitionSampleCount: Int
+    public let aboveUnityDeltaStepWithinBound: Bool
     public let isVerified: Bool
 }
 
@@ -101,6 +106,31 @@ public enum DTS714ObjectGainSmoothingVerifier {
         let fadeOutReachedDigitalSilence = smoother.isSilent
             && smoother.currentGains.allSatisfy { $0 == 0 }
 
+        // Above-unity delta (positive gain trim): a plain fixed-480 period
+        // would step faster than the reference bound, so the window must
+        // stretch to the reference-rate length there while every ordinary
+        // (at-or-below-unity) slew-limited move keeps the fixed 480-sample
+        // window hardware measured as least-bad.
+        var aboveUnity = DTS714ObjectGainSmoother()
+        let aboveUnityTarget: [(outputIndex: Int, q30: Int64)] = [(8, 2 * q30)]
+        aboveUnity.retarget(aboveUnityTarget, over: nominalPeriod)
+        let aboveUnityDeltaTransitionSampleCount =
+            aboveUnity.maximumRemainingSampleCount
+        var aboveUnityMaximumStep: Int64 = 0
+        previous = aboveUnity.currentGains
+        while aboveUnity.isTransitioning {
+            aboveUnity.advance()
+            var unusedChannels = Set<Int>()
+            observeStep(
+                from: previous,
+                to: aboveUnity.currentGains,
+                maximum: &aboveUnityMaximumStep,
+                changedHeightChannels: &unusedChannels
+            )
+            previous = aboveUnity.currentGains
+        }
+        let aboveUnityReached = aboveUnity.currentGains[8] == 2 * q30
+
         let verified = largeMoveTransitionSampleCount
                 == DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount
             && smallMoveTransitionSampleCount == nominalPeriod
@@ -110,6 +140,17 @@ public enum DTS714ObjectGainSmoothingVerifier {
             && retargetInstallIsContinuous
             && retargetTargetReachedExactly
             && fadeOutReachedDigitalSilence
+            && aboveUnityDeltaTransitionSampleCount
+                == expectedTransitionSampleCount(
+                    from: Array(
+                        repeating: Int64(0),
+                        count: DTS714ObjectGainSmoother.channelCount
+                    ),
+                    to: dense(aboveUnityTarget),
+                    requestedPeriod: nominalPeriod
+                )
+            && aboveUnityMaximumStep <= maximumAllowedStep
+            && aboveUnityReached
         return DTS714ObjectGainSmoothingVerificationReport(
             nominalPanSubBlockSampleCount: nominalPeriod,
             largeMoveTransitionSampleCount: largeMoveTransitionSampleCount,
@@ -124,8 +165,39 @@ public enum DTS714ObjectGainSmoothingVerifier {
             retargetInstallIsContinuous: retargetInstallIsContinuous,
             retargetTargetReachedExactly: retargetTargetReachedExactly,
             fadeOutReachedDigitalSilence: fadeOutReachedDigitalSilence,
+            aboveUnityDeltaTransitionSampleCount: aboveUnityDeltaTransitionSampleCount,
+            aboveUnityDeltaStepWithinBound: aboveUnityMaximumStep <= maximumAllowedStep,
             isVerified: verified
         )
+    }
+
+    /// Expected transition length under the delivered smoother semantics:
+    /// the requested period; or, when the requested rate exceeds 1/480 full
+    /// scale per sample, the fixed 480-sample slew window, stretched to
+    /// `ceil(|delta| x 480 / 2^30)` only for above-unity deltas so no step
+    /// exceeds the reference bound. Maximum across channels.
+    private static func expectedTransitionSampleCount(
+        from start: [Int64],
+        to target: [Int64],
+        requestedPeriod: Int
+    ) -> Int {
+        let slew = Int64(DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount)
+        var maximum = 0
+        for channel in start.indices {
+            let delta = Swift.abs(target[channel] - start[channel])
+            guard delta != 0 else { continue }
+            let period: Int
+            if delta * slew > q30 * Int64(requestedPeriod) {
+                period = max(
+                    DTS714ObjectGainSmoother.maximumSlewTransitionSampleCount,
+                    Int((delta * slew + q30 - 1) / q30)
+                )
+            } else {
+                period = requestedPeriod
+            }
+            maximum = max(maximum, period)
+        }
+        return maximum
     }
 
     private static func gains(

@@ -33,12 +33,26 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let publicXLLCodingMode: XLLCodingMode
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
+    public let sourceGuardPolicy: DTSXSourceGuardPolicy
+    /// Encoder-boundary composite-headroom conditioning of the 7.1.4 source.
+    /// Present whenever ``sourceGuardPolicy`` is ``DTSXSourceGuardPolicy/delivery``;
+    /// `isTransparent` is true when the source never overloaded any
+    /// downstream contract and passed through bit-exact.
+    public let sourceRenderGuard: DTS714RenderGuardReport?
     public let sourceSampleCount: Int
     public let encodedSampleCount: Int
     public let accessUnitCount: Int
     public let streamByteCount: Int
     public let streamSHA256: String
     public let privateEncoding: DTSXPrivateStreamEncodingReport
+    /// Hard clips the legacy Q15 height fold applied while building the
+    /// public 7.1 compatibility bed from the 7.1.4 source. Renders produced
+    /// by ``DTS714Renderer`` are guarded and always report zero; a nonzero
+    /// count means externally supplied 7.1.4 planes overload the fold and the
+    /// delivered bed is irreversibly cracked at exactly those samples.
+    public let compatibilityBedFoldHardClipSampleCount: Int
+    public let compatibilityBedFoldMaximumExcess: Int64
+    public let compatibilityBedFoldFirstHardClipSample: Int?
     /// Populated only when the caller explicitly requests integrated
     /// encode/decode verification. Production encoding deliberately leaves
     /// these fields nil so a complete program is not decoded a second time
@@ -62,6 +76,34 @@ public struct DTSXNativeEncodedResult: Sendable {
 public enum DTSXNativeVerificationPolicy: String, Sendable, Codable {
     case none
     case integrated
+}
+
+/// Controls the encoder-boundary conditioning of the twelve 7.1.4 source
+/// planes.
+///
+/// The rendered-Atmos path is already guarded inside ``DTS714Renderer``, but
+/// stems directories, wave sets, and direct plane callers historically
+/// reached the encoder unguarded: hot content then hard-clips the legacy Q15
+/// compatibility fold (irreversible bed cracks the lossless layers deliver
+/// as clicks) and forces per-frame hierarchy declarations - coefficient
+/// escapes from the constant matrix code 473 and residual-mask flips - that
+/// the reference corpus never exercises, for exactly as long as the content
+/// stays hot. ``delivery`` bounds every source against the downstream
+/// composite contracts before any layer encodes it; the guard is bit-exact
+/// passthrough whenever nothing overloads, so double-guarding rendered
+/// content is transparent.
+public enum DTSXSourceGuardPolicy: String, Sendable, Codable {
+    /// Delivery default: run the shared boundary pipeline
+    /// (``DTS714DeliverySourceConditioner``, i.e. ``DTS714RenderGuard``)
+    /// on the source planes. Bit-exact passthrough for every in-headroom
+    /// source, so delivery and bypass encodes of compliant content are
+    /// byte-identical.
+    case delivery
+    /// Differential-study bypass: hand the encoder the raw planes and allow
+    /// the historical out-of-contract syntax, so negative controls can keep
+    /// demonstrating the defects the delivery pipeline exists to prevent.
+    /// Never a delivery configuration.
+    case bypassForDifferential = "bypass-for-differential"
 }
 
 public enum DTSXNativeFileVerificationScope: String, Sendable, Codable {
@@ -99,26 +141,40 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     /// production per-frame search.
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
+    public let sourceGuardPolicy: DTSXSourceGuardPolicy
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
         publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
-        // Keep the public XLL residual path direct as well. Terminal playback
-        // has not yet certified locally selected predictor/Rice state, and a
-        // single malformed state transition can present as a full-scale pop.
-        publicXLLCodingMode: XLLCodingMode = .terminalConservative,
+        // The public XLL residual path stays free of locally selected
+        // prediction/decorrelation and entropy-state transitions, but its
+        // active segments now use ordinary Rice with explicit per-channel
+        // parameters: every observed official active delivery segment is
+        // Rice-coded, while the previous all-linear form is a grammar the
+        // corpus never exercises. With the Core carrying the declared
+        // downmix fold, residuals shrink to Core-codec-error size and an
+        // all-linear stream spends its life in small uncertified linear
+        // widths - the hardware presented that as noise-gate-like dropouts
+        // on quiet content and an unreadable first active frame.
+        publicXLLCodingMode: XLLCodingMode = .terminalOfficialRice,
         publicXLLForcedSegmentCount: Int? = nil,
         // Hardware accepted the Branch-0 Straight-Rice controls while Linear
-        // controls were not recognized and Branch-2 controls clicked. Keep the
-        // product default on fixed-order-zero Branch-0 Rice until the repaired
-        // predictive profile independently clears the terminal gate.
-        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRice
+        // controls were not recognized and Branch-2 controls clicked. The
+        // delivery default stays on fixed-order-zero Branch-0 Rice, but with
+        // the perfect-stream parameter selection: official mean-magnitude
+        // ABIT bounded to the corpus-maximum unary quotient of 22. The
+        // previous exact-minimum ABIT of ``terminalRice`` emitted unary runs
+        // past that bound on heavy-tailed height residuals, which terminal
+        // bounded readers misparse into full-scale pops.
+        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRiceOfficial,
+        sourceGuardPolicy: DTSXSourceGuardPolicy = .delivery
     ) {
         self.verificationPolicy = verificationPolicy
         self.publicXLLCoreAssociationPolicy = publicXLLCoreAssociationPolicy
         self.publicXLLCodingMode = publicXLLCodingMode
         self.publicXLLForcedSegmentCount = publicXLLForcedSegmentCount
         self.privateXLLXCodingMode = privateXLLXCodingMode
+        self.sourceGuardPolicy = sourceGuardPolicy
     }
 
     public func encode(
@@ -129,15 +185,16 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     ) throws -> DTSXNativeEncodedResult {
         let progressTotal = 1_000
         progress?(0, progressTotal)
-        let effectiveSource = try truncated(
+        let (effectiveSource, sourceGuard) = try conditionedSource(try truncated(
             source,
             maximumSourceFrameCount: maximumSourceFrameCount
-        )
+        ))
         let privateSession = try DTSXPrivateStreamEncodingSession(
             source: effectiveSource,
             codingMode: privateXLLXCodingMode
         )
-        let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
+        let (compatibilityBed, foldDiagnostics) =
+            try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
         progress?(100, progressTotal)
         let publicEncoder = DTSHDMAEncoder(configuration: DTSHDMAEncoderConfiguration(
             format: compatibilityBed.format,
@@ -145,6 +202,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             deterministic: true,
             tailPolicy: .zeroPad,
             xllCodingMode: publicXLLCodingMode,
+            officialHierarchyGrammarEnforced: sourceGuardPolicy == .delivery,
             forcedXLLSegmentCount: publicXLLForcedSegmentCount
         ))
         let coupledStream = try publicEncoder.encode(
@@ -191,12 +249,20 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLCodingMode: publicXLLCodingMode,
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
+            sourceGuardPolicy: sourceGuardPolicy,
+            sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: encodedSampleCount,
             accessUnitCount: privateStream.frames.count,
             streamByteCount: stream.count,
             streamSHA256: SHA256Hasher.hash(stream),
             privateEncoding: privateStream.report,
+            compatibilityBedFoldHardClipSampleCount: foldDiagnostics.hardClipCount,
+            compatibilityBedFoldMaximumExcess: foldDiagnostics.channels.map {
+                max($0.maximumPositiveExcess, $0.maximumNegativeExcess)
+            }.max() ?? 0,
+            compatibilityBedFoldFirstHardClipSample: foldDiagnostics.channels
+                .compactMap(\.firstHardClipSample).min(),
             compatibilityBedComparison: bedComparison,
             compatibilitySafety: compatibilitySafety,
             isNativePrivateEncoding: true,
@@ -230,15 +296,16 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         }
         let progressTotal = 1_000
         progress?(0, progressTotal)
-        let effectiveSource = try truncated(
+        let (effectiveSource, sourceGuard) = try conditionedSource(try truncated(
             source,
             maximumSourceFrameCount: maximumSourceFrameCount
-        )
+        ))
         let privateSession = try DTSXPrivateStreamEncodingSession(
             source: effectiveSource,
             codingMode: privateXLLXCodingMode
         )
-        let compatibilityBed = try DTS714CompatibilityBedRenderer.render(effectiveSource)
+        let (compatibilityBed, foldDiagnostics) =
+            try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
         let writer = try DTSHDFileContainer.StreamingWriter(
             outputURL: output,
             format: compatibilityBed.format,
@@ -262,6 +329,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
                 deterministic: true,
                 tailPolicy: .zeroPad,
                 xllCodingMode: publicXLLCodingMode,
+                officialHierarchyGrammarEnforced: sourceGuardPolicy == .delivery,
                 forcedXLLSegmentCount: publicXLLForcedSegmentCount
             )).encode(
                 compatibilityBed,
@@ -323,12 +391,20 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLCodingMode: publicXLLCodingMode,
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
+            sourceGuardPolicy: sourceGuardPolicy,
+            sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
             encodedSampleCount: privateStream.report.encodedSourceSampleCount,
             accessUnitCount: privateStream.frames.count,
             streamByteCount: streamByteCount,
             streamSHA256: try SHA256Hasher.hash(fileAt: output),
             privateEncoding: privateStream.report,
+            compatibilityBedFoldHardClipSampleCount: foldDiagnostics.hardClipCount,
+            compatibilityBedFoldMaximumExcess: foldDiagnostics.channels.map {
+                max($0.maximumPositiveExcess, $0.maximumNegativeExcess)
+            }.max() ?? 0,
+            compatibilityBedFoldFirstHardClipSample: foldDiagnostics.channels
+                .compactMap(\.firstHardClipSample).min(),
             compatibilityBedComparison: bedComparison,
             compatibilitySafety: compatibilitySafety,
             isNativePrivateEncoding: true,
@@ -372,6 +448,34 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         verified = true
         progress?(1_000, 1_000)
         return report
+    }
+
+    /// Bounds the twelve source planes against every downstream headroom
+    /// contract (plane range, legacy Q15 height fold, Core-residual recovery
+    /// composite) before any layer encodes them. The rendered-Atmos path is
+    /// already guarded inside ``DTS714Renderer``; re-applying the guard to
+    /// in-bounds content is bit-exact passthrough, so this single boundary
+    /// covers stems directories, wave sets, and direct plane callers - the
+    /// entry points that historically hard-clipped the compatibility fold and
+    /// forced per-frame hierarchy declarations the reference corpus never
+    /// exercises for exactly as long as the content stayed hot. Object-onset
+    /// continuity is owned by the renderer (``DTS714ObjectGainSmoother``),
+    /// never by this boundary: plane-level onset conditioning here measurably
+    /// increased hardware pops. Closed-loop verifiers reproduce the same
+    /// pipeline through ``DTS714DeliverySourceConditioner``.
+    private func conditionedSource(
+        _ source: DTS714PCMBuffer
+    ) throws -> (source: DTS714PCMBuffer, guardReport: DTS714RenderGuardReport?) {
+        guard sourceGuardPolicy == .delivery else { return (source, nil) }
+        var planes = source.planes
+        let report = DTS714DeliverySourceConditioner.condition(planes: &planes)
+        guard report.isHeadroomSafe else {
+            throw DTSError.malformed(
+                "DTS:X source guard could not close every downstream headroom constraint"
+            )
+        }
+        if report.isTransparent { return (source, report) }
+        return (try DTS714PCMBuffer(planes: planes), report)
     }
 
     private func truncated(

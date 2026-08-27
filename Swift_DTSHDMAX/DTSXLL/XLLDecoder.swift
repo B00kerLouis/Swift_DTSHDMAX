@@ -36,6 +36,10 @@ public struct XLLDecodedChannelSetFrame: Sendable, Equatable {
     public let entropyRiceParameterCount: Int
     public let hybridRiceParameterCount: Int
     public let hybridIsolatedSampleCount: Int
+    /// Longest unary quotient actually read from any Rice-coded sample in
+    /// this frame. Terminal bounded readers stop at the official-corpus
+    /// maximum (22), so delivery streams must never exceed it.
+    public let maximumRiceUnaryQuotient: Int
     public let channelSets: [XLLDecodedChannelSet]
 }
 
@@ -286,6 +290,7 @@ private struct XLLFrameDecoderParser {
     var entropyRiceParameterCount = 0
     var hybridRiceParameterCount = 0
     var hybridIsolatedSampleCount = 0
+    var maximumRiceUnaryQuotient = 0
     var channelMaskBitCount = 0
 
     init(data: Data) throws {
@@ -308,6 +313,7 @@ private struct XLLFrameDecoderParser {
             entropyRiceParameterCount: entropyRiceParameterCount,
             hybridRiceParameterCount: hybridRiceParameterCount,
             hybridIsolatedSampleCount: hybridIsolatedSampleCount,
+            maximumRiceUnaryQuotient: maximumRiceUnaryQuotient,
             channelSets: zip(channelSets, planes).map { configuration, decodedPlanes in
                 XLLDecodedChannelSet(
                     index: configuration.index,
@@ -758,6 +764,7 @@ private struct XLLFrameDecoderParser {
         }
         let maximumQuotient = max(0, limit - reader.bitOffset - parameter - 1)
         let quotient = try reader.readUnary(maximumZeroBitCount: maximumQuotient, field: field)
+        maximumRiceUnaryQuotient = max(maximumRiceUnaryQuotient, quotient)
         let remainder = parameter > 0 ? try reader.read(parameter, field: "\(field).remainder") : 0
         let mapped = (UInt64(quotient) << UInt64(parameter)) | remainder
         let magnitude = Int64(mapped >> 1)

@@ -55,6 +55,14 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
     /// two Core priming frames. This is exposed for public-XLL differential
     /// controls; ordinary HDMA keeps its existing explicit-zero default.
     public let compactXLLPriming: Bool
+    /// DTS:X delivery invariant: every emitted Core-residual hierarchy frame
+    /// must keep the official constant matrix (scale/coefficient code 473)
+    /// and the all-zero primary residual mask the reference corpus always
+    /// uses. With the encoder-boundary source guard active these invariants
+    /// hold by construction, so a violation is a diagnosable defect (an
+    /// unguarded overload reached the XLL layer) rather than syntax that
+    /// silently ships. Differential/research configurations leave this off.
+    public let officialHierarchyGrammarEnforced: Bool
     /// Test-only override for public XLL segmentation. Production uses the
     /// encoder's per-frame search when this is nil.
     public let forcedXLLSegmentCount: Int?
@@ -67,6 +75,7 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
         xllCodingMode: XLLCodingMode = .terminalConservative,
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         compactXLLPriming: Bool = false,
+        officialHierarchyGrammarEnforced: Bool = false,
         forcedXLLSegmentCount: Int? = nil
     ) {
         self.format = format
@@ -76,6 +85,7 @@ public struct DTSHDMAEncoderConfiguration: Sendable, Equatable, Codable {
         self.xllCodingMode = xllCodingMode
         self.coreAssociationPolicy = coreAssociationPolicy
         self.compactXLLPriming = compactXLLPriming
+        self.officialHierarchyGrammarEnforced = officialHierarchyGrammarEnforced
         self.forcedXLLSegmentCount = forcedXLLSegmentCount
     }
 }
@@ -251,8 +261,40 @@ public struct DTSHDMAEncoder: Sendable {
         let primingFrameCount = configuration.profile == .dtsHDMA
             ? XLLSyntax.coreCompatiblePrimingSampleCount / XLLSyntax.frameSampleCount
             : 0
+        // The Core-residual XLL hierarchy declares one constant DownmixScale
+        // (code 473, -3.0103 dB) for every reconstructed channel, exactly as
+        // the official DTS:X corpus does. That declaration is a promise about
+        // the Core content itself: Core = primary x (1/sqrt(2)) on all six
+        // channels. The reference decoder relies on it twice.
+        //
+        // 1. First-frame startup: the reference decoder forces lossy
+        //    recovery output on the first XLL frame it filters (and on any
+        //    seek re-entry). It zeroes every XLL band and plays
+        //    clip23(Core x sqrt(2)) alone on each Core-mapped channel. With
+        //    an unscaled Core, an active first frame is boosted +3 dB into
+        //    hard clipping - the tbh-class "first frame unplayable" failure -
+        //    while a silent start (Nature's Fury) is unaffected.
+        // 2. Steady-state residual combination computes the same
+        //    clip23(Core x sqrt(2)) intermediate. Official streams keep it
+        //    inside the signed 24-bit range by construction; an unscaled
+        //    Core drives it past full scale at every loud onset, leaving
+        //    reconstruction dependent on terminal saturation behavior.
+        //
+        // The surround pair already satisfies the promise (its equal-power
+        // 7.1-to-5.1 fold is the declared scale); the four pass-through
+        // channels must carry the identical fold. Ordinary HDMA delivery
+        // (full-primary XLL, no hierarchy matrix) keeps its unscaled Core.
+        let effectiveCoreAssociationPolicy = privateXLLXSource == nil
+            ? configuration.coreAssociationPolicy
+            : privateCoreAssociationPolicy
+        let coreCarriesDeclaredDownmixScale = configuration.profile == .dtsHDMA
+            && pcm.format.layout == .sevenOne
+            && effectiveCoreAssociationPolicy == .coreResidual
         let totalFrameCount = sourceFrameCount + primingFrameCount
-        let xllEncoder = XLLEncoder(codingMode: configuration.xllCodingMode)
+        let xllEncoder = XLLEncoder(
+            codingMode: configuration.xllCodingMode,
+            enforcesOfficialHierarchyGrammar: configuration.officialHierarchyGrammarEnforced
+        )
         let exssWriter = ExSSWriter()
         let exssAssetDescriptorProfile: ExSSAssetDescriptorProfile = privateXLLXSource == nil
             ? .standardHDMA
@@ -294,6 +336,25 @@ public struct DTSHDMAEncoder: Sendable {
             throw DTSError.unsupported("DTS HDMA requires 5.1(side) or 7.1 PCM")
         }
 
+        // The public half of the silent-start condition: the 4x128 startup
+        // grammar may be nominated only when the compatibility bed is silent
+        // across both first source access units (bounded by the source
+        // length), matching the private session's whole-window height check.
+        let startupWindowBedFramesAreSilent: Bool
+        if privateXLLXSource != nil {
+            startupWindowBedFramesAreSilent = try (0..<min(2, sourceFrameCount))
+                .allSatisfy { sourceFrameIndex in
+                    try sourceFrame(
+                        from: pcm,
+                        sourceFrameIndex: sourceFrameIndex
+                    ).planes.allSatisfy { plane in
+                        plane.allSatisfy { $0 == 0 }
+                    }
+                }
+        } else {
+            startupWindowBedFramesAreSilent = true
+        }
+
         // Core QMF/ADPCM/LFE history is advanced serially. XLL and ExSS work is
         // parallelized in bounded batches, so a feature-length encode no longer
         // retains the padded PCM, complete Core stream, every decoded frame and
@@ -331,18 +392,29 @@ public struct DTSHDMAEncoder: Sendable {
                 let xllCoreReconstruction = item.isPriming
                     ? silentCoreFrame
                     : item.decodedCore
-                // DTS:X reference streams use the standard compact zero-XLL
-                // declaration during the two Core-priming access units.  The
-                // terminal-conservative payload keeps later frames free of
-                // unqualified transforms, but its all-explicit zero entropy
-                // state is eight bytes larger and differs from the observed
-                // priming grammar.  Use the independently verified compact
-                // zero form only for those silent pre-roll frames.
-                let frameXLLEncoder = (privateXLLXSource != nil
-                    || configuration.compactXLLPriming)
+                // Priming declarations must match the delivery channel-set
+                // configuration. The research-only compact zero form saves
+                // eight bytes but declares pairwise decorrelation with a
+                // permuted original channel order and shared entropy
+                // parameters - a channel-set configuration no later delivery
+                // access unit repeats. Terminals latch that first
+                // configuration and reconfigure when the first source AU
+                // arrives with different declarations, so hot-start
+                // programmes (tbh class) lose their first audible frames
+                // ("first frames unplayable until AU3") while silent starts
+                // (Nature's Fury) mask the window. Ordinary HDMA - reported
+                // OK on hardware - always primed with its delivery encoder;
+                // DTS:X now does the same. The compact research form remains
+                // available only as the explicit `compactXLLPriming`
+                // differential control.
+                let frameXLLEncoder = configuration.compactXLLPriming
                     && item.isPriming
                     && configuration.xllCodingMode != .research
-                    ? XLLEncoder(codingMode: .research)
+                    ? XLLEncoder(
+                        codingMode: .research,
+                        enforcesOfficialHierarchyGrammar:
+                            configuration.officialHierarchyGrammarEnforced
+                    )
                     : xllEncoder
                 // Pre-encoded private-frame callers cannot expose their source
                 // activity, so retain their legacy 4x128 startup contract.
@@ -358,12 +430,26 @@ public struct DTSHDMAEncoder: Sendable {
                 } else {
                     legacyFrameStartupSegmentCount = nil
                 }
-                let privatePreferredSegmentCount: Int?
+                var privatePreferredSegmentCount: Int?
                 if case .session(let session) = privateXLLXSource {
                     privatePreferredSegmentCount = session
                         .terminalPreferredPublicSegmentCount(at: item.frameIndex)
-                } else {
-                    privatePreferredSegmentCount = nil
+                }
+                // The 4x128 form is the observed Nature's Fury silent-start
+                // grammar, and the references pair it only with fully silent
+                // access units. The native session now gates its own startup
+                // nomination on whole-access-unit silence across all twelve
+                // source planes, so this rendered-bed check is an independent
+                // second guard: if a 4x128 nomination ever arrives while the
+                // delivered compatibility bed is audible anywhere inside the
+                // two-AU window, the start is an ordinary hot start on the
+                // mid-stream 2x256 partition. Its fully silent access units
+                // use the code-0x20 source silence and its bed-audible
+                // height-silent access units carry ordinary navigated
+                // delivery frames instead of silence declarations.
+                if privatePreferredSegmentCount == 4,
+                   !startupWindowBedFramesAreSilent {
+                    privatePreferredSegmentCount = 2
                 }
                 let nativeSessionStartupSegmentCount = item.frameIndex >= primingFrameCount
                     && item.frameIndex < primingFrameCount + 2
@@ -443,7 +529,11 @@ public struct DTSHDMAEncoder: Sendable {
             let coreBytes: Data?
             if coreEncoderSession != nil {
                 coreBytes = try coreEncoderSession!.encode(
-                    try coreFrame(from: pcm, accessUnitIndex: frameIndex)
+                    try coreFrame(
+                        from: pcm,
+                        accessUnitIndex: frameIndex,
+                        applyingDeclaredDownmixScale: coreCarriesDeclaredDownmixScale
+                    )
                 )
             } else {
                 coreBytes = nil
@@ -516,7 +606,8 @@ public struct DTSHDMAEncoder: Sendable {
 
     private func coreFrame(
         from pcm: PCMBuffer,
-        accessUnitIndex: Int
+        accessUnitIndex: Int,
+        applyingDeclaredDownmixScale: Bool = false
     ) throws -> PCMBuffer {
         let coreFormat = try PCMFormat(
             sampleRate: pcm.format.sampleRate,
@@ -539,7 +630,17 @@ public struct DTSHDMAEncoder: Sendable {
                 guard pcm.planes[0].indices.contains(sourceSample) else { continue }
                 switch outputChannel {
                 case 0, 1, 2, 3:
-                    planes[outputChannel][frameSample] = pcm.planes[outputChannel][sourceSample]
+                    // With the Core-residual hierarchy the declared constant
+                    // DownmixScale (473) covers all six Core channels, so the
+                    // pass-through channels must carry the same -3.0103 dB
+                    // fold as the surround pair, using the identical Q30
+                    // constant and rounding. The reference decoder plays
+                    // clip23(Core x sqrt(2)) directly during first-frame
+                    // recovery; an unscaled Core turns any active start into
+                    // a +3 dB hard-clipped burst.
+                    planes[outputChannel][frameSample] = applyingDeclaredDownmixScale
+                        ? DTSBedRenderer.equalPowerSum(pcm.planes[outputChannel][sourceSample], 0)
+                        : pcm.planes[outputChannel][sourceSample]
                 case 4:
                     planes[outputChannel][frameSample] = pcm.format.layout == .sevenOne
                         ? DTSBedRenderer.equalPowerSum(

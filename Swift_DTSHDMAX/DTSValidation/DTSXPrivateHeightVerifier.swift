@@ -66,9 +66,25 @@ public enum DTSXPrivateHeightVerifier {
 
     public static func verify(
         inputURL: URL,
-        source: DTS714PCMBuffer,
-        maximumSourceFrameCount: Int? = nil
+        source rawSource: DTS714PCMBuffer,
+        maximumSourceFrameCount: Int? = nil,
+        deliveryConditioned: Bool = true
     ) throws -> DTSXPrivateHeightVerificationReport {
+        // Delivery encodes bound the source against the composite headroom
+        // guard at the encoder boundary, so the closed loop must compare
+        // against the identically conditioned expectation. The guard is
+        // bit-exact passthrough for in-headroom content, so this changes
+        // nothing for sources that never overloaded. Differential studies of
+        // bypass encodes pass `false` to compare against the raw planes
+        // instead.
+        let source: DTS714PCMBuffer
+        if deliveryConditioned {
+            var conditionedPlanes = rawSource.planes
+            DTS714DeliverySourceConditioner.condition(planes: &conditionedPlanes)
+            source = try DTS714PCMBuffer(planes: conditionedPlanes)
+        } else {
+            source = rawSource
+        }
         let sourceSampleCount = try requestedSampleCount(
             source: source,
             maximumSourceFrameCount: maximumSourceFrameCount

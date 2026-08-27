@@ -50,7 +50,16 @@ public enum XLLCoreNativeVerifier {
     ) throws -> XLLCoreNativeVerificationReport {
         let input = inputURL.standardizedFileURL
         let core = try DTSCoreStreamDecoder.decode(inputURL: input)
-        let completeSource = try DTS714SourceSet.loadLegacySevenOne(directory: sourceDirectory)
+        // Delivery encodes bound the 7.1.4 source against the composite
+        // headroom guard at the encoder boundary before the legacy fold is
+        // rendered, so the expected compatibility bed must be folded from the
+        // identically conditioned planes. The guard is bit-exact passthrough
+        // for in-headroom content.
+        var conditionedPlanes = try DTS714SourceSet.load(directory: sourceDirectory).planes
+        DTS714DeliverySourceConditioner.condition(planes: &conditionedPlanes)
+        let completeSource = try DTS714CompatibilityBedRenderer.render(
+            try DTS714PCMBuffer(planes: conditionedPlanes)
+        )
         let source: PCMBuffer
         if let maximumSourceFrameCount {
             guard maximumSourceFrameCount > 0 else {
