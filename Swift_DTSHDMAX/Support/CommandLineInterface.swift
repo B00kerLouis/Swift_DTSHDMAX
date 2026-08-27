@@ -931,6 +931,91 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "export-dtsx-grammar-timeline":
+            guard (2...3).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "export-dtsx-grammar-timeline requires INPUT.dtshd OUTPUT.json [MAX_FRAMES]"
+                )
+            }
+            let timelineFrameLimit: Int?
+            if values.count == 3 {
+                guard let parsedCount = Int(values[2]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_FRAMES must be positive")
+                }
+                timelineFrameLimit = parsedCount
+            } else {
+                timelineFrameLimit = nil
+            }
+            let timeline = try DTSXGrammarTimelineExporter.export(
+                inputURL: URL(fileURLWithPath: values[0]),
+                maximumFrameCount: timelineFrameLimit
+            )
+            let timelineEncoder = JSONEncoder()
+            timelineEncoder.outputFormatting = [
+                .prettyPrinted, .sortedKeys, .withoutEscapingSlashes
+            ]
+            do {
+                try timelineEncoder.encode(timeline).write(
+                    to: URL(fileURLWithPath: values[1]),
+                    options: .atomic
+                )
+            } catch let error as DTSError {
+                throw error
+            } catch {
+                throw DTSError.io(
+                    "cannot write grammar timeline \(values[1]): \(error.localizedDescription)"
+                )
+            }
+            print(try jsonString(timeline.summary))
+
+        case "compare-dtsx-grammar-timelines":
+            guard (2...3).contains(values.count) else {
+                throw DTSError.invalidArgument(
+                    "compare-dtsx-grammar-timelines requires BASELINE.dtshd CANDIDATE.dtshd [MAX_FRAMES]"
+                )
+            }
+            let comparisonFrameLimit: Int?
+            if values.count == 3 {
+                guard let parsedCount = Int(values[2]), parsedCount > 0 else {
+                    throw DTSError.invalidArgument("MAX_FRAMES must be positive")
+                }
+                comparisonFrameLimit = parsedCount
+            } else {
+                comparisonFrameLimit = nil
+            }
+            let comparison = DTSXGrammarTimelineComparator.compare(
+                baseline: try DTSXGrammarTimelineExporter.export(
+                    inputURL: URL(fileURLWithPath: values[0]),
+                    maximumFrameCount: comparisonFrameLimit
+                ),
+                candidate: try DTSXGrammarTimelineExporter.export(
+                    inputURL: URL(fileURLWithPath: values[1]),
+                    maximumFrameCount: comparisonFrameLimit
+                )
+            )
+            print(try jsonString(comparison))
+
+        case "verify-reference-streams":
+            guard values.count <= 1 else {
+                throw DTSError.invalidArgument(
+                    "verify-reference-streams takes at most one DIRECTORY argument"
+                )
+            }
+            let referenceDirectory = URL(fileURLWithPath: values.first
+                ?? DTSXReferenceStreamGate.defaultDirectoryPath)
+            let gateReport = try DTSXReferenceStreamGate.verify(
+                directory: referenceDirectory
+            )
+            print(try jsonString(gateReport))
+            guard gateReport.isComplete else {
+                throw DTSError.malformed(
+                    "PARENT_UPLOAD_REQUIRED: reference encodes are missing from "
+                    + "\(gateReport.directory) (\(gateReport.missingRequiredFileNames.joined(separator: ", "))); "
+                    + "byte-exact perfect-stream verification is blocked until "
+                    + "Louis pushes the Mac Downloads encodes to the materials branch"
+                )
+            }
+
         case "verify-dtsx-render-guard":
             guard values.isEmpty else {
                 throw DTSError.invalidArgument("verify-dtsx-render-guard takes no arguments")
@@ -2404,6 +2489,9 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-private-heights-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-714-native INPUT.dtshd SOURCE_DTSX_DIRECTORY [SOURCE_FRAME_COUNT]
           hdmax verify-dtsx-recovery-window INPUT.dtshd [MAX_ACCESS_UNITS]
+          hdmax export-dtsx-grammar-timeline INPUT.dtshd OUTPUT.json [MAX_FRAMES]
+          hdmax compare-dtsx-grammar-timelines BASELINE.dtshd CANDIDATE.dtshd [MAX_FRAMES]
+          hdmax verify-reference-streams [DIRECTORY]
           hdmax verify-dtsx-render-guard
           hdmax verify-dtsx-render-startup
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
