@@ -1016,6 +1016,98 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "map-dtsx-timecode-windows":
+            // WINDOW [WINDOW ...] [PRIMING_ACCESS_UNITS] --frame-rate VALUE
+            let parsed = try parseFrameRateOption(values)
+            let mappingFrameRate = try DTSFrameRate.resolve(
+                metadataFramesPerSecond: nil,
+                override: parsed.frameRate,
+                sourceDescription: "timecode window mapping"
+            )
+            var mappingWindows: [String] = []
+            var primingOverride: Int?
+            for argument in parsed.arguments {
+                if let integer = Int(argument) {
+                    guard primingOverride == nil else {
+                        throw DTSError.invalidArgument(
+                            "PRIMING_ACCESS_UNITS may be specified only once"
+                        )
+                    }
+                    primingOverride = integer
+                } else {
+                    mappingWindows.append(argument)
+                }
+            }
+            guard !mappingWindows.isEmpty else {
+                throw DTSError.invalidArgument(
+                    "map-dtsx-timecode-windows requires WINDOW... "
+                    + "[PRIMING_ACCESS_UNITS] --frame-rate VALUE, where WINDOW "
+                    + "is HH:MM:SS:FF-HH:MM:SS:FF (end exclusive)"
+                )
+            }
+            let mappings = try mappingWindows.map { argument in
+                try DTSXPopWindowMapper.mapping(
+                    window: DTSTimecodeWindow(
+                        argument: argument,
+                        nominalFramesPerSecond: mappingFrameRate.nominalFramesPerSecond
+                    ),
+                    frameRate: mappingFrameRate,
+                    primingAccessUnitCount: primingOverride
+                        ?? DTSXPopWindowMapper.defaultPrimingAccessUnitCount
+                )
+            }
+            print(try jsonString(mappings))
+
+        case "analyze-dtsx-pop-windows":
+            // INPUT.dtshd OUTPUT.json WINDOW [WINDOW ...] [MARGIN_ACCESS_UNITS]
+            //   [--frame-rate VALUE]
+            let parsed = try parseFrameRateOption(values)
+            guard parsed.arguments.count >= 3 else {
+                throw DTSError.invalidArgument(
+                    "analyze-dtsx-pop-windows requires INPUT.dtshd OUTPUT.json "
+                    + "WINDOW... [MARGIN_ACCESS_UNITS] [--frame-rate VALUE], "
+                    + "where WINDOW is HH:MM:SS:FF-HH:MM:SS:FF (end exclusive)"
+                )
+            }
+            var analysisWindows: [String] = []
+            var marginOverride: Int?
+            for argument in parsed.arguments.dropFirst(2) {
+                if let integer = Int(argument) {
+                    guard marginOverride == nil else {
+                        throw DTSError.invalidArgument(
+                            "MARGIN_ACCESS_UNITS may be specified only once"
+                        )
+                    }
+                    marginOverride = integer
+                } else {
+                    analysisWindows.append(argument)
+                }
+            }
+            let popWindowReport = try DTSXPopWindowAnalyzer.analyze(
+                inputURL: URL(fileURLWithPath: parsed.arguments[0]),
+                windowArguments: analysisWindows,
+                frameRateOverride: parsed.frameRate,
+                marginAccessUnits: marginOverride ?? 8
+            )
+            let popWindowEncoder = JSONEncoder()
+            popWindowEncoder.outputFormatting = [
+                .prettyPrinted, .sortedKeys, .withoutEscapingSlashes
+            ]
+            do {
+                try popWindowEncoder.encode(popWindowReport).write(
+                    to: URL(fileURLWithPath: parsed.arguments[1]),
+                    options: .atomic
+                )
+            } catch let error as DTSError {
+                throw error
+            } catch {
+                throw DTSError.io(
+                    "cannot write pop-window report \(parsed.arguments[1]): "
+                    + error.localizedDescription
+                )
+            }
+            print(try jsonString(popWindowReport.summary))
+
         case "verify-dtsx-render-guard":
             guard values.isEmpty else {
                 throw DTSError.invalidArgument("verify-dtsx-render-guard takes no arguments")
@@ -2458,7 +2550,7 @@ public enum DTSHDMACommandLine {
           hdmax sha256 INPUT
           hdmax md5 INPUT
           hdmax generate stereo|5.1|7.1 FRAME_COUNT OUTPUT.wav
-          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk|pop-window-motion:STARTAU-ENDAU[:STARTAU-ENDAU...] OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax compare EXPECTED.wav ACTUAL.wav
           hdmax compare-padded EXPECTED.wav PADDED_ACTUAL.wav
           hdmax render-7.1-to-5.1 INPUT.wav OUTPUT.wav
@@ -2492,6 +2584,8 @@ public enum DTSHDMACommandLine {
           hdmax export-dtsx-grammar-timeline INPUT.dtshd OUTPUT.json [MAX_FRAMES]
           hdmax compare-dtsx-grammar-timelines BASELINE.dtshd CANDIDATE.dtshd [MAX_FRAMES]
           hdmax verify-reference-streams [DIRECTORY]
+          hdmax map-dtsx-timecode-windows HH:MM:SS:FF-HH:MM:SS:FF... [PRIMING_ACCESS_UNITS] --frame-rate VALUE
+          hdmax analyze-dtsx-pop-windows INPUT.dtshd OUTPUT.json HH:MM:SS:FF-HH:MM:SS:FF... [MARGIN_ACCESS_UNITS] [--frame-rate VALUE]
           hdmax verify-dtsx-render-guard
           hdmax verify-dtsx-render-startup
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]

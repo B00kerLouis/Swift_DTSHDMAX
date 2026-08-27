@@ -161,11 +161,126 @@ enum SyntheticPCM {
                 }
             }
 
+        case "pop-window-motion":
+            // Deterministic surrogate for the TBH pop windows: long full
+            // silence, then object-motion-density windows at caller-chosen
+            // content access units. Inside each window a moderate stereo bed
+            // stays audible while exactly one height feed carries a gated
+            // burst per access unit, rotating Lfh→Rfh→Lrh→Rrh, with a
+            // floor-surround rotation interleaved on odd access units and a
+            // bed-audible zero-height access unit every eighth slot. Each
+            // burst attacks and releases inside its access unit, so the
+            // height-activity mask changes at every access-unit boundary -
+            // the maximal onset/switch seam density the master's object
+            // automation approaches in the flagged windows - while every
+            // boundary itself carries raised-cosine edges so the vector
+            // cannot inject a step click of its own.
+            guard parts.count >= 2 else {
+                throw DTSError.invalidArgument(
+                    "pop-window-motion requires at least one access-unit window, "
+                        + "for example pop-window-motion:1992-2250:16031-16500"
+                )
+            }
+            var windows: [(start: Int, end: Int)] = []
+            for part in parts.dropFirst() {
+                let bounds = part.split(separator: "-", omittingEmptySubsequences: false)
+                guard bounds.count == 2,
+                      let start = Int(bounds[0]),
+                      let end = Int(bounds[1]),
+                      start >= 0, start < end else {
+                    throw DTSError.invalidArgument(
+                        "pop-window-motion window must be STARTAU-ENDAU with STARTAU < ENDAU, got \(part)"
+                    )
+                }
+                guard end <= frameCount else {
+                    throw DTSError.invalidArgument(
+                        "pop-window-motion window \(part) exceeds \(frameCount) source access units"
+                    )
+                }
+                if let last = windows.last, start < last.end {
+                    throw DTSError.invalidArgument(
+                        "pop-window-motion windows must be ascending and non-overlapping"
+                    )
+                }
+                windows.append((start, end))
+            }
+            let heightOrder = [8, 9, 10, 11]
+            let heightFrequencies = [503.0, 617.0, 733.0, 857.0]
+            let floorOrder = [4, 5, 6, 7]
+            let floorFrequencies = [1_091.0, 1_213.0, 1_333.0, 1_459.0]
+            let bedFrequencies = (left: 401.0, right: 449.0)
+            let burstEdgeSampleCount = 96
+            for window in windows {
+                let windowStartSample = window.start * XLLSyntax.frameSampleCount
+                let windowEndSample = window.end * XLLSyntax.frameSampleCount
+                let windowSampleCount = windowEndSample - windowStartSample
+                let bedEdgeSampleCount = min(2_048, max(1, windowSampleCount / 4))
+                for sample in windowStartSample..<windowEndSample {
+                    let offset = sample - windowStartSample
+                    let remaining = windowEndSample - sample - 1
+                    let edge = min(offset, remaining)
+                    let envelope: Double
+                    if edge < bedEdgeSampleCount {
+                        let sine = sin(Double(edge) / Double(bedEdgeSampleCount) * Double.pi * 0.5)
+                        envelope = sine * sine
+                    } else {
+                        envelope = 1
+                    }
+                    let leftPhase = 2.0 * Double.pi * bedFrequencies.left
+                        * Double(offset) / 48_000.0
+                    let rightPhase = 2.0 * Double.pi * bedFrequencies.right
+                        * Double(offset) / 48_000.0
+                    planes[0][sample] = Int32((sin(leftPhase) * envelope * 700_000.0).rounded())
+                    planes[1][sample] = Int32((sin(rightPhase) * envelope * 700_000.0).rounded())
+                }
+                for accessUnit in window.start..<window.end {
+                    let slot = accessUnit - window.start
+                    // Every eighth slot keeps the bed audible under silent
+                    // heights: the bed-active zero-height seam class.
+                    guard slot % 8 != 7 else { continue }
+                    let start = accessUnit * XLLSyntax.frameSampleCount
+                    func writeBurst(channel: Int, frequency: Double, amplitude: Double) {
+                        for offset in 0..<XLLSyntax.frameSampleCount {
+                            let remaining = XLLSyntax.frameSampleCount - offset - 1
+                            let edge = min(offset, remaining)
+                            let envelope: Double
+                            if edge < burstEdgeSampleCount {
+                                let sine = sin(
+                                    Double(edge) / Double(burstEdgeSampleCount) * Double.pi * 0.5
+                                )
+                                envelope = sine * sine
+                            } else {
+                                envelope = 1
+                            }
+                            let phase = 2.0 * Double.pi * frequency
+                                * Double(offset) / 48_000.0
+                            planes[channel][start + offset] = Int32(
+                                (sin(phase) * envelope * amplitude).rounded()
+                            )
+                        }
+                    }
+                    let heightIndex = slot % heightOrder.count
+                    writeBurst(
+                        channel: heightOrder[heightIndex],
+                        frequency: heightFrequencies[heightIndex],
+                        amplitude: 700_000.0
+                    )
+                    if slot % 2 == 1 {
+                        let floorIndex = (slot / 2) % floorOrder.count
+                        writeBurst(
+                            channel: floorOrder[floorIndex],
+                            frequency: floorFrequencies[floorIndex],
+                            amplitude: 300_000.0
+                        )
+                    }
+                }
+            }
+
         default:
             throw DTSError.invalidArgument(
                 "unknown DTS:X control pattern \(pattern); use silence, impulse:CHANNEL, "
                     + "frame-edge:CHANNEL, sine:CHANNEL, fullscale:CHANNEL, all-sine, "
-                    + "or channel-walk"
+                    + "channel-walk, or pop-window-motion:STARTAU-ENDAU[:STARTAU-ENDAU...]"
             )
         }
         return try DTS714PCMBuffer(planes: planes)
