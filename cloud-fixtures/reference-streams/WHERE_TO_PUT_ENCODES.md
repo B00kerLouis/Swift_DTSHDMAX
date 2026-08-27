@@ -1,88 +1,33 @@
-# Canonical location for Louis's new software encodes
+# Canonical location for Louis's encode + master materials
 
-Cloud agents **must** read these paths after `git fetch origin cursor/cloud-materials-3541`:
-
-```
-cloud-fixtures/reference-streams/tbh.dtshd
-cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
-```
-
-Optional official perfect TBH:
-
-```
-cloud-fixtures/reference-streams/TBH_offical.dtshd
-```
-
-## Parent status (2026-08-26)
-
-Parent cloud VM cannot mount `/Users/sunyun_louis/Downloads` or `/Volumes/...`.
-Files were **not** present on the VM, so they could not be committed from the parent.
-Louis must run the Mac-side commands below, then ask the parent to re-spawn the child.
-
-## Mac-side upload (run on Louis's machine)
-
-```bash
-cd /path/to/Swift_DTSHDMAX
-git fetch origin
-git checkout cursor/cloud-materials-3541
-mkdir -p cloud-fixtures/reference-streams
-cp "/Users/sunyun_louis/Downloads/tbh.dtshd" \
-   cloud-fixtures/reference-streams/tbh.dtshd
-cp "/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd" \
-   cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
-# optional:
-# cp "/Volumes/HP_SSD_FX900_Pro /TBH/TBH_offical.dtshd" \
-#    cloud-fixtures/reference-streams/TBH_offical.dtshd
-git add -f cloud-fixtures/reference-streams/*.dtshd
-git commit -m "Add encode-debug tbh and Nature's Fury dtshd for cloud agents"
-git push origin cursor/cloud-materials-3541
-```
-
-Use Git LFS if GitHub rejects large blobs. First ~15s AU-aligned cuts are enough.
-
-## Parent re-check 2026-08-26T07:15Z
-
-Local + cloud VM full-filesystem search: **NOT_FOUND** for
-`/Users/sunyun_louis/Downloads/tbh.dtshd` and
-`/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd`.
-No `/Users` or `/Volumes` mounts. Parent cannot commit binaries it cannot read.
-Louis must push from Mac using the commands above, then ask parent to re-fetch.
-
-## Parent re-check 2026-08-27T01:37Z
-
-Still **PARENT_UPLOAD_REQUIRED**. `find` over `/workspace`, `/tmp`, `/opt`, `/home`
-found **zero** `*.dtshd`. Materials branch carries docs + `test_X` + grammar only.
-Latest encode-debug paths Louis named (branch-updating software encodes):
+**Naming rule (2026-08-27):** every uploaded binary MUST carry a UTC stamp
+`YYYYMMDDTHHMMZ` in the filename, plus `UPLOAD_MANIFEST_<STAMP>.txt`.
 
 ```text
-/Users/sunyun_louis/Downloads/tbh.dtshd
-/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd
+cloud-fixtures/reference-streams/tbh_<STAMP>.dtshd
+cloud-fixtures/reference-streams/Dolby_NaturesFury_<STAMP>.dtshd
+cloud-fixtures/reference-streams/QWER_TBH_IAB_<STAMP>.mxf
+cloud-fixtures/reference-streams/UPLOAD_MANIFEST_<STAMP>.txt
 ```
 
-→ must land as:
+Cloud agents must record the newest stamp they find and must **not** silently
+skip a missing upload.
 
-```text
-cloud-fixtures/reference-streams/tbh.dtshd
-cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
-```
+## Sources (Mac)
 
-on `cursor/cloud-materials-3541` via Mac-side `cp` + `git add -f` + push (see above).
+| Role | Path |
+| --- | --- |
+| Encode-debug TBH | `/Users/sunyun_louis/Downloads/tbh.dtshd` |
+| Encode-debug NF | `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd` |
+| TBH IAB master | `/Volumes/HP_SSD_FX900_Pro /TBH/QWER_TBH_IAB.mxf` |
 
-## Parent re-check 2026-08-27T05:29Z
+## Pop windows (TBH)
 
-Still **PARENT_UPLOAD_REQUIRED** (zero `*.dtshd` on VM). Hardware rejected both
-NAVI-ladder tip branches as fully wrong render; next child needs byte-level
-perfect-stream diffs. Upload priority unchanged — push Downloads encodes first.
+- `00:00:21:06`–`00:00:24:00`
+- `00:02:51:00`–`00:02:56:00`
 
-## Parent re-check 2026-08-27T06:31Z
+## Parent recheck 2026-08-27T07:22Z
 
-Still **PARENT_UPLOAD_REQUIRED**. New child needs TBH **pop windows** analysis:
-
-| Asset | Source | Dest |
-| --- | --- | --- |
-| Encode-debug TBH | `/Users/sunyun_louis/Downloads/tbh.dtshd` | `cloud-fixtures/reference-streams/tbh.dtshd` |
-| Encode-debug NF | `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd` | `cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd` |
-| TBH IAB master | `/Volumes/HP_SSD_FX900_Pro /TBH/QWER_TBH_IAB.mxf` | `cloud-fixtures/reference-streams/QWER_TBH_IAB.mxf` |
-
-Pop TC: `00:00:21:06`–`00:00:24:00` and `00:02:51:00`–`00:02:56:00`.
-See `UPLOAD_BLOCKED.md` for Mac push commands (MXF extract OK if full file too large).
+Still **PARENT_UPLOAD_REQUIRED** (zero binaries on VM). See `UPLOAD_BLOCKED.md`
+for stamped push commands. Controllable PCM remains on this branch under
+`cloud-fixtures/test_X/`; grammar notes under `cloud-fixtures/perfect-stream-grammar/`.
