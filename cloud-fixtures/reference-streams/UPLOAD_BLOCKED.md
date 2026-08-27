@@ -1,19 +1,19 @@
-# UPLOAD BLOCKED on parent cloud VM (2026-08-26)
+# PARENT_UPLOAD_REQUIRED — encode binaries not on cloud
 
-Parent attempted again to git Louis's encodes from:
+**Recheck:** 2026-08-27T01:37Z (parent orchestrator)
+
+Cloud VM still cannot read:
+
 - `/Users/sunyun_louis/Downloads/tbh.dtshd`
 - `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd`
+- `/Volumes/HP_SSD_FX900_Pro /TBH/TBH_offical.dtshd`
 
-**Result:** paths do not exist on the cloud Linux VM (no `/Users`, no `/Volumes`).
-Parent cannot `cp` or `git add` files that are not on this filesystem.
+No `*.dtshd` under `cloud-fixtures/reference-streams/` on this branch yet.
 
-## Canonical destination (when Louis pushes from Mac)
+Child agents must **not** invent reference bitstreams. Use:
 
-```
-cloud-fixtures/reference-streams/tbh.dtshd
-cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
-```
+1. `cloud-fixtures/test_X/` controllable vectors (present)
+2. `cloud-fixtures/perfect-stream-grammar/` recovered grammar notes
+3. Escalate to parent / Louis Mac push (commands in `WHERE_TO_PUT_ENCODES.md`)
 
-Branch: `cursor/cloud-materials-3541`
-
-See `WHERE_TO_PUT_ENCODES.md` for Mac-side commands.
+After Louis pushes binaries to this branch, parent will re-fetch and re-brief the next child.

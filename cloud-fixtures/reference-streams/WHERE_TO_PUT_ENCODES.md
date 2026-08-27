@@ -47,3 +47,23 @@ Local + cloud VM full-filesystem search: **NOT_FOUND** for
 `/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd`.
 No `/Users` or `/Volumes` mounts. Parent cannot commit binaries it cannot read.
 Louis must push from Mac using the commands above, then ask parent to re-fetch.
+
+## Parent re-check 2026-08-27T01:37Z
+
+Still **PARENT_UPLOAD_REQUIRED**. `find` over `/workspace`, `/tmp`, `/opt`, `/home`
+found **zero** `*.dtshd`. Materials branch carries docs + `test_X` + grammar only.
+Latest encode-debug paths Louis named (branch-updating software encodes):
+
+```text
+/Users/sunyun_louis/Downloads/tbh.dtshd
+/Users/sunyun_louis/Downloads/Dolby_NaturesFury.dtshd
+```
+
+→ must land as:
+
+```text
+cloud-fixtures/reference-streams/tbh.dtshd
+cloud-fixtures/reference-streams/Dolby_NaturesFury.dtshd
+```
+
+on `cursor/cloud-materials-3541` via Mac-side `cp` + `git add -f` + push (see above).
