@@ -40,6 +40,7 @@ public struct DTSXPrivateEncoderVerificationReport: Sendable, Equatable, Codable
     public let terminalRiceParameterSearchPassed: Bool
     public let terminalRiceMeanMagnitudeSelectionPassed: Bool
     public let terminalRiceBoundedUnarySelectionPassed: Bool
+    public let deliveryNavigationWidthLadderPassed: Bool
     public let allVectorsBitExact: Bool
 }
 
@@ -162,6 +163,7 @@ public enum DTSXPrivateEncoderVerifier {
         let terminalRiceParameterSearchPassed = try verifyTerminalRiceParameterSearch()
         let terminalRiceMeanMagnitudeSelectionPassed = try verifyTerminalRiceMeanMagnitudeSelection()
         let terminalRiceBoundedUnarySelectionPassed = try verifyTerminalRiceBoundedUnarySelection()
+        let deliveryNavigationWidthLadderPassed = try verifyDeliveryNavigationWidthLadder()
         let report = DTSXPrivateEncoderVerificationReport(
             vectors: reports,
             navigationBitWidthsRoundTripped: navigationBitWidths,
@@ -181,6 +183,7 @@ public enum DTSXPrivateEncoderVerifier {
             terminalRiceParameterSearchPassed: terminalRiceParameterSearchPassed,
             terminalRiceMeanMagnitudeSelectionPassed: terminalRiceMeanMagnitudeSelectionPassed,
             terminalRiceBoundedUnarySelectionPassed: terminalRiceBoundedUnarySelectionPassed,
+            deliveryNavigationWidthLadderPassed: deliveryNavigationWidthLadderPassed,
             allVectorsBitExact: !reports.isEmpty
                 && reports.allSatisfy(\.isBitExact)
                 && allNavigationBitWidthsRoundTrip
@@ -197,6 +200,7 @@ public enum DTSXPrivateEncoderVerifier {
                 && terminalRiceParameterSearchPassed
                 && terminalRiceMeanMagnitudeSelectionPassed
                 && terminalRiceBoundedUnarySelectionPassed
+                && deliveryNavigationWidthLadderPassed
         )
         guard report.allVectorsBitExact else {
             let failedVectors = reports.filter { !$0.isBitExact }.map(\.name).joined(separator: ",")
@@ -214,7 +218,8 @@ public enum DTSXPrivateEncoderVerifier {
                     + "terminalPredictiveRiceSearch=\(terminalPredictiveRiceParameterSearchPassed), "
                     + "terminalRiceSearch=\(terminalRiceParameterSearchPassed), "
                     + "terminalRiceMean=\(terminalRiceMeanMagnitudeSelectionPassed), "
-                    + "terminalRiceBounded=\(terminalRiceBoundedUnarySelectionPassed)"
+                    + "terminalRiceBounded=\(terminalRiceBoundedUnarySelectionPassed), "
+                    + "naviLadder=\(deliveryNavigationWidthLadderPassed)"
             )
         }
         return report
@@ -622,6 +627,54 @@ public enum DTSXPrivateEncoderVerifier {
             }
         }
         return observedRaisedParameter
+    }
+
+    /// The delivery coding mode must keep every emitted two-segment NAVI on
+    /// the official 11/13/14-bit ladder. The hot vector's incompressible
+    /// full-scale planes force segment extents into the 2,049-4,096-byte
+    /// range, where the retired canonical-then-anything width order emitted
+    /// the corpus-hole 12-bit word that a terminal bounded reader keyed to
+    /// the recovered forms misparses (the residual object-onset pop shape);
+    /// the moderate vector stays inside the canonical 11-bit
+    /// three-data-byte region.
+    private static func verifyDeliveryNavigationWidthLadder() throws -> Bool {
+        let segmentationPlan = DTSXPrivateFrameEncoder.defaultSegmentationPlan
+        let vectors: [(planes: [[Int32]], expectedBitWidth: Int, isFormerTwelveBitHole: Bool)] = [
+            (filteredAutoregressive(), 11, false),
+            (fullScaleAlternating(), 13, true)
+        ]
+        for vector in vectors {
+            let encoded = try DTSXPrivateFrameEncoder(
+                codingMode: .terminalRiceOfficial
+            ).encode(
+                codedPlanes: vector.planes,
+                segmentationPlan: segmentationPlan
+            )
+            let ast = try DTSXPrivateFrameAST.parse(encoded[...])
+            let navigation = try ast.parseNavigation(
+                segmentCount: segmentationPlan.segmentCount
+            )
+            guard DTSXPrivateNavigation.officialTwoSegmentBitWidths
+                    .contains(navigation.bitWidth),
+                  navigation.bitWidth == vector.expectedBitWidth else {
+                return false
+            }
+            if vector.isFormerTwelveBitHole {
+                // The regression must actually exercise the hole: every
+                // segment extent needs a 12-bit size-minus-one field, so the
+                // retired selector would have emitted the off-ladder word.
+                guard navigation.segmentByteCounts.allSatisfy({
+                    (2_049...4_096).contains($0)
+                }) else { return false }
+            }
+            let decoded = try DTSXPrivateFrameDecoder.decode(
+                ast,
+                segmentCount: segmentationPlan.segmentCount,
+                segmentSampleCount: segmentationPlan.segmentSampleCount
+            )
+            guard decoded.codedPlanes == vector.planes else { return false }
+        }
+        return true
     }
 
     /// Three values of 683 among 256 samples produce mean magnitude 8. The

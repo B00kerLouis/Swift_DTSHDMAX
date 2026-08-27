@@ -713,9 +713,10 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             segmentByteCounts: segmentByteCounts,
             preferredBitWidth: preferredBitWidth
         ) {
-            let navigationByteCount = (
-                bitWidth * segmentByteCounts.count + 7
-            ) / 8 + 2
+            let navigationByteCount = DTSXPrivateNavigation.serializedByteCount(
+                bitWidth: bitWidth,
+                segmentCount: segmentByteCounts.count
+            )
             let fixedBodyByteCount = predictionByteCount + 2 + navigationByteCount
                 + segmentByteCounts.reduce(0, +)
             for trailingFrameByteCount in trailingFrameByteCounts
@@ -789,6 +790,24 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 )
             }
             return [preferredBitWidth]
+        }
+        // Delivery two-segment frames must stay on the official NAVI width
+        // ladder (11-bit three-data-byte word, then 13/14-bit four-data-byte
+        // words). The previous canonical-then-anything order emitted a 12-bit
+        // word for 2,049-4,096-byte segments - a form no reference stream
+        // exercises - and a terminal reader bounded to the recovered ladder
+        // misparses that NAVI, corrupting exactly the first dense
+        // height-active access units after silence.
+        if segmentByteCounts.count == DTSXPrivateNavigation.segmentCount {
+            let ladder = DTSXPrivateNavigation.officialTwoSegmentBitWidths
+                .filter { $0 >= requiredBitWidth }
+            guard !ladder.isEmpty else {
+                throw DTSError.valueOutOfRange(
+                    field: "XLL-X native two-segment navigation width",
+                    value: String(requiredBitWidth)
+                )
+            }
+            return ladder
         }
         // Width is inferred from the byte-aligned NAVI payload.  Retain the
         // 11-bit canonical choice first so qualified/reference vectors remain
