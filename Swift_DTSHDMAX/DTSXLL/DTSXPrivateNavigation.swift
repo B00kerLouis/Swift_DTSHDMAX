@@ -8,6 +8,11 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
     public static let segmentCount = 2
     public static let byteCount = 5
     public static let supportedBitWidths = 8...16
+    /// The only ordinary mid-stream width observed in the recovered corpus.
+    /// Width 8 belongs to the compact 4x128 startup form and 13/14 to the
+    /// oversized four-data-byte active frames; every qualified two-segment
+    /// reference vector serializes its NAVI at width 11.
+    public static let canonicalMidStreamBitWidth = 11
 
     public let bitWidth: Int
     public let segmentByteCounts: [Int]
@@ -158,20 +163,49 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
     static func parse(
         body: Data,
         navigationStartByteOffset: Int,
-        segmentCount: Int
+        segmentCount: Int,
+        preferringCanonicalMidStreamWidth: Bool = false
     ) throws -> DTSXPrivateNavigation {
         let candidates = try parseCandidates(
             body: body,
             navigationStartByteOffset: navigationStartByteOffset,
             segmentCount: segmentCount
         )
-        guard candidates.count == 1 else {
-            let reason = candidates.isEmpty ? "no" : "multiple"
-            throw DTSError.malformed(
-                "XLL-X private navigation has \(reason) frame-size-consistent generalized form"
-            )
+        if candidates.count == 1 {
+            return candidates[0]
         }
-        return candidates[0]
+        if preferringCanonicalMidStreamWidth,
+           let canonical = resolveCanonicalMidStreamAmbiguity(candidates) {
+            return canonical
+        }
+        let reason = candidates.isEmpty ? "no" : "multiple"
+        throw DTSError.malformed(
+            "XLL-X private navigation has \(reason) frame-size-consistent generalized form"
+        )
+    }
+
+    /// Resolves the CRC/frame-size consistency search of an ordinary
+    /// navigated delivery frame to one reading. Compact two-segment frames
+    /// collide byte-identically across adjacent widths (`[2, 1]` at width 11
+    /// serializes to the same bytes as `[3, 1]` at width 12), and a
+    /// width-search parser must still return exactly one deterministic
+    /// interpretation, so the ambiguity resolves to the corpus-dominant
+    /// mid-stream width when exactly one candidate carries it. The
+    /// preference is intentionally narrow: it applies only to the ordinary
+    /// two-segment profile (width 11 is attested nowhere else, and the
+    /// compact 4x128 startup form must keep its observed width 8), and only
+    /// when the caller declares the frame class actually carries a NAVI —
+    /// the no-NAVI silence side information is itself byte-colliding with a
+    /// width-11 `[2, 1]` navigation word, so classes without navigation must
+    /// keep rejecting every ambiguous shape.
+    static func resolveCanonicalMidStreamAmbiguity(
+        _ candidates: [DTSXPrivateNavigation]
+    ) -> DTSXPrivateNavigation? {
+        let canonical = candidates.filter {
+            $0.bitWidth == canonicalMidStreamBitWidth
+                && $0.segmentByteCounts.count == segmentCount
+        }
+        return canonical.count == 1 ? canonical[0] : nil
     }
 
     static func parseCandidates(
@@ -298,10 +332,17 @@ public extension DTSXPrivateFrameAST {
         throws -> DTSXPrivateNavigation {
         let predictionCRC = try parsePredictionCRC()
         let navigationStart = predictionCRC.bodyByteOffset + 2
+        // Only the ordinary navigated delivery class may resolve a compact
+        // width collision to the canonical mid-stream width: the code-16
+        // no-NAVI silence side information is byte-colliding with a width-11
+        // `[2, 1]` navigation word, and it must keep failing this parse so
+        // silence declarations are never misread as navigation.
         return try DTSXPrivateNavigation.parse(
             body: body,
             navigationStartByteOffset: navigationStart,
-            segmentCount: segmentCount
+            segmentCount: segmentCount,
+            preferringCanonicalMidStreamWidth: primarySixBitCode
+                == Self.ordinaryNavigatedDeliveryPrimarySixBitCode
         )
     }
 
