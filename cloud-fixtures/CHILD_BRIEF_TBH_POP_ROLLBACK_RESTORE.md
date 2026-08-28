@@ -25,7 +25,7 @@ Input stage = `main` @ `08b4478` (DAMF mutations deferred). TBH IAB MXF path for
   - #25 corpus zero-plane declaration
   - #26 compact navigated NAVI width 11
 - **Forbidden:** NAVI 11/13/14 ladder (#20/#22), onset ramps (#15/#16), ffmpeg anywhere.
-- **Supersedes:** closed #27, #28; evaluate #29 (`cursor/dtsx-tbh-pop-baseline-restore-3fca`) — may contain useful audit repair but started from broken-input tip.
+- **Supersedes:** closed #27–#29; product tip is PR #30 (`cursor/dtsx-tbh-pop-rollback-restore-3541` @ `50c2f37`).
 
 ## Materials (fetch `origin/cursor/cloud-materials-3541`)
 **Partial upload in progress** — do NOT silent-pass:

@@ -21,4 +21,4 @@ QWER_TBH_IAB_<STAMP>.mxf
 UPLOAD_MANIFEST_<STAMP>.txt
 ```
 
-Mac push: see `WHERE_TO_PUT_ENCODES.md`. PR #26 closed; new tip `cursor/dtsx-damf-input-tbh-pop-3541`.
+Mac push: see `WHERE_TO_PUT_ENCODES.md`. Product tip: PR #30 (`cursor/dtsx-tbh-pop-rollback-restore-3541`).

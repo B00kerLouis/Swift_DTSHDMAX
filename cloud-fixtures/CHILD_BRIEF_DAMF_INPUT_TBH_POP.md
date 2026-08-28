@@ -1,9 +1,8 @@
 # Child brief — DAMF input fix + TBH pops continued (2026-08-28T0124Z)
 
 ## Louis branch confirmation
-**Completed product tip:** **`cursor/dtsx-damf-input-tbh-pop-3541`** @ **`c7021d6`** (PR #27).
-Integrates closed #25/#26 work + DAMF audio fallback + stamped reference gate.
-**Prior tip:** `cursor/dtsx-tbh-window-pop-continued-3541` @ `c3ccbdf` (PR #26 closed).
+**Superseded** — see **`cursor/dtsx-tbh-pop-rollback-restore-3541`** @ **`50c2f37`** (PR #30).
+This brief is retained for history only.
 
 ## BLOCKER — Nature's Fury encode (must fix)
 Louis cannot test because:
