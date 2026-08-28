@@ -155,25 +155,29 @@ public enum AtmosMasterReader {
     public static func read(manifestURL: URL) throws -> AtmosMaster {
         let manifestText = try textFile(manifestURL)
         let manifest = try parseManifest(manifestText, manifestURL: manifestURL)
-        let audioFormat = try readCAFDescriptor(manifest.audioURL)
+        let audioURL = try resolveAudioURL(
+            referenced: manifest.audioURL,
+            manifestURL: manifestURL
+        )
+        let audioFormat = try readAudioDescriptor(audioURL)
         guard audioFormat.channelCount == manifest.bedChannels.count + manifest.objects.count else {
             throw DTSError.malformed(
                 "DAMF manifest maps \(manifest.bedChannels.count + manifest.objects.count) elements "
-                + "but CAF contains \(audioFormat.channelCount) channels"
+                + "but \(audioURL.lastPathComponent) contains \(audioFormat.channelCount) channels"
             )
         }
         let metadataText = try textFile(manifest.metadataURL)
         let metadata = try parseMetadata(metadataText)
         guard metadata.sampleRate == audioFormat.sampleRate else {
             throw DTSError.malformed(
-                "DAMF metadata sample rate \(metadata.sampleRate) differs from CAF \(audioFormat.sampleRate)"
+                "DAMF metadata sample rate \(metadata.sampleRate) differs from audio \(audioFormat.sampleRate)"
             )
         }
         return AtmosMaster(
             version: manifest.version,
             manifestURL: manifestURL,
             metadataURL: manifest.metadataURL,
-            audioURL: manifest.audioURL,
+            audioURL: audioURL,
             offset: manifest.offset,
             firstFrameOfAction: manifest.ffoa,
             framesPerSecond: manifest.fps,
@@ -183,6 +187,92 @@ public enum AtmosMasterReader {
             metadataSampleRate: metadata.sampleRate,
             metadataEvents: metadata.events
         )
+    }
+
+    /// Resolves the manifest's `audio:` reference. Dolby tooling can re-export
+    /// or rename the PCM container without rewriting the manifest (observed in
+    /// the field as a `…ADM_BWF.atmos.audio` reference beside differently
+    /// named media). When the referenced file is absent, exactly one sibling
+    /// CAF or (ADM BWF) WAVE file is accepted as the fallback and the
+    /// substitution is reported on stderr; zero or several candidates fail
+    /// with the directory inventory so the user repairs the manifest
+    /// deliberately. The user's input path is never changed silently.
+    private static func resolveAudioURL(referenced: URL, manifestURL: URL) throws -> URL {
+        if FileManager.default.fileExists(atPath: referenced.path) { return referenced }
+        let directory = manifestURL.deletingLastPathComponent()
+        let siblings: [URL]
+        do {
+            siblings = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        } catch {
+            throw DTSError.io(
+                "DAMF manifest \(manifestURL.lastPathComponent) references missing audio "
+                + "\(referenced.path) and its directory cannot be listed: \(error.localizedDescription)"
+            )
+        }
+        var candidates: [(url: URL, container: AtmosPCMContainer)] = []
+        for sibling in siblings {
+            let values = try? sibling.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            guard let container = sniffAudioContainer(sibling) else { continue }
+            candidates.append((sibling.standardizedFileURL, container))
+        }
+        let inventory = siblings.map(\.lastPathComponent).joined(separator: ", ")
+        switch candidates.count {
+        case 1:
+            let (fallback, container) = candidates[0]
+            let kind = container == .caf ? "CAF" : "ADM BWF WAVE"
+            FileHandle.standardError.write(Data(
+                ("note: DAMF manifest \(manifestURL.lastPathComponent) references missing audio "
+                 + "\(referenced.lastPathComponent); using the unambiguous sibling "
+                 + "\(kind) file \(fallback.lastPathComponent)\n").utf8
+            ))
+            return fallback
+        case 0:
+            throw DTSError.io(
+                "DAMF manifest \(manifestURL.lastPathComponent) references audio "
+                + "\(referenced.lastPathComponent) which does not exist, and no sibling CAF or "
+                + "ADM BWF WAVE audio file exists in \(directory.path); directory contains: "
+                + (inventory.isEmpty ? "(nothing)" : inventory)
+            )
+        default:
+            throw DTSError.invalidArgument(
+                "DAMF manifest \(manifestURL.lastPathComponent) references audio "
+                + "\(referenced.lastPathComponent) which does not exist, and the sibling audio "
+                + "fallback is ambiguous — candidates: "
+                + candidates.map(\.url.lastPathComponent).joined(separator: ", ")
+                + ". Fix the manifest's audio: field, or pass the intended representation "
+                + "(for example the ADM BWF .wav) as the input directly; directory contains: "
+                + inventory
+            )
+        }
+    }
+
+    /// Container sniff by magic bytes; returns nil for files that are neither
+    /// CAF nor RIFF/RF64 WAVE (or that cannot be read).
+    private static func sniffAudioContainer(_ url: URL) -> AtmosPCMContainer? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 12), prefix.count == 12 else { return nil }
+        if (try? prefix.fourCC(at: 0)) == "caff" { return .caf }
+        let container = (try? prefix.fourCC(at: 0)) ?? ""
+        let form = (try? prefix.fourCC(at: 8)) ?? ""
+        if container == "RIFF" || container == "RF64", form == "WAVE" { return .wave }
+        return nil
+    }
+
+    private static func readAudioDescriptor(_ url: URL) throws -> AtmosPCMDescriptor {
+        switch sniffAudioContainer(url) {
+        case .caf:
+            return try readCAFDescriptor(url)
+        case .wave:
+            return try readWAVEDescriptor(url)
+        case .iabMXF, nil:
+            throw DTSError.unsupported("DAMF audio must be a CAF or WAVE file: \(url.path)")
+        }
     }
 
     private struct ParsedManifest {
@@ -417,6 +507,114 @@ public enum AtmosMasterReader {
             audioDataOffset: audioData.0,
             audioDataByteCount: audioData.1,
             sampleCount: audioData.1 / UInt64(bytesPerPacket)
+        )
+    }
+
+    /// Minimal RIFF/RF64 WAVE descriptor for the sibling-audio fallback: the
+    /// DAMF metadata stays authoritative, the WAVE supplies interleaved PCM.
+    /// Requires the same packed 24-bit LPCM layout as the CAF path so
+    /// `AtmosSceneReader`'s interleaved reads stay container-agnostic.
+    private static func readWAVEDescriptor(_ url: URL) throws -> AtmosPCMDescriptor {
+        let fileSize: UInt64
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let size = attributes[.size] as? NSNumber else {
+                throw DTSError.io("DAMF WAVE audio size is unavailable: \(url.path)")
+            }
+            fileSize = size.uint64Value
+        } catch let error as DTSError {
+            throw error
+        } catch {
+            throw DTSError.io("cannot inspect \(url.path): \(error.localizedDescription)")
+        }
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: url) }
+        catch { throw DTSError.io("cannot open \(url.path): \(error.localizedDescription)") }
+        defer { try? handle.close() }
+        let header = try readExactly(12, from: handle, field: "WAVE header")
+        let riff = try header.fourCC(at: 0)
+        guard riff == "RIFF" || riff == "RF64", try header.fourCC(at: 8) == "WAVE" else {
+            throw DTSError.unsupported("DAMF audio is not a RIFF/RF64 WAVE file")
+        }
+
+        var sampleRate: Int?
+        var channelCount: Int?
+        var bitDepth: Int?
+        var blockAlign: Int?
+        var formatTag: UInt16?
+        var dataOffset: UInt64?
+        var dataByteCount: UInt64?
+        var rf64DataByteCount: UInt64?
+        var cursor: UInt64 = 12
+        while cursor <= fileSize, fileSize - cursor >= 8 {
+            try handle.seek(toOffset: cursor)
+            let chunkHeader = try readExactly(8, from: handle, field: "WAVE chunk header")
+            let identifier = try chunkHeader.fourCC(at: 0)
+            let declaredByteCount = UInt64(try chunkHeader.littleEndianUInt32(at: 4))
+            let bodyOffset = cursor + 8
+            var effectiveByteCount = declaredByteCount
+            if identifier == "data", declaredByteCount == UInt64(UInt32.max) {
+                guard let rf64DataByteCount else {
+                    throw DTSError.malformed("RF64 data chunk precedes ds64")
+                }
+                effectiveByteCount = rf64DataByteCount
+            }
+            guard effectiveByteCount <= fileSize - bodyOffset else {
+                throw DTSError.truncated(
+                    field: "WAVE chunk \(identifier)",
+                    bitOffset: Int(bodyOffset) * 8
+                )
+            }
+            switch identifier {
+            case "ds64":
+                guard effectiveByteCount >= 16 else { throw DTSError.malformed("RF64 ds64 is too short") }
+                let body = try readExactly(16, from: handle, field: "WAVE ds64")
+                rf64DataByteCount = UInt64(try body.littleEndianUInt32(at: 8))
+                    | (UInt64(try body.littleEndianUInt32(at: 12)) << 32)
+            case "fmt ":
+                guard effectiveByteCount >= 16 else { throw DTSError.malformed("WAVE fmt is too short") }
+                let body = try readExactly(16, from: handle, field: "WAVE fmt")
+                formatTag = try body.littleEndianUInt16(at: 0)
+                channelCount = Int(try body.littleEndianUInt16(at: 2))
+                sampleRate = Int(try body.littleEndianUInt32(at: 4))
+                blockAlign = Int(try body.littleEndianUInt16(at: 12))
+                bitDepth = Int(try body.littleEndianUInt16(at: 14))
+            case "data":
+                dataOffset = bodyOffset
+                dataByteCount = effectiveByteCount
+            default:
+                break
+            }
+            let paddedByteCount = effectiveByteCount + (effectiveByteCount & 1)
+            let (next, overflow) = bodyOffset.addingReportingOverflow(paddedByteCount)
+            guard !overflow, next > cursor else { throw DTSError.malformed("WAVE chunk size overflow") }
+            cursor = next
+        }
+        guard let sampleRate, let channelCount, let bitDepth, let blockAlign,
+              let formatTag, let dataOffset, let dataByteCount else {
+            throw DTSError.malformed("DAMF WAVE audio is missing fmt/data chunks")
+        }
+        guard formatTag == 1 || formatTag == 0xfffe else {
+            throw DTSError.unsupported("DAMF WAVE format tag 0x\(String(formatTag, radix: 16))")
+        }
+        guard bitDepth == 24, channelCount > 0, blockAlign == channelCount * 3 else {
+            throw DTSError.unsupported("DAMF WAVE audio must be packed 24-bit interleaved LPCM")
+        }
+        guard dataByteCount.isMultiple(of: UInt64(blockAlign)) else {
+            throw DTSError.malformed("DAMF WAVE audio byte count is not frame aligned")
+        }
+        return AtmosPCMDescriptor(
+            container: .wave,
+            sampleRate: sampleRate,
+            formatID: "lpcm",
+            formatFlags: 0,
+            bytesPerPacket: blockAlign,
+            framesPerPacket: 1,
+            channelCount: channelCount,
+            bitDepth: bitDepth,
+            audioDataOffset: dataOffset,
+            audioDataByteCount: dataByteCount,
+            sampleCount: dataByteCount / UInt64(blockAlign)
         )
     }
 
