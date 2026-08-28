@@ -316,6 +316,19 @@ pop-window census (surrogate)  widths 11×258 / 11×469 constant,
 timecode mapping               AU 1994–2252 / 16033–16502 (= record)
 ```
 
+Every gate above was re-run on the **final** binary — the one carrying
+the merged PR #28 audit gate plus this branch's full-scale repair — with
+identical verdicts. On that binary the TBH-length surrogate re-encode is
+again byte-identical (SHA-256 `93e177d5…daac7ba`, 40,080,172 bytes), the
+pop-window census JSON is field-identical to the record (only the input
+path string differs), and the real Nature's Fury encode reproduces the
+same 13,460,920-byte stream (SHA-256 `07e24cf4…ba86c79`) with both
+sidecar substitution notes and `isStructurallyValid=true`,
+`resynchronizationByteCount=0`. `verify-tbh-window-render` itself
+compiles and registers in that binary but has no local input to run
+against (it needs `QWER_TBH_IAB_<STAMP>.mxf` — see the materials
+inventory).
+
 ### The merged window render-audit gate (parent PR #28) and its repair
 
 This branch merges the parent's concurrent
