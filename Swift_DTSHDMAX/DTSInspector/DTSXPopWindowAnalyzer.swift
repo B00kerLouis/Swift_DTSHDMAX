@@ -212,6 +212,14 @@ public struct DTSXPopWindowCensus: Sendable, Equatable, Codable {
     public let heightActivityTransitionFrameIndices: [Int]
     public let heightOnsetsPerSecond: Double
     public let silenceFormCounts: [String: Int]
+    /// Entropy-declaration form of every surveyed bed-audible zero-height
+    /// navigated frame (the TBH pop-window seam class), keyed by
+    /// `shared-zero` (compact `ncSegType = 1` whole-frame declaration),
+    /// `per-channel-linear-zero` (bridged per-plane width-0 declarations),
+    /// or `sticky-rice` (bridged Rice declarations over zero residuals).
+    /// This is the one-command arbitration signal for the seam-policy A/B
+    /// candidates and for the official-reference census.
+    public let zeroHeightSeamFormCounts: [String: Int]
     public let activeFrameCount: Int
     public let bedAudibleFrameCount: Int
     public let privateParseFailureFrameIndices: [Int]
@@ -239,6 +247,7 @@ public struct DTSXPopWindowCensusSummary: Sendable, Equatable, Codable {
     public let heightActivityTransitionCount: Int
     public let heightOnsetsPerSecond: Double
     public let silenceFormCounts: [String: Int]
+    public let zeroHeightSeamFormCounts: [String: Int]
     public let activeFrameCount: Int
     public let bedAudibleFrameCount: Int
     public let privateParseFailureCount: Int
@@ -348,6 +357,7 @@ public enum DTSXPopWindowAnalyzer {
                         census.heightActivityTransitionFrameIndices.count,
                     heightOnsetsPerSecond: census.heightOnsetsPerSecond,
                     silenceFormCounts: census.silenceFormCounts,
+                    zeroHeightSeamFormCounts: census.zeroHeightSeamFormCounts,
                     activeFrameCount: census.activeFrameCount,
                     bedAudibleFrameCount: census.bedAudibleFrameCount,
                     privateParseFailureCount:
@@ -388,6 +398,7 @@ public enum DTSXPopWindowAnalyzer {
         var heightOnsets: [Int] = []
         var heightTransitions: [Int] = []
         var silenceFormCounts: [String: Int] = [:]
+        var zeroHeightSeamFormCounts: [String: Int] = [:]
         var activeFrameCount = 0
         var bedAudibleFrameCount = 0
         var parseFailures: [Int] = []
@@ -438,6 +449,9 @@ public enum DTSXPopWindowAnalyzer {
             }
 
             silenceFormCounts[record.privateSilenceForm ?? "<active>", default: 0] += 1
+            if let seamForm = zeroHeightSeamForm(of: record) {
+                zeroHeightSeamFormCounts[seamForm, default: 0] += 1
+            }
             if record.privateIsActive { activeFrameCount += 1 }
             if record.bedIsAudible == true { bedAudibleFrameCount += 1 }
             if record.privateParseFailure != nil { parseFailures.append(frameIndex) }
@@ -482,6 +496,7 @@ public enum DTSXPopWindowAnalyzer {
                 ? Double(onsetsInsideWindow) / mapping.windowDurationSeconds
                 : 0,
             silenceFormCounts: silenceFormCounts,
+            zeroHeightSeamFormCounts: zeroHeightSeamFormCounts,
             activeFrameCount: activeFrameCount,
             bedAudibleFrameCount: bedAudibleFrameCount,
             privateParseFailureFrameIndices: parseFailures,
@@ -571,6 +586,33 @@ public enum DTSXPopWindowAnalyzer {
             current.privateParseFailure ?? "<none>"
         )
         return changes
+    }
+
+    /// Classifies the entropy-declaration form of a bed-audible zero-height
+    /// navigated frame (grammar timeline class `navigated-silence`): the
+    /// compact shared-parameter whole-frame zero declaration, the bridged
+    /// per-channel linear width-0 declarations, or the bridged sticky-Rice
+    /// declarations over all-zero residuals. Returns nil for every other
+    /// frame class.
+    private static func zeroHeightSeamForm(
+        of record: DTSXGrammarFrameRecord
+    ) -> String? {
+        guard record.privateSilenceForm == "navigated-silence",
+              let segments = record.privateEntropySegments,
+              !segments.isEmpty else { return nil }
+        if segments.allSatisfy({ $0.commonParameters }) {
+            return "shared-zero"
+        }
+        if segments.allSatisfy({ segment in
+            segment.riceCoding.allSatisfy { !$0 }
+                && segment.bitAllocations.allSatisfy { $0 == 0 }
+        }) {
+            return "per-channel-linear-zero"
+        }
+        if segments.contains(where: { $0.riceCoding.contains(true) }) {
+            return "sticky-rice"
+        }
+        return "mixed"
     }
 
     private static func maximumRiceBitAllocation(
