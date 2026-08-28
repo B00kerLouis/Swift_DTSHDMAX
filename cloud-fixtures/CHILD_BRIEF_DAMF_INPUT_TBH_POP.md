@@ -1,8 +1,9 @@
 # Child brief — DAMF input fix + TBH pops continued (2026-08-28T0124Z)
 
 ## Louis branch confirmation
-**Latest product tip before this run:** `cursor/dtsx-tbh-window-pop-continued-3541` @ `c3ccbdf` (PR #26 closed — HW insufficient).
-**New branch:** **`cursor/dtsx-damf-input-tbh-pop-3541`** off `main`, integrating useful commits from closed tips #25/#26.
+**Completed product tip:** **`cursor/dtsx-damf-input-tbh-pop-3541`** @ **`c7021d6`** (PR #27).
+Integrates closed #25/#26 work + DAMF audio fallback + stamped reference gate.
+**Prior tip:** `cursor/dtsx-tbh-window-pop-continued-3541` @ `c3ccbdf` (PR #26 closed).
 
 ## BLOCKER — Nature's Fury encode (must fix)
 Louis cannot test because:

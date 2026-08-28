@@ -5,10 +5,11 @@
 
 Cloud VM: **zero** `*.dtshd` / `*.mxf`. Silent skip forbidden.
 
-## Encode blocker (Louis Mac — not on cloud)
+## Encode blocker (Louis Mac — fixed on product tip)
 Nature's Fury DAMF manifest `Dolby_NaturesFury_.atmos` references missing
-`Dolby_NaturesFury_ADM_BWF.atmos.audio`. Next tip fixes input resolution.
-Until fixed, Louis can only test with pre-built Downloads encodes once pushed.
+`Dolby_NaturesFury_ADM_BWF.atmos.audio`. **Fixed** on `cursor/dtsx-damf-input-tbh-pop-3541`
+@ `c7021d6` (PR #27): unambiguous sibling CAF or ADM BWF WAVE fallback.
+Louis can re-encode NF from the DAMF folder; stamped uploads still required for cloud census.
 
 ## Required stamped names
 ```text

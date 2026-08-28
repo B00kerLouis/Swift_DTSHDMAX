@@ -21,6 +21,8 @@ cloud-fixtures/reference-streams/UPLOAD_MANIFEST_<STAMP>.txt
 - `00:00:21:06`–`00:00:24:00`
 - `00:02:51:00`–`00:02:56:00`
 
-## Parent recheck 2026-08-27T09:08Z
-Still **PARENT_UPLOAD_REQUIRED** (local explore: NOT_FOUND). Closed abandoned tips
-#20–#25; next child integrates useful #25 work then continues. See `UPLOAD_BLOCKED.md`.
+## Parent recheck 2026-08-28T02:10Z
+Still **PARENT_UPLOAD_REQUIRED** (no stamped binaries on cloud). Product test tip:
+`cursor/dtsx-damf-input-tbh-pop-3541` @ `c7021d6` (PR #27). NF DAMF encode blocker
+fixed on that tip; TBH HW pops + byte-exact census still need Louis test + uploads.
+See `UPLOAD_BLOCKED.md`.
