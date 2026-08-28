@@ -166,7 +166,11 @@ public enum AtmosMasterReader {
                 + "but \(audioURL.lastPathComponent) contains \(audioFormat.channelCount) channels"
             )
         }
-        let metadataText = try textFile(manifest.metadataURL)
+        let metadataURL = try resolveMetadataURL(
+            referenced: manifest.metadataURL,
+            manifestURL: manifestURL
+        )
+        let metadataText = try textFile(metadataURL)
         let metadata = try parseMetadata(metadataText)
         guard metadata.sampleRate == audioFormat.sampleRate else {
             throw DTSError.malformed(
@@ -176,7 +180,7 @@ public enum AtmosMasterReader {
         return AtmosMaster(
             version: manifest.version,
             manifestURL: manifestURL,
-            metadataURL: manifest.metadataURL,
+            metadataURL: metadataURL,
             audioURL: audioURL,
             offset: manifest.offset,
             firstFrameOfAction: manifest.ffoa,
@@ -191,14 +195,30 @@ public enum AtmosMasterReader {
 
     /// Resolves the manifest's `audio:` reference. Dolby tooling can re-export
     /// or rename the PCM container without rewriting the manifest (observed in
-    /// the field as a `…ADM_BWF.atmos.audio` reference beside differently
-    /// named media). When the referenced file is absent, exactly one sibling
-    /// CAF or (ADM BWF) WAVE file is accepted as the fallback and the
-    /// substitution is reported on stderr; zero or several candidates fail
-    /// with the directory inventory so the user repairs the manifest
-    /// deliberately. The user's input path is never changed silently.
+    /// the field as `…ADM_BWF.atmos.audio` / `…ADM_BWF.atmos.metadata`
+    /// references beside a package whose actual files carry the manifest's
+    /// own stem). When the referenced file is absent, the manifest-stem
+    /// sibling (`<manifest>.atmos.audio`, the DAMF package convention) is
+    /// preferred because it is deterministic even when several audio files
+    /// sit in the directory; otherwise exactly one sibling CAF or (ADM BWF)
+    /// WAVE file is accepted. Every substitution is reported on stderr; zero
+    /// or several candidates fail with the directory inventory so the user
+    /// repairs the manifest deliberately. The user's input path is never
+    /// changed silently.
     private static func resolveAudioURL(referenced: URL, manifestURL: URL) throws -> URL {
         if FileManager.default.fileExists(atPath: referenced.path) { return referenced }
+        let stemSibling = manifestURL.appendingPathExtension("audio")
+        if FileManager.default.fileExists(atPath: stemSibling.path),
+           let container = sniffAudioContainer(stemSibling) {
+            reportSubstitution(
+                manifestURL: manifestURL,
+                role: "audio",
+                referenced: referenced,
+                resolved: stemSibling,
+                kind: container == .caf ? "manifest-stem CAF" : "manifest-stem ADM BWF WAVE"
+            )
+            return stemSibling.standardizedFileURL
+        }
         let directory = manifestURL.deletingLastPathComponent()
         let siblings: [URL]
         do {
@@ -224,12 +244,13 @@ public enum AtmosMasterReader {
         switch candidates.count {
         case 1:
             let (fallback, container) = candidates[0]
-            let kind = container == .caf ? "CAF" : "ADM BWF WAVE"
-            FileHandle.standardError.write(Data(
-                ("note: DAMF manifest \(manifestURL.lastPathComponent) references missing audio "
-                 + "\(referenced.lastPathComponent); using the unambiguous sibling "
-                 + "\(kind) file \(fallback.lastPathComponent)\n").utf8
-            ))
+            reportSubstitution(
+                manifestURL: manifestURL,
+                role: "audio",
+                referenced: referenced,
+                resolved: fallback,
+                kind: container == .caf ? "unambiguous sibling CAF" : "unambiguous sibling ADM BWF WAVE"
+            )
             return fallback
         case 0:
             throw DTSError.io(
@@ -249,6 +270,90 @@ public enum AtmosMasterReader {
                 + inventory
             )
         }
+    }
+
+    /// Resolves the manifest's `metadata:` reference with the same policy as
+    /// the audio reference: the referenced file wins when present, then the
+    /// manifest-stem sibling (`<manifest>.atmos.metadata`, the DAMF package
+    /// convention), then exactly one sibling `*.metadata` file. The observed
+    /// field failure is a manifest whose `metadata:`/`audio:` pair both carry
+    /// a re-export stem (`…ADM_BWF.atmos.metadata`) that was never written
+    /// beside it — resolving only the audio reference still fails the encode
+    /// one step later, on this file.
+    private static func resolveMetadataURL(referenced: URL, manifestURL: URL) throws -> URL {
+        if FileManager.default.fileExists(atPath: referenced.path) { return referenced }
+        let stemSibling = manifestURL.appendingPathExtension("metadata")
+        if FileManager.default.fileExists(atPath: stemSibling.path) {
+            reportSubstitution(
+                manifestURL: manifestURL,
+                role: "metadata",
+                referenced: referenced,
+                resolved: stemSibling,
+                kind: "manifest-stem metadata"
+            )
+            return stemSibling.standardizedFileURL
+        }
+        let directory = manifestURL.deletingLastPathComponent()
+        let siblings: [URL]
+        do {
+            siblings = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        } catch {
+            throw DTSError.io(
+                "DAMF manifest \(manifestURL.lastPathComponent) references missing metadata "
+                + "\(referenced.path) and its directory cannot be listed: \(error.localizedDescription)"
+            )
+        }
+        let candidates = siblings.filter { sibling in
+            let values = try? sibling.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { return false }
+            return sibling.lastPathComponent.lowercased().hasSuffix(".metadata")
+        }.map(\.standardizedFileURL)
+        let inventory = siblings.map(\.lastPathComponent).joined(separator: ", ")
+        switch candidates.count {
+        case 1:
+            reportSubstitution(
+                manifestURL: manifestURL,
+                role: "metadata",
+                referenced: referenced,
+                resolved: candidates[0],
+                kind: "unambiguous sibling metadata"
+            )
+            return candidates[0]
+        case 0:
+            throw DTSError.io(
+                "DAMF manifest \(manifestURL.lastPathComponent) references metadata "
+                + "\(referenced.lastPathComponent) which does not exist, and no sibling "
+                + "*.metadata file exists in \(directory.path); directory contains: "
+                + (inventory.isEmpty ? "(nothing)" : inventory)
+            )
+        default:
+            throw DTSError.invalidArgument(
+                "DAMF manifest \(manifestURL.lastPathComponent) references metadata "
+                + "\(referenced.lastPathComponent) which does not exist, and the sibling "
+                + "metadata fallback is ambiguous — candidates: "
+                + candidates.map(\.lastPathComponent).joined(separator: ", ")
+                + ". Fix the manifest's metadata: field; directory contains: "
+                + inventory
+            )
+        }
+    }
+
+    private static func reportSubstitution(
+        manifestURL: URL,
+        role: String,
+        referenced: URL,
+        resolved: URL,
+        kind: String
+    ) {
+        FileHandle.standardError.write(Data(
+            ("note: DAMF manifest \(manifestURL.lastPathComponent) references missing \(role) "
+             + "\(referenced.lastPathComponent); using the \(kind) file "
+             + "\(resolved.lastPathComponent)\n").utf8
+        ))
     }
 
     /// Container sniff by magic bytes; returns nil for files that are neither
@@ -490,6 +595,21 @@ public enum AtmosMasterReader {
               bytesPerPacket == channels * 3 else {
             throw DTSError.unsupported(
                 "DAMF CAF must be packed 24-bit LPCM with one frame per packet"
+            )
+        }
+        // CAF LPCM format flags: bit 0 = float, bit 1 = little-endian. The
+        // interleaved readers (`AtmosSceneReader`, `DTS714Renderer`) decode
+        // packed 24-bit samples as little-endian integers, which matches
+        // every observed Dolby DAMF export (flags == 2). A big-endian or
+        // float CAF must fail here: reading it with the little-endian
+        // integer path would silently byte-swap every sample into
+        // near-full-scale wideband noise and the lossless layers would
+        // deliver that garble faithfully.
+        guard flags & 0x1 == 0, flags & 0x2 != 0 else {
+            throw DTSError.unsupported(
+                "DAMF CAF LPCM must be little-endian integer PCM "
+                + "(format flags 0x\(String(flags, radix: 16)); "
+                + "big-endian and float CAF audio are not supported)"
             )
         }
         guard audioData.1.isMultiple(of: UInt64(bytesPerPacket)) else {
