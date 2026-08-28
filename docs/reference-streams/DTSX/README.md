@@ -113,6 +113,6 @@ See `MANIFEST.json` in this directory for machine-readable handoff status.
 ## Uploaded materials
 
 The supplied files are classified and recorded in [`MATERIALS.md`](MATERIALS.md).
-They are stored in 90 MiB-or-smaller archive segments because GitHub LFS is
+They are stored in 10 MiB-or-smaller archive segments because GitHub LFS is
 unavailable for this repository. See [`ARCHIVES.md`](ARCHIVES.md) to restore
 the reference streams and the three-file Dolby Atmos Master Format package.
