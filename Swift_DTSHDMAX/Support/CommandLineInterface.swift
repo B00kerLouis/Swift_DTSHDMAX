@@ -1135,6 +1135,23 @@ public enum DTSHDMACommandLine {
                 )
             }
 
+        case "verify-tbh-window-render":
+            guard values.count == 1 else {
+                throw DTSError.invalidArgument(
+                    "verify-tbh-window-render requires INPUT_IAB.mxf"
+                )
+            }
+            let windowRenderReport = try DTSXWindowRenderAuditVerifier.verify(
+                iabURL: URL(fileURLWithPath: values[0])
+            )
+            print(try jsonString(windowRenderReport))
+            guard windowRenderReport.isRenderSafeInWindows else {
+                throw DTSError.malformed(
+                    "TBH window render audit failed: render guard or PCM continuity "
+                    + "inside the hardware-flagged timecode windows is not headroom-safe"
+                )
+            }
+
         case "write-dtsx-compatibility-bed-source":
             guard (2...3).contains(values.count) else {
                 throw DTSError.invalidArgument(
@@ -2588,6 +2605,7 @@ public enum DTSHDMACommandLine {
           hdmax analyze-dtsx-pop-windows INPUT.dtshd OUTPUT.json HH:MM:SS:FF-HH:MM:SS:FF... [MARGIN_ACCESS_UNITS] [--frame-rate VALUE]
           hdmax verify-dtsx-render-guard
           hdmax verify-dtsx-render-startup
+          hdmax verify-tbh-window-render INPUT_IAB.mxf
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
