@@ -257,9 +257,13 @@ shim (the tracked `main.swift`/`HDMAXFramework.swift` are the macOS
 
 ### Encoder-path identity (no-regression proof by construction and by byte)
 
-`git diff c7021d6..HEAD -- Swift_DTSHDMAX` touches exactly one file:
-`DTSObjects/AtmosMasterReader.swift` (input resolution; runs before any
-rendering). The TBH-length pop-window surrogate
+`git diff c7021d6..HEAD -- Swift_DTSHDMAX` touches exactly three files,
+none on the encode path: `DTSObjects/AtmosMasterReader.swift` (input
+resolution; runs before any rendering),
+`DTSValidation/DTSXWindowRenderAuditVerifier.swift` (a new read-only
+audit gate, below), and `Support/CommandLineInterface.swift` (only the
+`verify-tbh-window-render` subcommand wiring for that gate). The
+TBH-length pop-window surrogate
 (`encode-dtsx-control pop-window-motion:1992-2250:16031-16500`, 16,560
 content AUs, 24 fps) encodes to the **byte-identical** 40,080,172-byte
 stream, SHA-256
@@ -312,6 +316,36 @@ pop-window census (surrogate)  widths 11×258 / 11×469 constant,
 timecode mapping               AU 1994–2252 / 16033–16502 (= record)
 ```
 
+### The merged window render-audit gate (parent PR #28) and its repair
+
+This branch merges the parent's concurrent
+`cursor/tbh-pop-reinvestigate-3fca` tip, whose
+`verify-tbh-window-render INPUT_IAB.mxf` gate renders a real IMF IAB
+master through the production `DTS714Renderer` and reports PCM
+continuity plus render-guard engagement inside the two TBH windows —
+exactly the scheme-4 decision procedure, packaged as one command for the
+moment `QWER_TBH_IAB_<STAMP>.mxf` lands. Review of the merged gate found
+one dead check, repaired on this branch:
+
+* **Full-scale detection could never fire.** The gate counted samples
+  with magnitude ≥ `Int32.max`, but the rendered planes are clipped to
+  the signed-24-bit rails by the render guard
+  (`DTS714RenderGuard.positiveCeiling` = 8,388,607), so
+  `fullScaleSampleCount` was structurally zero and the
+  `isRenderSafeInWindows` verdict silently lost its headroom leg. The
+  gate now counts exact rail hits (`== 8_388_607 || == -8_388_608`),
+  the same convention every other full-scale census in the project uses
+  (`DTSHDMADeliveryArtifacts`, `DTSXNativeEncoder` closed loop).
+* The large-step threshold (`(1 << 30) / 480` ≈ 27% of full-scale
+  amplitude per adjacent-sample step, derived from Q30 unity over the
+  render-guard 480-sample hold) is kept as the parent designed it —
+  a deliberate coarse click detector — with its documentation corrected
+  to say what it actually measures, so a future reader does not mistake
+  it for a 1/480-of-full-scale bound.
+
+The gate needs the real TBH IAB master to run; it is corpus-blocked
+like scheme 9 and listed in the playbook below.
+
 ## One-command playbook once the uploads land
 
 ```bash
@@ -326,9 +360,12 @@ hdmax analyze-dtsx-pop-windows cloud-fixtures/reference-streams/tbh_<STAMP>.dtsh
 # Field-level diff of this branch's re-encode against the reference
 hdmax compare-dtsx-grammar-timelines REFERENCE.dtshd CANDIDATE.dtshd
 
-# Render-guard engagement over the real master's windows
+# Render-guard engagement + PCM continuity inside the real master's
+# windows (the merged, repaired PR #28 gate; scheme-4 decision procedure)
+hdmax verify-tbh-window-render QWER_TBH_IAB_<STAMP>.mxf
+
+# The full re-encode also prints the guard report (sourceRenderGuard):
 #   hdmax -i QWER_TBH_IAB_<STAMP>.mxf -o tbh-reencode.dtshd
-#   (sourceRenderGuard is printed in the encode report)
 
 # The Nature's Fury encode itself is restored by this branch:
 hdmax -i ".../Dolby_NaturesFury_DAMF/Dolby_NaturesFury_.atmos" -o Dolby_NaturesFury.dtshd

@@ -15,7 +15,9 @@ public struct DTSXWindowRenderAuditReport: Sendable, Equatable, Codable {
         public let maximumAdjacentSampleDeltaPlaneIndex: Int
         /// Sample index (programme-relative) of that jump.
         public let maximumAdjacentSampleDeltaSampleIndex: Int
-        /// Count of adjacent pairs whose delta exceeds one 1/480 full-scale step.
+        /// Count of adjacent pairs whose delta exceeds the large-step threshold
+        /// (Q30 unity gain divided by the render-guard 480-sample hold, about
+        /// 27% of the signed-24-bit amplitude per sample step).
         public let largeStepCount: Int
         /// Samples whose magnitude reaches the signed-24-bit ceiling inside the window.
         public let fullScaleSampleCount: Int
@@ -131,13 +133,17 @@ public enum DTSXWindowRenderAuditVerifier {
         var largeStepCount = 0
         var fullScaleSampleCount = 0
         var heightActiveSampleCount = 0
-        let fullScale = Int64(Int32.max)
 
         for planeIndex in rendered.planes.indices {
             let plane = rendered.planes[planeIndex]
             for sample in start..<end {
-                let magnitude = abs(Int64(plane[sample]))
-                if magnitude >= fullScale { fullScaleSampleCount += 1 }
+                // The rendered planes are clipped to the signed-24-bit rails by
+                // the render guard (`DTS714RenderGuard.positiveCeiling`), so a
+                // rail hit - not `Int32.max`, which no plane can ever reach -
+                // is the full-scale event this audit must count.
+                if plane[sample] == 8_388_607 || plane[sample] == -8_388_608 {
+                    fullScaleSampleCount += 1
+                }
                 if heightPlaneIndices.contains(planeIndex), plane[sample] != 0 {
                     heightActiveSampleCount += 1
                 }
