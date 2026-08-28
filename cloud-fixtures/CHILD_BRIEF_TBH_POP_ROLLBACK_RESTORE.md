@@ -1,5 +1,9 @@
 # Child brief — TBH pop rollback + reinvestigate (2026-08-28T09:00Z)
 
+## Completed product tip (2026-08-28T09:30Z)
+**Branch:** `cursor/dtsx-tbh-pop-rollback-restore-3541` @ `50c2f37` / **PR #30**
+Input stage = `main` @ `08b4478` (DAMF mutations deferred). TBH IAB MXF path for HW test.
+
 ## Louis request (mandatory)
 1. **Rollback baseline** to ~**2026-08-27 16:00** — Louis reports current tips (#27, #29) break **file input**; the ~16:00 baseline fixed **first-frame playback** and encodes normally.
 2. **Clean abandoned PRs**; **integrate** already-proven fixes only; **continue** TBH pop investigation.
