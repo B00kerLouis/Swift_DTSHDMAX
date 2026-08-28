@@ -50,6 +50,51 @@ public enum DTSXPrivateCodingMode: Sendable, Equatable, Codable {
     case terminalRiceOfficial
 }
 
+/// Selects how bed-audible access units with digital-zero height planes are
+/// declared when they sit as short gaps inside height-active runs — the
+/// hardware-flagged TBH pop-window seam class.
+///
+/// The two candidate policies are PCM-identical to the compact default (every
+/// declaration decodes the same zeros) and differ only in the entropy grammar
+/// a terminal sees across the seam. They exist for hardware A/B arbitration:
+/// the official TBH reference stream that would decide between them is not
+/// uploaded, so neither may replace ``compactZeroForms`` as the delivery
+/// default until either the reference census or terminal playback decides.
+public enum DTSXPrivateSeamPolicy: String, Sendable, Equatable, Codable, CaseIterable {
+    /// Delivery default (byte-identical to the proven PR #30 lineage): a
+    /// bed-audible zero-height access unit encodes as an ordinary navigated
+    /// frame whose all-zero segments use the corpus shared-parameter zero
+    /// declaration (`ncSegType = 1`, 52-byte frame).
+    case compactZeroForms = "compact"
+    /// Zero-gap bridging (deferred scheme 10 reading (ii)): short zero-height
+    /// gaps inside height-active runs keep per-channel declarations
+    /// (`ncSegType = 0`, signed-linear width 0 per plane) — the exact
+    /// per-plane zero grammar the official corpus exercises for silent
+    /// planes inside active frames — so the whole-frame shared-zero form
+    /// never flaps against dense frames mid-run.
+    case bridgedZeroGaps = "bridged-zero-gaps"
+    /// ABIT continuity across zero gaps (deferred scheme 11, gap-scoped):
+    /// bridged gap frames additionally declare straight Rice with the
+    /// flanking active frames' official ABIT per plane over all-zero
+    /// residuals (every quotient is 0, far below the bounded-reader maximum
+    /// of 22), so a plane's Rice parameter does not flap 0↔19 at up to
+    /// 12 Hz across isolated gaps.
+    case stickyRiceZeroGaps = "sticky-rice-zero-gaps"
+}
+
+/// Per-frame bridging declaration selected by
+/// ``DTSXPrivateStreamEncodingSession`` for bed-audible zero-height gap
+/// frames under a non-default ``DTSXPrivateSeamPolicy``.
+enum DTSXPrivateZeroGapBridging: Sendable, Equatable {
+    /// Suppress the shared-parameter all-zero segment form; declare each
+    /// plane with the per-channel signed-linear width-0 zero grammar.
+    case perChannelLinearZero
+    /// Suppress the shared form and declare planes whose parameter is
+    /// positive with straight Rice at that parameter (all-zero residuals);
+    /// parameter 0 keeps the per-channel linear width-0 declaration.
+    case stickyRice(parameters: [Int])
+}
+
 /// Encoder-side inverse of the recovered four-plane XLL-X frame grammar.
 ///
 /// The native profile uses independently selected fixed or adaptive prediction
@@ -77,6 +122,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
 
     private let allowsExperimentalHybridRice: Bool
     private let codingMode: DTSXPrivateCodingMode
+    /// Non-nil only on bed-audible zero-height gap frames selected by the
+    /// stream session under a non-default ``DTSXPrivateSeamPolicy``.
+    private let zeroGapBridging: DTSXPrivateZeroGapBridging?
 
     private enum EntropyMode: Equatable {
         case linear(width: Int)
@@ -116,6 +164,27 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     ) {
         self.allowsExperimentalHybridRice = allowsExperimentalHybridRice
         self.codingMode = codingMode
+        zeroGapBridging = nil
+    }
+
+    init(
+        allowsExperimentalHybridRice: Bool = false,
+        codingMode: DTSXPrivateCodingMode = .research,
+        zeroGapBridging: DTSXPrivateZeroGapBridging?
+    ) {
+        self.allowsExperimentalHybridRice = allowsExperimentalHybridRice
+        self.codingMode = codingMode
+        self.zeroGapBridging = zeroGapBridging
+    }
+
+    /// The official ABIT estimate a flanking active frame would declare for
+    /// `samples` under the delivery profile: mean-absolute-magnitude bit
+    /// width raised only as far as needed to keep every emitted unary
+    /// quotient at or below the official-corpus maximum. Used by the stream
+    /// session to derive sticky-Rice gap parameters from source samples.
+    static func officialZeroGapRiceParameter(_ samples: ArraySlice<Int32>) -> Int {
+        DTSXPrivateFrameEncoder(codingMode: .terminalRiceOfficial)
+            .officialRiceParameter(samples)
     }
 
     public func encode(
@@ -1338,12 +1407,26 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         }
         let start = segment * segmentSampleCount
         let end = start + segmentSampleCount
-        let modes = residualPlanes.enumerated().map { channel, plane in
+        var modes = residualPlanes.enumerated().map { channel, plane in
             let partASampleCount = segment == 0 ? adaptiveOrders[channel] : 0
             return selectEntropyMode(
                 plane[(start + partASampleCount)..<end],
                 initializationSamples: plane[start..<(start + partASampleCount)]
             )
+        }
+        // Sticky-Rice zero-gap bridging: a bridged gap frame declares each
+        // plane that was active on a flanking frame with that frame's Rice
+        // parameter over the gap's all-zero residuals. Zero residuals emit
+        // quotient 0 plus the parameter's remainder bits and decode to the
+        // identical zeros, so this is a declaration-continuity change only.
+        if case .stickyRice(let parameters) = zeroGapBridging {
+            for channel in 0..<Self.channelCount
+            where parameters.indices.contains(channel)
+                && parameters[channel] > 0
+                && (segment == 0 ? adaptiveOrders[channel] == 0 : true)
+                && residualPlanes[channel][start..<end].allSatisfy({ $0 == 0 }) {
+                modes[channel] = .rice(parameter: parameters[channel])
+            }
         }
         let partAModes = residualPlanes.enumerated().map { channel, plane in
             entropyMode(
@@ -1363,8 +1446,11 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // shape the corpus never pairs with an all-zero segment, so the
         // delivery profile emits the attested shared form. Restricted to
         // the delivery mode; research and hardware-isolation profiles keep
-        // their historical per-channel emission.
+        // their historical per-channel emission. Zero-gap bridging suppresses
+        // the shared form on the selected gap frames so their segments keep
+        // the per-channel declarations an active frame would carry.
         if codingMode == .terminalRiceOfficial,
+           zeroGapBridging == nil,
            segment == 0 ? adaptiveOrders.allSatisfy({ $0 == 0 }) : true,
            residualPlanes.allSatisfy({ plane in
                plane[start..<end].allSatisfy { $0 == 0 }
@@ -2574,6 +2660,11 @@ public struct DTSXPrivateStreamEncodingReport: Sendable, Equatable, Codable {
     public let encodedSourceSampleCount: Int
     public let primingSampleCount: Int
     public let frameCount: Int
+    /// Zero-gap seam policy the session encoded with; ``compactZeroForms``
+    /// (the delivery default) is byte-identical to the proven lineage.
+    public let seamPolicy: DTSXPrivateSeamPolicy
+    /// Access units the seam policy bridged (always 0 under the default).
+    public let bridgedZeroGapFrameCount: Int
     public let minimumFrameByteCount: Int
     public let maximumFrameByteCount: Int
     public let totalByteCount: Int
@@ -2656,13 +2747,29 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     /// height-only variant let a hot bed under silent startup heights
     /// nominate a partition the corpus pairs only with silence.
     private let startupWindowAccessUnitsAreFullySilent: Bool
+    /// The zero-gap seam policy this session was created with. The default
+    /// ``DTSXPrivateSeamPolicy/compactZeroForms`` is byte-identical to the
+    /// proven delivery lineage.
+    public let seamPolicy: DTSXPrivateSeamPolicy
+    /// Per-frame bridging declaration; non-nil only on bed-audible
+    /// zero-height access units inside short gaps flanked by height-active
+    /// access units, and only under a non-default ``seamPolicy``.
+    private let zeroGapBridgingByFrame: [DTSXPrivateZeroGapBridging?]
     private var measuredFrames: [DTSXPrivateMeasuredFrame?]
     private let lock = NSLock()
+
+    /// Longest run of consecutive bed-audible zero-height access units the
+    /// non-default seam policies bridge (125 ms at the 512-sample AU rate).
+    /// Longer height-silent stretches keep the compact delivery forms: the
+    /// bridging hypotheses target the up-to-12 Hz form flapping measured
+    /// inside the TBH pop windows, not ordinary quiet programme.
+    public static let maximumBridgedZeroGapRunLength = 3
 
     public init(
         source: DTS714PCMBuffer,
         maximumSourceFrameCount: Int? = nil,
-        codingMode: DTSXPrivateCodingMode = .terminalConservative
+        codingMode: DTSXPrivateCodingMode = .terminalConservative,
+        seamPolicy: DTSXPrivateSeamPolicy = .compactZeroForms
     ) throws {
         let requestedSampleCount: Int
         if let maximumSourceFrameCount {
@@ -2735,7 +2842,159 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         startupWindowAccessUnitsAreFullySilent = fullySilent[
             primingFrameCount..<min(primingFrameCount + 2, frameCount)
         ].allSatisfy { $0 }
+        self.seamPolicy = seamPolicy
+        zeroGapBridgingByFrame = try Self.zeroGapBridgingPlan(
+            seamPolicy: seamPolicy,
+            sourceHeightPlanes: sourceHeightPlanes,
+            routing: routing,
+            accessUnitIsFullySilent: fullySilent,
+            primingFrameCount: primingFrameCount,
+            frameCount: frameCount,
+            requestedSampleCount: requestedSampleCount
+        )
         measuredFrames = Array(repeating: nil, count: frameCount)
+    }
+
+    /// Number of access units the selected ``seamPolicy`` bridges.
+    public var bridgedZeroGapFrameCount: Int {
+        zeroGapBridgingByFrame.lazy.filter { $0 != nil }.count
+    }
+
+    /// Computes the per-frame bridging declarations for the non-default seam
+    /// policies. A frame is bridged exactly when it belongs to a maximal run
+    /// of at most ``maximumBridgedZeroGapRunLength`` consecutive bed-audible
+    /// zero-height access units whose immediate neighbors on both sides are
+    /// height-active source access units. Fully silent access units are never
+    /// bridged (their compact no-NAVI forms are corpus-attested), and priming
+    /// access units are never bridged.
+    private static func zeroGapBridgingPlan(
+        seamPolicy: DTSXPrivateSeamPolicy,
+        sourceHeightPlanes: [[Int32]],
+        routing: DTSXPrivateRouting,
+        accessUnitIsFullySilent: [Bool],
+        primingFrameCount: Int,
+        frameCount: Int,
+        requestedSampleCount: Int
+    ) throws -> [DTSXPrivateZeroGapBridging?] {
+        var plan = [DTSXPrivateZeroGapBridging?](repeating: nil, count: frameCount)
+        guard seamPolicy != .compactZeroForms else { return plan }
+
+        func heightPlaneSlices(at frameIndex: Int) -> [ArraySlice<Int32>] {
+            let sourceStart = (frameIndex - primingFrameCount)
+                * DTSXPrivateFrameEncoder.frameSampleCount
+            let available = max(0, min(
+                DTSXPrivateFrameEncoder.frameSampleCount,
+                requestedSampleCount - sourceStart
+            ))
+            guard available > 0 else { return sourceHeightPlanes.map { $0[0..<0] } }
+            return sourceHeightPlanes.map { $0[sourceStart..<(sourceStart + available)] }
+        }
+        var heightsActive = [Bool](repeating: false, count: frameCount)
+        for frameIndex in primingFrameCount..<frameCount {
+            heightsActive[frameIndex] = heightPlaneSlices(at: frameIndex)
+                .contains { slice in slice.contains { $0 != 0 } }
+        }
+
+        var frameIndex = primingFrameCount
+        while frameIndex < frameCount {
+            let isCandidateGapFrame = !accessUnitIsFullySilent[frameIndex]
+                && !heightsActive[frameIndex]
+            guard isCandidateGapFrame else {
+                frameIndex += 1
+                continue
+            }
+            var runEnd = frameIndex
+            while runEnd + 1 < frameCount,
+                  !accessUnitIsFullySilent[runEnd + 1],
+                  !heightsActive[runEnd + 1] {
+                runEnd += 1
+            }
+            let runLength = runEnd - frameIndex + 1
+            let hasLeadingActiveNeighbor = frameIndex - 1 >= primingFrameCount
+                && heightsActive[frameIndex - 1]
+            let hasTrailingActiveNeighbor = runEnd + 1 < frameCount
+                && heightsActive[runEnd + 1]
+            if runLength <= maximumBridgedZeroGapRunLength,
+               hasLeadingActiveNeighbor,
+               hasTrailingActiveNeighbor {
+                let bridging: DTSXPrivateZeroGapBridging
+                switch seamPolicy {
+                case .compactZeroForms:
+                    // Unreachable: the compact policy returned above.
+                    bridging = .perChannelLinearZero
+                case .bridgedZeroGaps:
+                    bridging = .perChannelLinearZero
+                case .stickyRiceZeroGaps:
+                    bridging = .stickyRice(parameters: try stickyRiceParameters(
+                        routing: routing,
+                        leadingSlices: heightPlaneSlices(at: frameIndex - 1),
+                        trailingSlices: heightPlaneSlices(at: runEnd + 1)
+                    ))
+                }
+                for gapFrame in frameIndex...runEnd {
+                    plan[gapFrame] = bridging
+                }
+            }
+            frameIndex = runEnd + 1
+        }
+        return plan
+    }
+
+    /// Derives the sticky-Rice gap parameters from the two flanking
+    /// height-active access units: per coded plane, the larger of the two
+    /// flanks' official delivery ABIT estimates (0 when the plane is silent
+    /// on both flanks, keeping the per-channel linear width-0 declaration).
+    /// The projected all-zero payload is bounded to the canonical mid-stream
+    /// NAVI width-11 segment capacity by demoting the smallest positive
+    /// parameter back to 0, so bridged gap frames can never nominate an
+    /// off-corpus navigation width.
+    private static func stickyRiceParameters(
+        routing: DTSXPrivateRouting,
+        leadingSlices: [ArraySlice<Int32>],
+        trailingSlices: [ArraySlice<Int32>]
+    ) throws -> [Int] {
+        func codedPlaneParameters(_ slices: [ArraySlice<Int32>]) throws -> [Int] {
+            let heightPlanes = slices.map { slice -> [Int32] in
+                var plane = Array(slice)
+                if plane.count < DTSXPrivateFrameEncoder.frameSampleCount {
+                    plane.append(contentsOf: repeatElement(
+                        0,
+                        count: DTSXPrivateFrameEncoder.frameSampleCount - plane.count
+                    ))
+                }
+                return plane
+            }
+            let codedPlanes = try routing.codedPlanes(fromHeightPlanes: heightPlanes)
+            return codedPlanes.map { plane in
+                plane.contains { $0 != 0 }
+                    ? DTSXPrivateFrameEncoder.officialZeroGapRiceParameter(plane[...])
+                    : 0
+            }
+        }
+        let leading = try codedPlaneParameters(leadingSlices)
+        let trailing = try codedPlaneParameters(trailingSlices)
+        var parameters = zip(leading, trailing).map(max)
+
+        // One 256-sample segment of all-zero residuals under Rice parameter
+        // k costs 256 * (k + 1) payload bits per plane. Keep the projected
+        // per-segment payload safely below the canonical width-11 segment
+        // capacity (2,048 bytes) including declaration overhead.
+        let segmentCapacityByteCount = 1_950
+        func projectedSegmentPayloadByteCount() -> Int {
+            parameters.reduce(0) { total, parameter in
+                parameter > 0
+                    ? total + (DTSXPrivateFrameEncoder.segmentSampleCount
+                        * (parameter + 1) + 7) / 8
+                    : total
+            }
+        }
+        while projectedSegmentPayloadByteCount() > segmentCapacityByteCount {
+            guard let smallest = parameters.indices
+                .filter({ parameters[$0] > 0 })
+                .min(by: { parameters[$0] < parameters[$1] }) else { break }
+            parameters[smallest] = 0
+        }
+        return parameters
     }
 
     public func encodeFrame(
@@ -2780,7 +3039,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         // DTS:X-aware decoder certifies it across active content.
         let encoder = DTSXPrivateFrameEncoder(
             allowsExperimentalHybridRice: codingMode == .research,
-            codingMode: codingMode
+            codingMode: codingMode,
+            zeroGapBridging: zeroGapBridgingByFrame[frameIndex]
         )
         // The reference terminal stream changes grammar at the first
         // non-priming silent 4x128 access unit: it uses code 16 with no NAVI.
@@ -3117,6 +3377,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
             encodedSourceSampleCount: encodedSourceSampleCount,
             primingSampleCount: XLLSyntax.coreCompatiblePrimingSampleCount,
             frameCount: frames.count,
+            seamPolicy: seamPolicy,
+            bridgedZeroGapFrameCount: bridgedZeroGapFrameCount,
             minimumFrameByteCount: minimumFrameByteCount == Int.max ? 0 : minimumFrameByteCount,
             maximumFrameByteCount: maximumFrameByteCount,
             totalByteCount: totalByteCount,

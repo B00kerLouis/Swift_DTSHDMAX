@@ -28,7 +28,8 @@ public enum DTSHDMACommandLine {
             let report = try DTSAutomaticEncoder.encode(
                 inputURL: options.input,
                 outputURL: options.output,
-                frameRateOverride: options.frameRate
+                frameRateOverride: options.frameRate,
+                privateXLLXSeamPolicy: options.privateSeamPolicy
             ) { completed, total in
                 progress(Int(completed), Int(total))
             }
@@ -392,11 +393,13 @@ public enum DTSHDMACommandLine {
             print("generated \(pcm.sampleCount) samples, \(layout.rawValue)")
 
         case "encode-dtsx-control":
-            let parsed = try parseFrameRateOption(values)
+            let seamParsed = try parsePrivateSeamModeOption(values)
+            let parsed = try parseFrameRateOption(seamParsed.arguments)
             let arguments = parsed.arguments
             guard arguments.count == 3, let frameCount = Int(arguments[2]) else {
                 throw DTSError.invalidArgument(
-                    "encode-dtsx-control requires PATTERN OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate VALUE"
+                    "encode-dtsx-control requires PATTERN OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate VALUE "
+                        + "[--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps]"
                 )
             }
             let frameRate = try DTSFrameRate.resolve(
@@ -409,7 +412,8 @@ public enum DTSHDMACommandLine {
                 frameCount: frameCount
             )
             let report = try DTSXNativeHDMAEncoder(
-                verificationPolicy: .integrated
+                verificationPolicy: .integrated,
+                privateXLLXSeamPolicy: seamParsed.seamPolicy
             ).encode(
                 source: source,
                 to: try productOutputURL(arguments[1]),
@@ -2450,6 +2454,45 @@ public enum DTSHDMACommandLine {
         }
     }
 
+    private static func dtsxPrivateSeamPolicy(
+        _ argument: String
+    ) throws -> DTSXPrivateSeamPolicy {
+        guard let policy = DTSXPrivateSeamPolicy(rawValue: argument.lowercased()) else {
+            throw DTSError.invalidArgument(
+                "private seam mode must be compact, bridged-zero-gaps, or sticky-rice-zero-gaps"
+            )
+        }
+        return policy
+    }
+
+    /// Strips one optional `--private-seam-mode VALUE` pair from diagnostic
+    /// command arguments, mirroring ``parseFrameRateOption``.
+    private static func parsePrivateSeamModeOption(
+        _ arguments: [String]
+    ) throws -> (arguments: [String], seamPolicy: DTSXPrivateSeamPolicy) {
+        var remaining: [String] = []
+        var seamPolicy: DTSXPrivateSeamPolicy?
+        var index = 0
+        while index < arguments.count {
+            if arguments[index] == "--private-seam-mode" {
+                guard seamPolicy == nil else {
+                    throw DTSError.invalidArgument(
+                        "--private-seam-mode may be specified only once"
+                    )
+                }
+                guard index + 1 < arguments.count else {
+                    throw DTSError.invalidArgument("--private-seam-mode requires a value")
+                }
+                seamPolicy = try dtsxPrivateSeamPolicy(arguments[index + 1])
+                index += 2
+            } else {
+                remaining.append(arguments[index])
+                index += 1
+            }
+        }
+        return (remaining, seamPolicy ?? .compactZeroForms)
+    }
+
     private static func dtsxCoreAssociationPolicy(
         _ argument: String
     ) throws -> XLLCoreAssociationPolicy {
@@ -2467,16 +2510,24 @@ public enum DTSHDMACommandLine {
 
     private static func parseAutomaticOptions(
         _ arguments: [String]
-    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?) {
+    ) throws -> (
+        input: URL,
+        output: URL,
+        frameRate: DTSFrameRate?,
+        privateSeamPolicy: DTSXPrivateSeamPolicy
+    ) {
         var input: URL?
         var output: URL?
         var frameRate: DTSFrameRate?
+        var privateSeamPolicy: DTSXPrivateSeamPolicy?
         var index = 0
         while index < arguments.count {
             let option = arguments[index]
-            guard option == "-i" || option == "-o" || option == "--frame-rate" else {
+            guard option == "-i" || option == "-o" || option == "--frame-rate"
+                    || option == "--private-seam-mode" else {
                 throw DTSError.invalidArgument(
-                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE]"
+                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE] "
+                        + "[--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps]"
                 )
             }
             guard index + 1 < arguments.count else {
@@ -2487,6 +2538,16 @@ public enum DTSHDMACommandLine {
                     throw DTSError.invalidArgument("--frame-rate may be specified only once")
                 }
                 frameRate = try DTSFrameRate(argument: arguments[index + 1])
+                index += 2
+                continue
+            }
+            if option == "--private-seam-mode" {
+                guard privateSeamPolicy == nil else {
+                    throw DTSError.invalidArgument(
+                        "--private-seam-mode may be specified only once"
+                    )
+                }
+                privateSeamPolicy = try dtsxPrivateSeamPolicy(arguments[index + 1])
                 index += 2
                 continue
             }
@@ -2506,7 +2567,7 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate)
+        return (input, output, frameRate, privateSeamPolicy ?? .compactZeroForms)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2522,7 +2583,16 @@ public enum DTSHDMACommandLine {
         Native Swift 6 DTS HDMA / DTS:X HDMA research encoder
 
         Primary usage:
-          hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+          hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60] [--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps]
+
+        Private seam mode (DTS:X only; hardware A/B for the TBH pop windows):
+          compact                 delivery default, byte-identical to the proven lineage
+          bridged-zero-gaps       short bed-audible zero-height gaps inside height-active
+                                  runs keep per-channel zero declarations instead of the
+                                  shared-parameter whole-frame zero form (PCM-identical)
+          sticky-rice-zero-gaps   bridged gaps additionally declare straight Rice with the
+                                  flanking frames' ABIT over all-zero residuals, removing
+                                  per-plane ABIT flapping across the gap (PCM-identical)
 
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA
@@ -2567,7 +2637,7 @@ public enum DTSHDMACommandLine {
           hdmax sha256 INPUT
           hdmax md5 INPUT
           hdmax generate stereo|5.1|7.1 FRAME_COUNT OUTPUT.wav
-          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk|pop-window-motion:STARTAU-ENDAU[:STARTAU-ENDAU...] OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
+          hdmax encode-dtsx-control silence|impulse:CHANNEL|frame-edge:CHANNEL|sine:CHANNEL|fullscale:CHANNEL|all-sine|channel-walk|pop-window-motion:STARTAU-ENDAU[:STARTAU-ENDAU...] OUTPUT.dtshd PCM_FRAME_COUNT --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60 [--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps]
           hdmax compare EXPECTED.wav ACTUAL.wav
           hdmax compare-padded EXPECTED.wav PADDED_ACTUAL.wav
           hdmax render-7.1-to-5.1 INPUT.wav OUTPUT.wav

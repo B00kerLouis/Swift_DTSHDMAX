@@ -33,6 +33,11 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let publicXLLCodingMode: XLLCodingMode
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
+    /// Zero-gap seam policy used by the private XLL-X layer. The default
+    /// ``DTSXPrivateSeamPolicy/compactZeroForms`` is byte-identical to the
+    /// proven delivery lineage; the alternatives are hardware A/B candidates
+    /// for the TBH pop-window seam classes.
+    public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
     public let sourceGuardPolicy: DTSXSourceGuardPolicy
     /// Encoder-boundary composite-headroom conditioning of the 7.1.4 source.
     /// Present whenever ``sourceGuardPolicy`` is ``DTSXSourceGuardPolicy/delivery``;
@@ -141,6 +146,11 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     /// production per-frame search.
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
+    /// Zero-gap seam policy handed to the private XLL-X session. The default
+    /// keeps delivery byte-identical to the proven lineage; the non-default
+    /// policies are explicit hardware A/B candidates and never engage
+    /// implicitly.
+    public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
     public let sourceGuardPolicy: DTSXSourceGuardPolicy
 
     public init(
@@ -167,6 +177,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         // past that bound on heavy-tailed height residuals, which terminal
         // bounded readers misparse into full-scale pops.
         privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRiceOfficial,
+        privateXLLXSeamPolicy: DTSXPrivateSeamPolicy = .compactZeroForms,
         sourceGuardPolicy: DTSXSourceGuardPolicy = .delivery
     ) {
         self.verificationPolicy = verificationPolicy
@@ -174,6 +185,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         self.publicXLLCodingMode = publicXLLCodingMode
         self.publicXLLForcedSegmentCount = publicXLLForcedSegmentCount
         self.privateXLLXCodingMode = privateXLLXCodingMode
+        self.privateXLLXSeamPolicy = privateXLLXSeamPolicy
         self.sourceGuardPolicy = sourceGuardPolicy
     }
 
@@ -191,7 +203,8 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         ))
         let privateSession = try DTSXPrivateStreamEncodingSession(
             source: effectiveSource,
-            codingMode: privateXLLXCodingMode
+            codingMode: privateXLLXCodingMode,
+            seamPolicy: privateXLLXSeamPolicy
         )
         let (compatibilityBed, foldDiagnostics) =
             try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
@@ -249,6 +262,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLCodingMode: publicXLLCodingMode,
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
+            privateXLLXSeamPolicy: privateXLLXSeamPolicy,
             sourceGuardPolicy: sourceGuardPolicy,
             sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
@@ -302,7 +316,8 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         ))
         let privateSession = try DTSXPrivateStreamEncodingSession(
             source: effectiveSource,
-            codingMode: privateXLLXCodingMode
+            codingMode: privateXLLXCodingMode,
+            seamPolicy: privateXLLXSeamPolicy
         )
         let (compatibilityBed, foldDiagnostics) =
             try DTS714CompatibilityBedRenderer.renderWithDiagnostics(effectiveSource)
@@ -391,6 +406,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
             publicXLLCodingMode: publicXLLCodingMode,
             publicXLLForcedSegmentCount: publicXLLForcedSegmentCount,
             privateXLLXCodingMode: privateXLLXCodingMode,
+            privateXLLXSeamPolicy: privateXLLXSeamPolicy,
             sourceGuardPolicy: sourceGuardPolicy,
             sourceRenderGuard: sourceGuard,
             sourceSampleCount: effectiveSource.sampleCount,
