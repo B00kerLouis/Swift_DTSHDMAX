@@ -21,7 +21,6 @@ cloud-fixtures/reference-streams/UPLOAD_MANIFEST_<STAMP>.txt
 - `00:00:21:06`–`00:00:24:00`
 - `00:02:51:00`–`00:02:56:00`
 
-## Parent recheck 2026-08-28T09:30Z
-**PARENT_UPLOAD_REQUIRED** — continue segmented archive upload (DAMF parts 006–045,
-TBH reference parts 000–056). Product test tip:
-`cursor/dtsx-tbh-pop-rollback-restore-3541` @ `50c2f37` (PR #30). See `UPLOAD_BLOCKED.md`.
+## Parent recheck 2026-08-28T10:00Z
+**PARENT_UPLOAD_REQUIRED** — continue segmented archive upload. Product test tip:
+`cursor/dtsx-tbh-pop-window-fix-3541` @ `22ee754` (PR #31). See `UPLOAD_BLOCKED.md`.

@@ -1,6 +1,9 @@
 # Child brief — TBH pop window fix continued (2026-08-28T09:55Z)
 
-## Parent status
+## Product test tip (2026-08-28T10:00Z)
+**Branch:** `cursor/dtsx-tbh-pop-window-fix-3541` @ `22ee754` / **PR #31**
+Opt-in seam modes: `--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps`
+Default mode byte-identical to PR #30.
 - **Abandoned forks cleaned.** Remote branches remaining: `main`, `cursor/cloud-materials-3541` (#21), `cursor/dtsx-tbh-pop-rollback-restore-3541` (#30).
 - **Product base:** **`cursor/dtsx-tbh-pop-rollback-restore-3541` @ `50c2f37`** (PR #30). Input stage = `main` @ `08b4478`. All gates green on surrogate; **hardware pops NOT fixed**.
 - **New branch (mandatory):** **`cursor/dtsx-tbh-pop-window-fix-3541`** off PR #30 tip. Do NOT commit on main.
