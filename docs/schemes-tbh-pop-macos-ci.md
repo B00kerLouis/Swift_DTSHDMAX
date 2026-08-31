@@ -78,5 +78,7 @@ If still pops, try sticky; if all three pop → upload IAB for render audit.
 
 ## CI
 
-Workflow: `.github/workflows/macos-build.yml`
+Workflow: `.github/workflows/macos-build.yml` (`macos-15`, Xcode 16+)
 Command: `xcodebuild -project Swift_DTSHDMAX.xcodeproj -scheme "Build ALL" -configuration Release CODE_SIGNING_ALLOWED=NO`
+
+First push on `macos-14` failed: project `objectVersion = 77` needs Xcode 16; runner was upgraded to `macos-15`.
