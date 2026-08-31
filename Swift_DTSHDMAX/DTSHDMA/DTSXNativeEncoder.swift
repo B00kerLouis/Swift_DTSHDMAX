@@ -150,6 +150,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     /// default is ``bridgedZeroGaps``; ``compactZeroForms`` and
     /// ``stickyRiceZeroGaps`` remain explicit hardware A/B modes.
     public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
+    public let sourceGuardPolicy: DTSXSourceGuardPolicy
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,

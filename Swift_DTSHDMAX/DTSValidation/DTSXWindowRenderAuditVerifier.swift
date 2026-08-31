@@ -67,9 +67,9 @@ public enum DTSXWindowRenderAuditVerifier {
             maximumGainStepQ30: 0,
             residualClippedSampleCount: 0
         )
-        let rendered = try DTS714Renderer.render(iab: iab) { report in
+        let rendered = try DTS714Renderer.render(iab: iab, guardReport: { report in
             guardReport = report
-        }
+        })
 
         let mappings = try windowArguments.map { argument in
             try DTSXPopWindowMapper.mapping(
