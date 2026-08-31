@@ -9,8 +9,8 @@ Cloud VM: **zero** stamped `*.dtshd` / `*.mxf` in `reference-streams/`. Silent s
 - `Dolby_NaturesFury_DAMF.tar.gz.part-000`–`005` present; **parts 006–045 missing**
 - `TBH-reference-streams.tar.gz.part-*` — **all 57 parts missing**
 
-Product test tip: `cursor/dtsx-tbh-pop-window-fix-3541` @ `22ee754` (PR #31).
-Louis A/B: `--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps`.
+Product test tip: `cursor/dtsx-tbh-pop-macos-ci-3541` @ `2f12b6c` (PR #32).
+Default seam: bridged-zero-gaps; A/B: `--private-seam-mode compact|sticky-rice-zero-gaps`.
 
 ## Required stamped names
 ```text

@@ -21,6 +21,6 @@ cloud-fixtures/reference-streams/UPLOAD_MANIFEST_<STAMP>.txt
 - `00:00:21:06`–`00:00:24:00`
 - `00:02:51:00`–`00:02:56:00`
 
-## Parent recheck 2026-08-28T10:00Z
+## Parent recheck 2026-08-31T01:48Z
 **PARENT_UPLOAD_REQUIRED** — continue segmented archive upload. Product test tip:
-`cursor/dtsx-tbh-pop-window-fix-3541` @ `22ee754` (PR #31). See `UPLOAD_BLOCKED.md`.
+`cursor/dtsx-tbh-pop-macos-ci-3541` @ `2f12b6c` (PR #32). See `UPLOAD_BLOCKED.md`.
