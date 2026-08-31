@@ -60,8 +60,7 @@ public struct DTSAutomaticEncodeReport: Sendable, Equatable, Codable {
     public let encodedProduct: DTSEncodedProduct
     public let frameRate: DTSFrameRate
     /// Zero-gap seam policy applied to the private XLL-X layer of a DTS:X
-    /// encode. Always ``DTSXPrivateSeamPolicy/compactZeroForms`` unless the
-    /// caller explicitly selected a hardware A/B candidate; DTS HDMA encodes
+    /// encode. Delivery default is ``bridgedZeroGaps``. DTS HDMA encodes
     /// record the requested value but have no private layer to apply it to.
     public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
     public let objectMetadataDisposition: DTSObjectMetadataDisposition
@@ -96,7 +95,7 @@ public enum DTSAutomaticEncoder {
         inputURL: URL,
         outputURL: URL,
         frameRateOverride: DTSFrameRate? = nil,
-        privateXLLXSeamPolicy: DTSXPrivateSeamPolicy = .compactZeroForms,
+        privateXLLXSeamPolicy: DTSXPrivateSeamPolicy = .bridgedZeroGaps,
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws -> DTSAutomaticEncodeReport {
         let progressTotal = Int64(1_000)

@@ -2490,7 +2490,7 @@ public enum DTSHDMACommandLine {
                 index += 1
             }
         }
-        return (remaining, seamPolicy ?? .compactZeroForms)
+        return (remaining, seamPolicy ?? .bridgedZeroGaps)
     }
 
     private static func dtsxCoreAssociationPolicy(
@@ -2567,7 +2567,7 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate, privateSeamPolicy ?? .compactZeroForms)
+        return (input, output, frameRate, privateSeamPolicy ?? .bridgedZeroGaps)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2585,14 +2585,15 @@ public enum DTSHDMACommandLine {
         Primary usage:
           hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60] [--private-seam-mode compact|bridged-zero-gaps|sticky-rice-zero-gaps]
 
-        Private seam mode (DTS:X only; hardware A/B for the TBH pop windows):
-          compact                 delivery default, byte-identical to the proven lineage
-          bridged-zero-gaps       short bed-audible zero-height gaps inside height-active
-                                  runs keep per-channel zero declarations instead of the
-                                  shared-parameter whole-frame zero form (PCM-identical)
-          sticky-rice-zero-gaps   bridged gaps additionally declare straight Rice with the
-                                  flanking frames' ABIT over all-zero residuals, removing
-                                  per-plane ABIT flapping across the gap (PCM-identical)
+        Private seam mode (DTS:X only; TBH pop-window seam control):
+          bridged-zero-gaps       delivery default — short bed-audible zero-height
+                                  gaps inside height-active runs keep per-channel
+                                  zero declarations (PCM-identical; suppresses
+                                  shared-zero form flapping)
+          compact                 legacy A/B rollback to the PR #30/#31 lineage
+          sticky-rice-zero-gaps   bridged gaps additionally declare straight Rice
+                                  with the flanking frames' ABIT over all-zero
+                                  residuals (PCM-identical)
 
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA

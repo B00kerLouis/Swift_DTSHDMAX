@@ -33,10 +33,10 @@ public struct DTSXNativeEncodingReport: Sendable, Equatable, Codable {
     public let publicXLLCodingMode: XLLCodingMode
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
-    /// Zero-gap seam policy used by the private XLL-X layer. The default
-    /// ``DTSXPrivateSeamPolicy/compactZeroForms`` is byte-identical to the
-    /// proven delivery lineage; the alternatives are hardware A/B candidates
-    /// for the TBH pop-window seam classes.
+    /// Zero-gap seam policy used by the private XLL-X layer. Delivery default
+    /// is ``bridgedZeroGaps`` (suppresses shared-zero form flaps on short
+    /// bed-audible gaps). ``compactZeroForms`` restores the PR #30/#31
+    /// lineage bytes for hardware A/B rollback.
     public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
     public let sourceGuardPolicy: DTSXSourceGuardPolicy
     /// Encoder-boundary composite-headroom conditioning of the 7.1.4 source.
@@ -146,12 +146,10 @@ public struct DTSXNativeHDMAEncoder: Sendable {
     /// production per-frame search.
     public let publicXLLForcedSegmentCount: Int?
     public let privateXLLXCodingMode: DTSXPrivateCodingMode
-    /// Zero-gap seam policy handed to the private XLL-X session. The default
-    /// keeps delivery byte-identical to the proven lineage; the non-default
-    /// policies are explicit hardware A/B candidates and never engage
-    /// implicitly.
+    /// Zero-gap seam policy handed to the private XLL-X session. Delivery
+    /// default is ``bridgedZeroGaps``; ``compactZeroForms`` and
+    /// ``stickyRiceZeroGaps`` remain explicit hardware A/B modes.
     public let privateXLLXSeamPolicy: DTSXPrivateSeamPolicy
-    public let sourceGuardPolicy: DTSXSourceGuardPolicy
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
@@ -177,7 +175,7 @@ public struct DTSXNativeHDMAEncoder: Sendable {
         // past that bound on heavy-tailed height residuals, which terminal
         // bounded readers misparse into full-scale pops.
         privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRiceOfficial,
-        privateXLLXSeamPolicy: DTSXPrivateSeamPolicy = .compactZeroForms,
+        privateXLLXSeamPolicy: DTSXPrivateSeamPolicy = .bridgedZeroGaps,
         sourceGuardPolicy: DTSXSourceGuardPolicy = .delivery
     ) {
         self.verificationPolicy = verificationPolicy

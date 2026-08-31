@@ -57,21 +57,23 @@ public enum DTSXPrivateCodingMode: Sendable, Equatable, Codable {
 /// The two candidate policies are PCM-identical to the compact default (every
 /// declaration decodes the same zeros) and differ only in the entropy grammar
 /// a terminal sees across the seam. They exist for hardware A/B arbitration:
-/// the official TBH reference stream that would decide between them is not
-/// uploaded, so neither may replace ``compactZeroForms`` as the delivery
-/// default until either the reference census or terminal playback decides.
+/// Delivery default is ``bridgedZeroGaps``: short bed-audible zero-height
+/// gaps keep per-channel zero declarations so the stream does not flap
+/// 52-byte shared-zero forms against dense height-active frames inside the
+/// TBH pop windows. ``compactZeroForms`` remains available for A/B rollback
+/// to the PR #30/#31 lineage bytes.
 public enum DTSXPrivateSeamPolicy: String, Sendable, Equatable, Codable, CaseIterable {
-    /// Delivery default (byte-identical to the proven PR #30 lineage): a
-    /// bed-audible zero-height access unit encodes as an ordinary navigated
-    /// frame whose all-zero segments use the corpus shared-parameter zero
-    /// declaration (`ncSegType = 1`, 52-byte frame).
+    /// Legacy A/B rollback (PR #30/#31 default): a bed-audible zero-height
+    /// access unit encodes as an ordinary navigated frame whose all-zero
+    /// segments use the corpus shared-parameter zero declaration
+    /// (`ncSegType = 1`, 52-byte frame). Hardware still pops on this form.
     case compactZeroForms = "compact"
-    /// Zero-gap bridging (deferred scheme 10 reading (ii)): short zero-height
-    /// gaps inside height-active runs keep per-channel declarations
-    /// (`ncSegType = 0`, signed-linear width 0 per plane) — the exact
-    /// per-plane zero grammar the official corpus exercises for silent
-    /// planes inside active frames — so the whole-frame shared-zero form
-    /// never flaps against dense frames mid-run.
+    /// Delivery default (scheme 10): short zero-height gaps inside
+    /// height-active runs keep per-channel declarations (`ncSegType = 0`,
+    /// signed-linear width 0 per plane) — the exact per-plane zero grammar
+    /// the official corpus exercises for silent planes inside active frames —
+    /// so the whole-frame shared-zero form never flaps against dense frames
+    /// mid-run. PCM-identical to compact; blast radius is the bridged gaps.
     case bridgedZeroGaps = "bridged-zero-gaps"
     /// ABIT continuity across zero gaps (deferred scheme 11, gap-scoped):
     /// bridged gap frames additionally declare straight Rice with the
@@ -2660,10 +2662,10 @@ public struct DTSXPrivateStreamEncodingReport: Sendable, Equatable, Codable {
     public let encodedSourceSampleCount: Int
     public let primingSampleCount: Int
     public let frameCount: Int
-    /// Zero-gap seam policy the session encoded with; ``compactZeroForms``
-    /// (the delivery default) is byte-identical to the proven lineage.
+    /// Zero-gap seam policy the session encoded with. Delivery default is
+    /// ``bridgedZeroGaps``; ``compactZeroForms`` is the legacy A/B rollback.
     public let seamPolicy: DTSXPrivateSeamPolicy
-    /// Access units the seam policy bridged (always 0 under the default).
+    /// Access units the seam policy bridged (0 under ``compactZeroForms``).
     public let bridgedZeroGapFrameCount: Int
     public let minimumFrameByteCount: Int
     public let maximumFrameByteCount: Int
@@ -2747,9 +2749,8 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
     /// height-only variant let a hot bed under silent startup heights
     /// nominate a partition the corpus pairs only with silence.
     private let startupWindowAccessUnitsAreFullySilent: Bool
-    /// The zero-gap seam policy this session was created with. The default
-    /// ``DTSXPrivateSeamPolicy/compactZeroForms`` is byte-identical to the
-    /// proven delivery lineage.
+    /// The zero-gap seam policy this session was created with. Delivery
+    /// default is ``bridgedZeroGaps``; ``compactZeroForms`` is A/B rollback.
     public let seamPolicy: DTSXPrivateSeamPolicy
     /// Per-frame bridging declaration; non-nil only on bed-audible
     /// zero-height access units inside short gaps flanked by height-active
@@ -2769,7 +2770,7 @@ public final class DTSXPrivateStreamEncodingSession: @unchecked Sendable {
         source: DTS714PCMBuffer,
         maximumSourceFrameCount: Int? = nil,
         codingMode: DTSXPrivateCodingMode = .terminalConservative,
-        seamPolicy: DTSXPrivateSeamPolicy = .compactZeroForms
+        seamPolicy: DTSXPrivateSeamPolicy = .bridgedZeroGaps
     ) throws {
         let requestedSampleCount: Int
         if let maximumSourceFrameCount {
