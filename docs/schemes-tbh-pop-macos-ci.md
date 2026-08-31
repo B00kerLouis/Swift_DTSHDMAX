@@ -82,3 +82,5 @@ Workflow: `.github/workflows/macos-build.yml` (`macos-15`, Xcode 16+)
 Command: `xcodebuild -project Swift_DTSHDMAX.xcodeproj -scheme "Build ALL" -configuration Release CODE_SIGNING_ALLOWED=NO`
 
 First push on `macos-14` failed: project `objectVersion = 77` needs Xcode 16; runner was upgraded to `macos-15`.
+Compile failures on tip `2f12b6c` fixed in `e347b16` (`sourceGuardPolicy` + `guardReport:` label).
+**Green:** tip `e347b16` — all CI checks passed (2026-08-31T01:54Z).
