@@ -131,4 +131,7 @@ research license and not an OSI open-source license. Downstream permission is
 limited to noncommercial encoding research with the Swift implementation,
 education, and experimental validation. Commercial use, reverse engineering,
 and non-Swift translation or reimplementation require separate written
-authorization. See [LICENSE](LICENSE) and the [full research license](LICENSES/LicenseRef-Swift-DTSHDMAX-Research.txt).
+authorization. Commercial use also requires prior written authorization from
+DTS, Inc., its parent company Xperi Inc., and B00kerLouis, each for the rights it
+controls. See
+[LICENSE](LICENSE) and the [full research license](LICENSES/LicenseRef-Swift-DTSHDMAX-Research.txt).

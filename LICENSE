@@ -25,12 +25,27 @@ exceptions in that license. This is a source-available research license, not an
 OSI open-source license. It does not restrict the rights holder's own use or
 separately authorized uses.
 
+No commercial permission is granted by this license. Any person or organization
+that wishes to use the Encoder for commercial activity must obtain separate
+written commercial authorization in advance from DTS, Inc., its parent company
+Xperi Inc., and B00kerLouis, each to the extent of the rights that party owns
+or controls.
+Authorization from one party does not replace authorization from the others.
+
 ## Third-party material
 
-This grant covers only rights controlled by B00kerLouis. Third-party code,
-documentation, trademarks, patents, media, format rights, certification rights,
-and other material remain under their own applicable terms and are not granted
-or relicensed by this project.
+This grant covers only rights controlled by B00kerLouis. DTS, Inc. and its parent
+company Xperi Inc. retain all independent commercial, copyright, patent, trademark,
+certification, licensing, and enforcement rights they own or control. Third-party
+code, documentation, media, and other material remain under their own applicable
+terms and are not granted or relicensed by this project. This notice does not
+make DTS, Inc. or Xperi Inc. a licensor of B00kerLouis's code, state that either
+company owns that code, or imply endorsement by either company.
+
+B00kerLouis's own use, modification, licensing, distribution, and commercialization
+of B00kerLouis's work are expressly exempt from the downstream restrictions.
+Any separate authorization from B00kerLouis grants only rights controlled by
+B00kerLouis and does not grant DTS or Xperi rights.
 
 The full terms are in
 [`LICENSES/LicenseRef-Swift-DTSHDMAX-Research.txt`](LICENSES/LicenseRef-Swift-DTSHDMAX-Research.txt).

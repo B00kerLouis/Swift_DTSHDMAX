@@ -1,4 +1,4 @@
-Swift DTS-HD MA / DTS:X Encoder Research License, version 1.0
+Swift DTS-HD MA / DTS:X Encoder Research License, version 1.1
 SPDX identifier: LicenseRef-Swift-DTSHDMAX-Research
 Effective date: 2026-10-08
 Copyright (c) 2026 B00kerLouis.
@@ -13,6 +13,12 @@ forms and protected derivatives of that implementation.
 "Rights holder" means B00kerLouis and any other owner only with respect to that
 owner's contributions. "You" means a downstream recipient relying on this
 license, rather than a rights holder exercising rights in their own work.
+
+"DTS Parties" means DTS, Inc., its parent company Xperi Inc., and their
+respective successors and controlled affiliates, but only with respect to rights
+each party owns or controls. Neither DTS, Inc. nor Xperi Inc. is made a licensor
+of B00kerLouis's code by this document, and neither is deemed to endorse the
+Encoder.
 
 Third-party code, documentation, media, and other material are excluded. Their
 applicable licenses and restrictions are independent of this license. This
@@ -32,10 +38,21 @@ evaluate for deployment, or support a commercial product or service. Absence
 of a direct charge does not by itself make a use noncommercial. Separate written
 authorization from the applicable rights holder is required for other uses.
 
+This section grants no commercial permission. In particular, it does not
+authorize production encoding, commercial integration, paid encoding or hosting,
+use in a commercial product or service, or commercial distribution. Anyone who
+wishes to use the Encoder for any commercial activity must first obtain separate
+written commercial authorization from DTS, Inc., its parent company Xperi Inc.,
+and B00kerLouis, each to the extent of the rights that party owns or controls.
+Authorization from one party does not replace authorization from the others, and
+no commercial use may rely on this research license while that authorization is
+pending.
+
 3. Downstream restrictions
 
-Unless separately authorized in writing by the applicable rights holder, you
-may not:
+Unless separately authorized in writing by all applicable rights holders,
+including DTS, Inc., its parent company Xperi Inc., and B00kerLouis where their
+respective rights are implicated, you may not:
 
 (a) use, sell, license, host or distribute the Encoder or protected derivatives
     for a commercial purpose, including commercial encoding services,
@@ -67,14 +84,21 @@ This license does not change ownership or licensing of input media, research
 results or encoded output merely because the Encoder processed or produced
 them. That clarification does not permit commercial operation of the Encoder.
 
-5. Rights holder and separate authorization
+5. DTS, Xperi, and original-author rights
 
-These restrictions apply to downstream recipients. They do not restrict a
-rights holder's use, modification, licensing, distribution or commercialization
-of their own work. A rights holder may grant separate written permission,
-including permission for commercial use or a non-Swift port, within the rights
-that holder controls. Source visibility does not grant such permission to
-downstream recipients.
+DTS, Inc. and its parent company Xperi Inc. retain all independent commercial,
+copyright, patent, trademark, format, certification, licensing, and enforcement
+rights they own or control. Nothing in this license grants a DTS or Xperi patent,
+trademark, format, certification, endorsement, or other commercial right. The
+requirement that a commercial user obtain separate written authorization from
+DTS, Inc. and Xperi Inc. is a condition of B00kerLouis's permission; it is not a
+license, ownership statement, or endorsement by either company.
+
+These restrictions do not restrict B00kerLouis's own use, modification,
+licensing, distribution, or commercialization of B00kerLouis's work. B00kerLouis
+may grant separate written permission within the rights B00kerLouis controls,
+including permission for commercial use or a non-Swift port. Such permission
+does not grant rights controlled by DTS, Inc., Xperi Inc., or any other party.
 
 6. Third-party rights
 
