@@ -1712,17 +1712,16 @@ private enum DTSXPrivateCompactSilenceDecoder {
               prediction.crc.isValid,
               let navigation = try? ast.parseNavigation(segmentCount: segmentCount),
               navigation.crcIsValid,
-              navigation.bitWidth == 8,
               navigation.segmentByteCounts == [2, 1, 1, 1],
-              navigation.trailingFrameByteCount == 3 else {
+              (2...7).contains(navigation.trailingFrameByteCount) else {
             return nil
         }
         let entropyStartByteOffset = prediction.boundaryByteOffset + 2
             + navigation.serializedByteCount
-        guard ast.body.count == entropyStartByteOffset + 5 + 3,
+        guard ast.body.count == entropyStartByteOffset + 5 + navigation.trailingFrameByteCount,
               Data(ast.body[entropyStartByteOffset..<(entropyStartByteOffset + 5)])
                 == Data([0x80, 0x00, 0x40, 0x40, 0x40]),
-              ast.body.suffix(3) == Data([0, 0, 0]) else {
+              ast.body.suffix(navigation.trailingFrameByteCount).allSatisfy({ $0 == 0 }) else {
             return nil
         }
 

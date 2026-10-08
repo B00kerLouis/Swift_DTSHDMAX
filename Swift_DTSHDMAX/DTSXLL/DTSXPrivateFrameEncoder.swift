@@ -489,10 +489,21 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         body.append(prediction)
         body.append(contentsOf: [0, 0]) // prediction CRC, rebuilt below
         if usesNavigation {
+            // NAVI has no private width declaration. A presentation decoder
+            // reads it using max(8, the enclosing XLL nBits4SSize). Reserve
+            // enough bits for both layers; the public encoder adopts this
+            // larger width if the private segments require it.
+            let requiredNavigationWidth = max(
+                8,
+                requiredUnsignedBitCount((segments.map(\.count).max() ?? 1) - 1)
+            )
+            let sharedNavigationWidth = segmentationPlan.segmentSizeBitCount.map {
+                max($0, requiredNavigationWidth)
+            }
             let selectedNavigation = try selectNavigation(
                 predictionByteCount: prediction.count,
                 segmentByteCounts: segments.map(\.count),
-                preferredBitWidth: navigationTemplate?.bitWidth,
+                preferredBitWidth: navigationTemplate?.bitWidth ?? sharedNavigationWidth,
                 preferredTrailingFrameByteCount:
                     navigationTemplate?.trailingFrameByteCount
             )
@@ -546,8 +557,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
     /// Canonical compact private silence for a public-XLL 4x128 partition.
     ///
     /// This is derived from the independently CRC-verified DTS:X grammar:
-    /// an eight-byte zero prediction declaration, a four-entry 8-bit NAVI
-    /// table, and the compact `2,1,1,1` zero-code segment layout.  It is not
+    /// an eight-byte zero prediction declaration, a four-entry NAVI using
+    /// the enclosing width (at least eight bits), and the compact `2,1,1,1`
+    /// zero-code segment layout. It is not
     /// an oracle payload copy; the routing and both CRCs are regenerated for
     /// the encoded frame.
     private func encodeCanonicalFourSegmentSilence(
@@ -570,10 +582,14 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             usesNavigation: true,
             forcedBoundaryByteCount: Self.predictionBoundaryByteCount
         )
+        let navigationWidth = max(8, segmentationPlan.segmentSizeBitCount ?? 8)
+        let navigationByteCount = (navigationWidth * 4 + 7) / 8 + 2
+        let unpaddedByteCount = 28 + prediction.count + 2 + navigationByteCount + 5
+        let trailingByteCount = 2 + ((4 - (unpaddedByteCount + 2) % 4) % 4)
         let navigation = try DTSXPrivateNavigation(
-            bitWidth: 8,
+            bitWidth: navigationWidth,
             segmentByteCounts: [2, 1, 1, 1],
-            trailingFrameByteCount: 3
+            trailingFrameByteCount: trailingByteCount
         )
         var body = Data()
         body.append(prediction)
@@ -582,9 +598,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
         // First segment carries the compact zero-state declaration.  The
         // remaining segments carry the one-byte state continuation code.
         body.append(contentsOf: [0x80, 0x00, 0x40, 0x40, 0x40])
-        body.append(contentsOf: [0, 0, 0])
-        guard 28 + body.count == 52 else {
-            throw DTSError.malformed("XLL-X compact four-segment silence did not close at 52 bytes")
+        body.append(contentsOf: repeatElement(0, count: trailingByteCount))
+        guard (28 + body.count).isMultiple(of: 4) else {
+            throw DTSError.malformed("XLL-X compact four-segment silence is not aligned")
         }
         let ast = DTSXPrivateFrameAST(
             fixedHeaderBytes: Self.fixedHeaderBytes,
@@ -713,8 +729,9 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             segmentByteCounts: segmentByteCounts,
             preferredBitWidth: preferredBitWidth
         ) {
-            let navigationByteCount = (
-                bitWidth * segmentByteCounts.count + 7
+            let navigationByteCount = DTSXPrivateNavigation.navigationDataBitCount(
+                bitWidth: bitWidth,
+                segmentCount: segmentByteCounts.count
             ) / 8 + 2
             let fixedBodyByteCount = predictionByteCount + 2 + navigationByteCount
                 + segmentByteCounts.reduce(0, +)
@@ -790,10 +807,10 @@ public struct DTSXPrivateFrameEncoder: Sendable {
             }
             return [preferredBitWidth]
         }
-        // Width is inferred from the byte-aligned NAVI payload.  Retain the
-        // 11-bit canonical choice first so qualified/reference vectors remain
-        // byte-identical, then try the remaining representable forms.  A form
-        // is selected only after the decoder's parser accepts it uniquely.
+        // Layout-only standalone research has no enclosing width. Retain its
+        // legacy 11-bit preference and require unambiguous payload inference.
+        // Stream encoding supplies the shared width through preferredBitWidth
+        // above and never relies on this standalone choice.
         let canonicalBitWidth = requiredBitWidth <= 11 ? 11 : requiredBitWidth
         return [canonicalBitWidth]
             + (requiredBitWidth...DTSXPrivateNavigation.supportedBitWidths.upperBound).filter {
@@ -2467,9 +2484,15 @@ public struct DTSXPrivateFrameEncoder: Sendable {
               parsed.matchesObservedStandardProfile else {
             throw DTSError.malformed("XLL-X native frame header verification failed")
         }
+        let decoded = try DTSXPrivateFrameDecoder.decode(
+            parsed,
+            segmentCount: segmentationPlan.segmentCount,
+            segmentSampleCount: segmentationPlan.segmentSampleCount
+        )
         if expectsNavigation {
             guard try parsed.parseNavigation(
-                segmentCount: segmentationPlan.segmentCount
+                segmentCount: segmentationPlan.segmentCount,
+                matching: decoded
             ).crcIsValid else {
                 throw DTSError.checksumMismatch(component: "XLL-X native navigation")
             }
@@ -2486,11 +2509,6 @@ public struct DTSXPrivateFrameEncoder: Sendable {
                 "XLL-X canonical no-NAVI silence was misclassified as navigation"
             )
         }
-        let decoded = try DTSXPrivateFrameDecoder.decode(
-            parsed,
-            segmentCount: segmentationPlan.segmentCount,
-            segmentSampleCount: segmentationPlan.segmentSampleCount
-        )
         guard decoded.codedPlanes == expectedPlanes,
               decoded.trailingBitsAreAllZero else {
             throw DTSError.malformed("XLL-X native encoder round-trip is not sample-exact")

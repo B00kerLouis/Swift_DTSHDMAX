@@ -287,26 +287,17 @@ struct XLLEncoder: Sendable {
                 value: String(allSegments.map(\.count).max() ?? 0)
             )
         }
-        let segmentSizeBitCount = max(
+        var segmentSizeBitCount = max(
             7,
             requiredUnsignedBitCount(maximumValue: (allSegments.map(\.count).max() ?? 1) - 1)
         )
 
         let scalableLSBs = useSevenOneHierarchy
-        let channelHeaders = try channelSets.map {
-            try encodeChannelSetHeader(
-                input: $0,
-                channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
-                segmentSizeBitCount: segmentSizeBitCount,
-                segmentSampleCount: segmentSampleCount,
-                scalableLSBs: scalableLSBs
-            )
-        }
-        let navigation = try encodeNavigation(
+        var navigation = try encodeNavigation(
             segmentByteCounts: segments.map { $0.map(\.count) },
             segmentSizeBitCount: segmentSizeBitCount
         )
-        let segmentationPlan = try XLLSegmentationPlan(
+        var segmentationPlan = try XLLSegmentationPlan(
             segmentCount: segmentCount,
             segmentSampleCount: segmentSampleCount,
             segmentSizeBitCount: segmentSizeBitCount,
@@ -316,6 +307,75 @@ struct XLLEncoder: Sendable {
         let resolvedPrivateExtension = try privateExtensionProvider?(segmentationPlan)
             ?? privateExtension
         try validatePrivateExtension(resolvedPrivateExtension)
+        if !resolvedPrivateExtension.isEmpty {
+            let privateAST = try DTSXPrivateFrameAST.parse(resolvedPrivateExtension[...])
+            var privateNavigation = try? privateAST.parseNavigation(segmentCount: segmentCount)
+            if privateNavigation == nil {
+                let decoded = try DTSXPrivateFrameDecoder.decode(
+                    privateAST,
+                    segmentCount: segmentCount,
+                    segmentSampleCount: segmentSampleCount
+                )
+                if decoded.noNavigationZeroSideInfo == nil {
+                    privateNavigation = try? privateAST.parseNavigation(
+                        segmentCount: segmentCount,
+                        matching: decoded
+                    )
+                }
+                guard privateNavigation != nil
+                        || decoded.codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) else {
+                    throw DTSError.malformed("active XLL-X frame has no qualified navigation")
+                }
+            }
+            if let privateNavigation {
+                let expectedWidth = max(8, segmentSizeBitCount)
+                guard privateNavigation.bitWidth >= expectedWidth else {
+                    throw DTSError.malformed(
+                        "XLL-X NAVI width \(privateNavigation.bitWidth) is smaller than "
+                            + "the enclosing XLL width \(expectedWidth)"
+                    )
+                }
+                // The private provider encodes once, using the larger of its
+                // segment requirement and the provisional public width. Finalize
+                // the public header/NAVI/LSB sizes with that shared width before
+                // computing any frame offsets or sizes. Inferring a private
+                // width locally can round-trip while real playback reads the
+                // wrong segment boundaries and produces full-scale height PCM.
+                if privateNavigation.bitWidth > expectedWidth {
+                    segmentSizeBitCount = privateNavigation.bitWidth
+                    guard segmentSizeBitCount <= XLLSyntax.segmentSizeBitCount else {
+                        throw DTSError.valueOutOfRange(
+                            field: "shared XLL/XLL-X navigation width",
+                            value: String(segmentSizeBitCount)
+                        )
+                    }
+                    navigation = try encodeNavigation(
+                        segmentByteCounts: segments.map { $0.map(\.count) },
+                        segmentSizeBitCount: segmentSizeBitCount
+                    )
+                    segmentationPlan = try XLLSegmentationPlan(
+                        segmentCount: segmentCount,
+                        segmentSampleCount: segmentSampleCount,
+                        segmentSizeBitCount: segmentSizeBitCount,
+                        navigationByteCount: navigation.count,
+                        segmentEntropyByteCounts: segments.map { $0.map(\.count) }
+                    )
+                }
+                _ = try privateAST.parseNavigation(
+                    segmentCount: segmentCount,
+                    sharedSegmentSizeBitCount: segmentSizeBitCount
+                )
+            }
+        }
+        let channelHeaders = try channelSets.map {
+            try encodeChannelSetHeader(
+                input: $0,
+                channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
+                segmentSizeBitCount: segmentSizeBitCount,
+                segmentSampleCount: segmentSampleCount,
+                scalableLSBs: scalableLSBs
+            )
+        }
         var frameSizeBitCount = 7
         var frameByteCount = 0
         while true {

@@ -1,8 +1,11 @@
 import Foundation
 
-/// Final per-frame segmentation selected by the public XLL entropy encoder.
+/// Sample partition and navigation-width contract for one XLL frame.
 /// DTS:X private XLL-X data must use the same sample partition in the enclosing
-/// access unit, even though its entropy payload and NAVI sizes are independent.
+/// access unit. Entropy byte counts are independent, but private NAVI entries
+/// use max(8, the enclosing XLL segment-size field width).
+/// The private provider receives a provisional public width; the returned
+/// frame's plan records the final width after both layers have contributed.
 public struct XLLSegmentationPlan: Sendable, Equatable, Codable {
     public let segmentCount: Int
     public let segmentSampleCount: Int

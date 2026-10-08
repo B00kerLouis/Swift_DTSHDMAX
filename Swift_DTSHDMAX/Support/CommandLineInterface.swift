@@ -989,6 +989,16 @@ public enum DTSHDMACommandLine {
             try WaveFile.write(bed, to: URL(fileURLWithPath: values[1]))
             print(try jsonString(PCMHasher.report(bed)))
 
+        case "verify-dtsx-navigation-width":
+            guard values.isEmpty else {
+                throw DTSError.invalidArgument("verify-dtsx-navigation-width takes no arguments")
+            }
+            let report = try DTSXNavigationWidthVerifier.verify()
+            print(try jsonString(report))
+            guard report.isVerified else {
+                throw DTSError.malformed("shared XLL/XLL-X navigation-width regression failed")
+            }
+
         case "verify-xllx-native-encoder":
             guard values.isEmpty else {
                 throw DTSError.invalidArgument("verify-xllx-native-encoder takes no arguments")
@@ -2407,6 +2417,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-dtsx-render-guard
           hdmax verify-dtsx-render-startup
           hdmax write-dtsx-compatibility-bed-source SOURCE_DTSX_DIRECTORY OUTPUT_7.1.wav [SOURCE_FRAME_COUNT]
+          hdmax verify-dtsx-navigation-width
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder

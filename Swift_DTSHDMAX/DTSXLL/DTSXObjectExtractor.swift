@@ -26,6 +26,9 @@ public struct DTSXXLLFrameSyntaxSummary: Sendable, Equatable, Codable {
     public let frameSizeBitCount: Int
     public let segmentCount: Int
     public let segmentSampleCount: Int
+    /// Optional so older standalone extraction indices remain readable.
+    /// Fresh stream extraction always records the enclosing NAVI width.
+    public let segmentSizeBitCount: Int?
     public let channelMaskBitCount: Int
     public let channelSets: [DTSXXLLChannelSetSummary]
 }
@@ -91,6 +94,8 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
     public let allPrivateFramesIndexed: Bool
     public let privateSegmentationMatchedFrameCount: Int
     public let allPrivateFramesMatchPublicSegmentation: Bool
+    public let privateNavigationWidthMatchedFrameCount: Int
+    public let allPrivateNavigationWidthsMatchPublicHeader: Bool
     public let isStructurallyValid: Bool
 
     public init(
@@ -103,7 +108,8 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
         summary: DTSXExtractionSummary,
         markerKinds: [DTSXPrivateMarkerKind],
         allPrivateFramesIndexed: Bool,
-        privateSegmentationMatchedFrameCount: Int
+        privateSegmentationMatchedFrameCount: Int,
+        privateNavigationWidthMatchedFrameCount: Int = 0
     ) {
         self.inputPath = inputPath
         self.expectedPath = expectedPath
@@ -124,6 +130,9 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
         self.privateSegmentationMatchedFrameCount = privateSegmentationMatchedFrameCount
         allPrivateFramesMatchPublicSegmentation = summary.privateFrameCount > 0
             && privateSegmentationMatchedFrameCount == summary.privateFrameCount
+        self.privateNavigationWidthMatchedFrameCount = privateNavigationWidthMatchedFrameCount
+        allPrivateNavigationWidthsMatchPublicHeader = summary.privateFrameCount > 0
+            && privateNavigationWidthMatchedFrameCount == summary.privateFrameCount
         isStructurallyValid = summary.xllFrameCount > 0
             && summary.xllFrameCount == summary.privateFrameCount
             && summary.accessUnitCount == summary.dtsxAssetDescriptorFrameCount
@@ -132,6 +141,7 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
             && summary.ambiguousMarkerFrameCount == 0
             && allPrivateFramesIndexed
             && allPrivateFramesMatchPublicSegmentation
+            && allPrivateNavigationWidthsMatchPublicHeader
     }
 }
 
@@ -345,6 +355,7 @@ public enum DTSXObjectExtractor {
             )
         }
         var privateSegmentationMatchedFrameCount = 0
+        var privateNavigationWidthMatchedFrameCount = 0
         for frame in extraction.frames {
             guard let syntax = frame.xllSyntax,
                   let payloadFileOffset = frame.payloadFileOffset,
@@ -366,6 +377,28 @@ public enum DTSXObjectExtractor {
                 continue
             }
             privateSegmentationMatchedFrameCount += 1
+            guard let sharedWidth = syntax.segmentSizeBitCount else { continue }
+            if decoded.noNavigationZeroSideInfo != nil {
+                privateNavigationWidthMatchedFrameCount += 1
+                continue
+            }
+            // The native entropy decoder can infer the wrong width and still
+            // reproduce its own PCM. Gate actual stream playback separately
+            // against the common-header declaration on every access unit.
+            let inferredNavigation = try? ast.parseNavigation(
+                segmentCount: syntax.segmentCount,
+                matching: decoded
+            )
+            if inferredNavigation == nil {
+                if decoded.codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+                    privateNavigationWidthMatchedFrameCount += 1
+                }
+            } else if (try? ast.parseNavigation(
+                segmentCount: syntax.segmentCount,
+                sharedSegmentSizeBitCount: sharedWidth
+            )) != nil {
+                privateNavigationWidthMatchedFrameCount += 1
+            }
         }
         var markerKinds: [DTSXPrivateMarkerKind] = []
         if extraction.summary.standardMarkerCount > 0 { markerKinds.append(.xllX) }
@@ -386,7 +419,8 @@ public enum DTSXObjectExtractor {
             summary: extraction.summary,
             markerKinds: markerKinds,
             allPrivateFramesIndexed: allPrivateFramesIndexed,
-            privateSegmentationMatchedFrameCount: privateSegmentationMatchedFrameCount
+            privateSegmentationMatchedFrameCount: privateSegmentationMatchedFrameCount,
+            privateNavigationWidthMatchedFrameCount: privateNavigationWidthMatchedFrameCount
         )
     }
 
@@ -657,6 +691,7 @@ public enum DTSXObjectExtractor {
                     frameSizeBitCount: frameSizeBitCount,
                     segmentCount: segmentCount,
                     segmentSampleCount: segmentSampleCount,
+                    segmentSizeBitCount: segmentSizeBitCount,
                     channelMaskBitCount: channelMaskBitCount,
                     channelSets: channelSets
                 )
@@ -681,6 +716,7 @@ public enum DTSXObjectExtractor {
                 frameSizeBitCount: frameSizeBitCount,
                 segmentCount: segmentCount,
                 segmentSampleCount: segmentSampleCount,
+                segmentSizeBitCount: segmentSizeBitCount,
                 channelMaskBitCount: channelMaskBitCount,
                 channelSets: channelSets
             )

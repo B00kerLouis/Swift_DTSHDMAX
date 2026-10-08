@@ -282,7 +282,7 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
         return writer.data()
     }
 
-    private static func navigationDataBitCount(bitWidth: Int, segmentCount: Int) -> Int {
+    static func navigationDataBitCount(bitWidth: Int, segmentCount: Int) -> Int {
         let alignedBitCount = ((bitWidth * segmentCount + 7) / 8) * 8
         // The recovered two-segment form reserves at least three data bytes,
         // but it is not fixed at three bytes. Official active frames grow to
@@ -294,6 +294,28 @@ public struct DTSXPrivateNavigation: Sendable, Equatable, Codable {
 }
 
 public extension DTSXPrivateFrameAST {
+    /// Parses a presentation NAVI using its authoritative enclosing width.
+    /// Width inference is useful for isolated payload research, but a decoder
+    /// reading an actual stream uses max(8, XLL nBits4SSize).
+    func parseNavigation(
+        segmentCount: Int,
+        sharedSegmentSizeBitCount: Int
+    ) throws -> DTSXPrivateNavigation {
+        let width = max(8, sharedSegmentSizeBitCount)
+        let predictionCRC = try parsePredictionCRC()
+        let candidates = try DTSXPrivateNavigation.parseCandidates(
+            body: body,
+            navigationStartByteOffset: predictionCRC.bodyByteOffset + 2,
+            segmentCount: segmentCount
+        ).filter { $0.bitWidth == width }
+        guard candidates.count == 1 else {
+            throw DTSError.malformed(
+                "XLL-X NAVI does not close with the enclosing XLL width \(width)"
+            )
+        }
+        return candidates[0]
+    }
+
     func parseNavigation(segmentCount: Int = DTSXPrivateNavigation.segmentCount)
         throws -> DTSXPrivateNavigation {
         let predictionCRC = try parsePredictionCRC()

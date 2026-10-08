@@ -110,6 +110,14 @@ The DTS:X private profile preserves rendered height PCM but does not yet retain
 independent object identifiers or object trajectories. Hardware playback and
 formal DTS certification remain external acceptance requirements.
 
+Public XLL and private XLL-X navigation use one width contract: private entries
+use `max(8, nBits4SSize)` from the enclosing XLL header. Both layers contribute
+to that width before headers, LSB byte counts, and offsets are finalized.
+Full-stream structure verification rejects mismatched widths, which otherwise
+can pass an isolated native PCM round-trip while producing clipped height
+audio in a presentation decoder. Debug builds expose
+`verify-dtsx-navigation-width` for in-memory boundary regressions.
+
 ## Repository policy
 
 The tracked repository is source-only. Local research materials, scripts,
