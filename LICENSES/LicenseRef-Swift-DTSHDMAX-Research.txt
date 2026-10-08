@@ -1,0 +1,102 @@
+Swift DTS-HD MA / DTS:X Encoder Research License, version 1.0
+SPDX identifier: LicenseRef-Swift-DTSHDMAX-Research
+Effective date: 2026-10-08
+Copyright (c) 2026 B00kerLouis.
+
+1. Scope and parties
+
+"Encoder" means the rights holder's protected contributions in
+Swift_DTSHDMAX/, Swift_DTSHDMAX.xcodeproj/, and the encoder-specific
+documentation identified in the repository's LICENSE index, including compiled
+forms and protected derivatives of that implementation.
+
+"Rights holder" means B00kerLouis and any other owner only with respect to that
+owner's contributions. "You" means a downstream recipient relying on this
+license, rather than a rights holder exercising rights in their own work.
+
+Third-party code, documentation, media, and other material are excluded. Their
+applicable licenses and restrictions are independent of this license. This
+license does not grant any patent, trademark, format, certification, or
+endorsement rights.
+
+2. Research permission
+
+Subject to these terms, the rights holder grants you a nonexclusive, worldwide,
+royalty-free copyright license to inspect, copy, build and run the Encoder for
+noncommercial encoding research, education and experimental validation; to
+modify its Swift source for those purposes; and to redistribute the source,
+Swift modifications and corresponding binaries for those same purposes.
+
+Noncommercial research does not include using the Encoder to develop, operate,
+evaluate for deployment, or support a commercial product or service. Absence
+of a direct charge does not by itself make a use noncommercial. Separate written
+authorization from the applicable rights holder is required for other uses.
+
+3. Downstream restrictions
+
+Unless separately authorized in writing by the applicable rights holder, you
+may not:
+
+(a) use, sell, license, host or distribute the Encoder or protected derivatives
+    for a commercial purpose, including commercial encoding services,
+    commercial product integration, or paid support based on the Encoder;
+(b) translate, port, refactor or reimplement protected Encoder code into a
+    programming language other than Swift, or distribute such a derivative;
+(c) reverse engineer, decompile or disassemble Encoder binaries, or use the
+    Encoder as a black-box target to reconstruct its implementation.
+
+Inspection and modification of supplied Swift source within section 2 are
+expressly permitted. Calling existing interfaces from another language is not
+by itself a prohibited port, provided you do not copy or reimplement protected
+Encoder code in that language. These terms do not restrict independent work
+that does not use protected Encoder material, claim ownership of format facts
+or algorithms, or restrict activities that mandatory law permits notwithstanding
+a contractual restriction. No third-party rights are restricted or relicensed
+by this document.
+
+4. Redistribution and modifications
+
+Keep copyright notices, this license and applicable third-party notices with
+all redistributed copies. Clearly identify changes and their authors.
+
+Distribute your modifications under these terms for the purposes in section 2;
+you may not remove the downstream restrictions from the rights holder's work.
+Each downstream recipient receives permission directly under this license.
+
+This license does not change ownership or licensing of input media, research
+results or encoded output merely because the Encoder processed or produced
+them. That clarification does not permit commercial operation of the Encoder.
+
+5. Rights holder and separate authorization
+
+These restrictions apply to downstream recipients. They do not restrict a
+rights holder's use, modification, licensing, distribution or commercialization
+of their own work. A rights holder may grant separate written permission,
+including permission for commercial use or a non-Swift port, within the rights
+that holder controls. Source visibility does not grant such permission to
+downstream recipients.
+
+6. Third-party rights
+
+This license grants only copyright permissions controlled by the rights holder.
+Third-party code or other material, if any, remains under its own license,
+which this document does not replace or restrict. No third-party patent,
+trademark, format-certification or endorsement rights are granted.
+
+This is a source-available research license, not an OSI open-source license. It
+governs copies supplied under these notices.
+
+7. Termination
+
+Permissions under this license terminate if you violate its terms. Termination
+does not affect rights independently granted under another license or rights
+that mandatory law preserves. Reinstatement requires written permission from
+the applicable rights holder.
+
+8. Disclaimer
+
+THE ENCODER IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. TO THE EXTENT PERMITTED BY LAW, THE RIGHTS HOLDERS ARE NOT
+LIABLE FOR CLAIMS, DAMAGES OR OTHER LIABILITY ARISING FROM THE ENCODER OR ITS
+USE, WHETHER IN CONTRACT, TORT OR OTHERWISE.

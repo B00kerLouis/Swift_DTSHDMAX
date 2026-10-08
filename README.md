@@ -126,5 +126,9 @@ ignored and are never included in `main` by ordinary Git staging commands.
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0.
-See [LICENSE](LICENSE).
+This project uses `LicenseRef-Swift-DTSHDMAX-Research`, a source-available
+research license and not an OSI open-source license. Downstream permission is
+limited to noncommercial encoding research with the Swift implementation,
+education, and experimental validation. Commercial use, reverse engineering,
+and non-Swift translation or reimplementation require separate written
+authorization. See [LICENSE](LICENSE) and the [full research license](LICENSES/LicenseRef-Swift-DTSHDMAX-Research.txt).
