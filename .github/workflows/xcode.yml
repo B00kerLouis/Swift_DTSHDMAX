@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           mkdir -p Build/CI/Logs
           for configuration in Release Debug; do
-            options=()
+            options=(CODE_SIGNING_ALLOWED=NO)
             if [[ "$configuration" == Debug ]]; then
               options+=(SWIFT_OPTIMIZATION_LEVEL=-O)
             fi
@@ -38,7 +38,7 @@ jobs:
               -derivedDataPath "Build/CI/DerivedData/$configuration" \
               CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/Build/CI/Products/$configuration" \
               OBJROOT="$GITHUB_WORKSPACE/Build/CI/Intermediates/$configuration" \
-              CODE_SIGNING_ALLOWED=NO "${options[@]}" build \
+              "${options[@]}" build \
               2>&1 | tee "Build/CI/Logs/build-$configuration.log"
             test -x "Build/CI/Products/$configuration/hdmax"
             test -f "Build/CI/Products/$configuration/libhdmax.framework/libhdmax"
