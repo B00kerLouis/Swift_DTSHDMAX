@@ -52,6 +52,12 @@ public enum XLLCodingMode: Sendable, Equatable, Codable {
     /// quiet content, which presented as noise-gate-like dropouts and an
     /// unreadable first active frame on hardware.
     case terminalOfficialRice
+    /// Delivery prediction with explicit, bounded mean-magnitude Straight Rice.
+    /// Uses fixed orders 0/1 or quantized LPC, preserving natural channel order.
+    case terminalOfficialPredictive
+    /// Bounded delivery prediction and explicit Rice with per-frame 2/4/8
+    /// public partition search. Private encoding follows the selected plan once.
+    case terminalAutomaticPredictive
 }
 
 struct XLLEncoder: Sendable {
@@ -105,6 +111,9 @@ struct XLLEncoder: Sendable {
     }
 
     private let codingMode: XLLCodingMode
+    private var usesBoundedPrediction: Bool {
+        codingMode == .terminalOfficialPredictive || codingMode == .terminalAutomaticPredictive
+    }
     /// DTS:X delivery invariant: the Core-residual hierarchy must keep the
     /// official constant matrix (coefficient code 473) and the all-zero
     /// primary residual mask on every frame, exactly as the reference corpus
@@ -145,12 +154,13 @@ struct XLLEncoder: Sendable {
             )
         }
 
-        let channelSets = try makeChannelSets(
+        let inputChannelSets = try makeChannelSets(
             pcm: pcm,
             useSevenOneHierarchy: useSevenOneHierarchy,
             coreReconstruction: coreReconstruction,
             coreAssociationPolicy: coreAssociationPolicy
         )
+        var channelSets = inputChannelSets
         guard channelSets.allSatisfy({ channelSet in
             channelSet.planes.allSatisfy { plane in
                 plane.allSatisfy { (-8_388_608...8_388_607).contains(Int($0)) }
@@ -207,7 +217,9 @@ struct XLLEncoder: Sendable {
                 ]
             case .terminalRice:
                 segmentationCandidates = [(count: 2, samples: 256)]
-            case .terminalOfficialRice:
+            case .terminalAutomaticPredictive:
+                segmentationCandidates = [(count: 2, samples: 256), (count: 4, samples: 128), (count: 8, samples: 64)]
+            case .terminalOfficialRice, .terminalOfficialPredictive:
                 // The official corpus uses 4x128 only around the frame-indexed
                 // silent-start transition, which reaches this encoder through
                 // ``forcedSegmentCount``. Every freely searched delivery frame
@@ -226,7 +238,13 @@ struct XLLEncoder: Sendable {
         var segmentSampleCount = 0
         var bestSegmentationByteCount = Int.max
         for candidate in segmentationCandidates {
-            let candidateModes = channelSets.map {
+            // Re-select prediction for this exact seed/segment partition.
+            // Candidate buffers remain frame-local; the private provider is
+            // deliberately called only after this public search finishes.
+            let candidateChannelSets = codingMode == .terminalAutomaticPredictive
+                ? applyingPrediction(to: inputChannelSets, segmentSampleCount: candidate.samples)
+                : channelSets
+            let candidateModes = candidateChannelSets.map {
                 selectEntropyModes(
                     dtsPlanes: $0.planes,
                     adaptivePredictionOrders: $0.adaptivePredictionOrders,
@@ -235,20 +253,20 @@ struct XLLEncoder: Sendable {
                 )
             }
             var candidateSegments = Array(
-                repeating: Array(repeating: Data(), count: channelSets.count),
+                repeating: Array(repeating: Data(), count: candidateChannelSets.count),
                 count: candidate.count
             )
             for segment in 0..<candidate.count {
-                for channelSet in channelSets.indices {
+                for channelSet in candidateChannelSets.indices {
                     candidateSegments[segment][channelSet] = try encodeSegment(
                         index: segment,
                         segmentSampleCount: candidate.samples,
-                        dtsPlanes: channelSets[channelSet].planes,
+                        dtsPlanes: candidateChannelSets[channelSet].planes,
                         modes: candidateModes[channelSet][segment],
                         previousModes: segment > 0 ? candidateModes[channelSet][segment - 1] : nil,
-                        adaptivePredictionOrders: channelSets[channelSet].adaptivePredictionOrders,
-                        scalableLSBWidths: channelSets[channelSet].scalableLSBWidths,
-                        scalableLSBPlanes: channelSets[channelSet].scalableLSBPlanes
+                        adaptivePredictionOrders: candidateChannelSets[channelSet].adaptivePredictionOrders,
+                        scalableLSBWidths: candidateChannelSets[channelSet].scalableLSBWidths,
+                        scalableLSBPlanes: candidateChannelSets[channelSet].scalableLSBPlanes
                     )
                 }
             }
@@ -264,11 +282,19 @@ struct XLLEncoder: Sendable {
                 let navigationByteCount = (
                     candidate.count * channelSets.count * segmentSizeBitCount + 7
                 ) / 8 + 2
-                let candidateByteCount = candidateSegments
+                let entropyAndNavigationByteCount = candidateSegments
                     .flatMap { $0 }
                     .reduce(0) { $0 + $1.count }
                     + navigationByteCount
+                let candidateByteCount = codingMode == .terminalAutomaticPredictive
+                    ? try publicCandidateByteCount(
+                        channelSets: candidateChannelSets, segmentCount: candidate.count,
+                        segmentSampleCount: candidate.samples, segmentSizeBitCount: segmentSizeBitCount,
+                        channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
+                        scalableLSBs: useSevenOneHierarchy, bandByteCount: entropyAndNavigationByteCount
+                    ) : entropyAndNavigationByteCount
                 if candidateByteCount < bestSegmentationByteCount {
+                    channelSets = candidateChannelSets
                     bestSegmentationByteCount = candidateByteCount
                     modes = candidateModes
                     segments = candidateSegments
@@ -765,7 +791,45 @@ struct XLLEncoder: Sendable {
         ]
     }
 
-    private func applyingPrediction(to inputs: [ChannelSetInput]) -> [ChannelSetInput] {
+    /// Public search includes actual channel headers, NAVI, common-header
+    /// width and alignment. Private payload cost is deliberately excluded:
+    /// its exactly-once provider runs after a plan is selected.
+    private func publicCandidateByteCount(
+        channelSets: [ChannelSetInput], segmentCount: Int, segmentSampleCount: Int,
+        segmentSizeBitCount: Int, channelMaskBitCount: Int, scalableLSBs: Bool,
+        bandByteCount: Int
+    ) throws -> Int {
+        let headers = try channelSets.reduce(0) { total, input in
+            total + (try encodeChannelSetHeader(
+                input: input, channelMaskBitCount: channelMaskBitCount,
+                segmentSizeBitCount: segmentSizeBitCount,
+                segmentSampleCount: segmentSampleCount, scalableLSBs: scalableLSBs
+            )).count
+        }
+        var frameSizeBits = 7
+        while true {
+            let common = try encodeCommonHeader(
+                frameByteCount: 1, frameSizeBitCount: frameSizeBits,
+                segmentSizeBitCount: segmentSizeBitCount, segmentCount: segmentCount,
+                segmentSampleCount: segmentSampleCount, channelMaskBitCount: channelMaskBitCount,
+                channelSetCount: channelSets.count, scalableLSBs: scalableLSBs
+            ).count
+            let size = (common + headers + bandByteCount + 3) & ~3
+            let required = max(7, requiredUnsignedBitCount(maximumValue: size - 1))
+            guard required <= XLLSyntax.frameSizeBitCount else {
+                throw DTSError.valueOutOfRange(field: "auto public frame size", value: String(size))
+            }
+            if required == frameSizeBits { return size }
+            frameSizeBits = required
+        }
+    }
+
+    private func applyingPrediction(
+        to inputs: [ChannelSetInput], segmentSampleCount: Int? = nil
+    ) -> [ChannelSetInput] {
+        // Auto retains unpredicted channel-set input until each partition is
+        // scored. Other modes preserve their existing selection behavior.
+        if codingMode == .terminalAutomaticPredictive, segmentSampleCount == nil { return inputs }
         if codingMode == .terminalOrderedConservative
             || codingMode == .terminalLegacyLinear {
             // The channel-set constructors already place the planes in the
@@ -776,7 +840,8 @@ struct XLLEncoder: Sendable {
         }
         if codingMode == .terminalConservative
             || codingMode == .terminalRice
-            || codingMode == .terminalOfficialRice {
+            || codingMode == .terminalOfficialRice
+            || usesBoundedPrediction {
             // Terminal delivery keeps the channel-set syntax explicit and
             // independently invertible.  Do not ask a hardware decoder to
             // reproduce a locally selected prediction/decorrelation transform
@@ -792,8 +857,13 @@ struct XLLEncoder: Sendable {
                         directPlanes[input.originalOrder[codedChannel]] = input.planes[codedChannel]
                     }
                 }
+                let prediction = directPlanes.map { plane in
+                    usesBoundedPrediction
+                        ? selectPrediction(plane, segmentSampleCount: segmentSampleCount ?? 256)
+                        : (residuals: plane, adaptiveOrder: 0, reflectionIndices: [Int32](), fixedOrder: 0)
+                }
                 return ChannelSetInput(
-                    planes: directPlanes,
+                    planes: prediction.map(\.residuals),
                     speakerMask: input.speakerMask,
                     residualChannelMask: input.residualChannelMask,
                     primary: input.primary,
@@ -806,18 +876,9 @@ struct XLLEncoder: Sendable {
                         repeating: 0,
                         count: directPlanes.count / 2
                     ),
-                    adaptivePredictionOrders: Array(
-                        repeating: 0,
-                        count: directPlanes.count
-                    ),
-                    adaptiveReflectionCoefficientIndices: Array(
-                        repeating: [],
-                        count: directPlanes.count
-                    ),
-                    fixedPredictionOrders: Array(
-                        repeating: 0,
-                        count: directPlanes.count
-                    ),
+                    adaptivePredictionOrders: prediction.map(\.adaptiveOrder),
+                    adaptiveReflectionCoefficientIndices: prediction.map(\.reflectionIndices),
+                    fixedPredictionOrders: prediction.map(\.fixedOrder),
                     scalableLSBWidths: input.scalableLSBWidths,
                     scalableLSBPlanes: input.scalableLSBPlanes
                 )
@@ -898,7 +959,7 @@ struct XLLEncoder: Sendable {
         }
     }
 
-    private func selectPrediction(_ plane: [Int32]) -> (
+    private func selectPrediction(_ plane: [Int32], segmentSampleCount: Int = 256) -> (
         residuals: [Int32],
         adaptiveOrder: Int,
         reflectionIndices: [Int32],
@@ -908,12 +969,13 @@ struct XLLEncoder: Sendable {
         var bestFixedOrder = 0
         var bestAdaptiveOrder = 0
         var bestReflectionIndices: [Int32] = []
-        var bestBits = estimatedEntropyBits(plane) + 2
-        for order in 1...3 {
+        var bestBits = predictionEntropyBits(plane, adaptiveOrder: 0, segmentSampleCount: segmentSampleCount) + 2
+        let maximumFixedOrder = usesBoundedPrediction ? 1 : 3
+        for order in 1...maximumFixedOrder {
             guard let candidate = fixedPredictionResiduals(plane, order: order) else {
                 continue
             }
-            let bits = estimatedEntropyBits(candidate) + 2
+            let bits = predictionEntropyBits(candidate, adaptiveOrder: 0, segmentSampleCount: segmentSampleCount) + 2
             if bits < bestBits {
                 bestBits = bits
                 bestFixedOrder = order
@@ -929,7 +991,7 @@ struct XLLEncoder: Sendable {
                     plane,
                     reflectionIndices: indices
                 ) else { continue }
-                let bits = estimatedEntropyBits(candidate) + indices.count * 8
+                let bits = predictionEntropyBits(candidate, adaptiveOrder: order, segmentSampleCount: segmentSampleCount) + indices.count * 8
                 if bits < bestBits {
                     bestBits = bits
                     bestFixedOrder = 0
@@ -1185,6 +1247,29 @@ struct XLLEncoder: Sendable {
             total += bestBits
         }
         return total
+    }
+
+    /// Delivery costs use the same Part-A/Part-B ranges and bounded parameters
+    /// as serialization. Research retains its broader historical cost model.
+    private func predictionEntropyBits(
+        _ plane: [Int32], adaptiveOrder: Int, segmentSampleCount: Int
+    ) -> Int {
+        guard usesBoundedPrediction else {
+            return estimatedEntropyBits(plane)
+        }
+        var bits = 0
+        for segment in 0..<(plane.count / segmentSampleCount) {
+            let start = segment * segmentSampleCount
+            let end = start + segmentSampleCount
+            let seedCount = segment == 0 ? adaptiveOrder : 0
+            let mode = terminalRiceMode(plane[(start + seedCount)..<end], boundingUnaryQuotient: true)
+            bits += entropyPayloadBitCount(
+                index: segment, segmentSampleCount: segmentSampleCount,
+                dtsPlanes: [plane], mode: mode, adaptivePredictionOrder: adaptiveOrder
+            )
+            bits += entropyHeaderBitCount(mode, segment: segment, reusingParameters: false)
+        }
+        return bits
     }
 
     private func selectHierarchyCoefficientCode(
@@ -1586,17 +1671,21 @@ struct XLLEncoder: Sendable {
         }
         if codingMode == .terminalRice
             || codingMode == .terminalOfficialRice
+            || usesBoundedPrediction
             || codingMode == .terminalPredictive {
             // Official delivery bounds every emitted unary quotient at the
             // corpus maximum; the experimental terminal Rice modes keep the
             // historical exact-minimum selection for differential study.
             let boundsUnaryQuotient = codingMode == .terminalOfficialRice
+                || usesBoundedPrediction
             return (0..<segmentCount).map { segment in
                 let start = segment * segmentSampleCount
                 let end = start + segmentSampleCount
-                return dtsPlanes.map { plane in
-                    terminalRiceMode(
-                        plane[start..<end],
+                return dtsPlanes.enumerated().map { channel, plane in
+                    let seedCount = segment == 0 && usesBoundedPrediction
+                        ? adaptivePredictionOrders[channel] : 0
+                    return terminalRiceMode(
+                        plane[(start + seedCount)..<end],
                         boundingUnaryQuotient: boundsUnaryQuotient
                     )
                 }
@@ -1708,12 +1797,19 @@ struct XLLEncoder: Sendable {
             return .linear(width: 0)
         }
         var selectedParameter = 0
-        var selectedBitCount = Int.max
-        for parameter in 0..<XLLSyntax.linearSampleBitCount {
-            let bitCount = ricePayloadBitCount(samples, parameter: parameter)
-            if bitCount < selectedBitCount {
-                selectedParameter = parameter
-                selectedBitCount = bitCount
+        if usesBoundedPrediction {
+            var sum: UInt64 = 0
+            for sample in samples { sum += UInt64(abs(Int64(sample))) }
+            let mean = sum / UInt64(samples.count)
+            selectedParameter = mean == 0 ? 0 : UInt64.bitWidth - mean.leadingZeroBitCount
+        } else {
+            var selectedBitCount = Int.max
+            for parameter in 0..<XLLSyntax.linearSampleBitCount {
+                let bitCount = ricePayloadBitCount(samples, parameter: parameter)
+                if bitCount < selectedBitCount {
+                    selectedParameter = parameter
+                    selectedBitCount = bitCount
+                }
             }
         }
         if boundingUnaryQuotient {
@@ -2290,6 +2386,11 @@ struct XLLEncoder: Sendable {
                 : max(2, UInt64.bitWidth - maximum.leadingZeroBitCount)
             return .linear(width: width)
         case .rice, .hybridRice:
+            if usesBoundedPrediction {
+                let selected = terminalRiceMode(plane[sampleRange], boundingUnaryQuotient: true)
+                if case .rice = selected { return selected }
+                return .rice(parameter: 0)
+            }
             var best = (parameter: 0, bits: Int.max)
             for parameter in 0..<XLLSyntax.linearSampleBitCount {
                 var bits = 0

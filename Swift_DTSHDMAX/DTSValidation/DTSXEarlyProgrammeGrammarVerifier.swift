@@ -124,7 +124,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
 
     public static func verify(
         inputURL: URL,
-        maximumAccessUnitCount: Int? = nil
+        maximumAccessUnitCount: Int? = nil,
+        encodeMode: DTSEncodeMode = .auto
     ) throws -> DTSXEarlyProgrammeGrammarReport {
         if let maximumAccessUnitCount, maximumAccessUnitCount <= 0 {
             throw DTSError.invalidArgument(
@@ -206,11 +207,6 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             let decoded = try XLLDecoder().decodeChannelSets(frame: frame.frame)
             segmentCounts.insert(ast.segmentCount)
 
-            let publicPlanesAreSilent = decoded.channelSets.allSatisfy { channelSet in
-                channelSet.planes.allSatisfy { plane in
-                    plane.allSatisfy { $0 == 0 }
-                }
-            }
 
             let privateQuotient: UInt64?
             let privatePlanesAreSilent: Bool
@@ -229,7 +225,7 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                         privateFirstUnaryBoundExceededFrameIndex = frameIndex
                     }
                 }
-                if audit.silenceForm == .corePrimingCompact {
+                if audit.silenceForm == .corePrimingCompact, frameIndex < primingFrameCount {
                     privateCorePrimingFormFrameIndices.append(frameIndex)
                 }
                 // Frame-class timeline (rule 6). Every private frame must
@@ -249,19 +245,22 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 switch audit.silenceForm {
                 case .corePrimingCompact:
                     formIsTimelineConformant = isPrimingAccessUnit
+                        || (!accessUnitBedIsAudible && ast.segmentCount == 2 && ast.segmentSizeBitCount <= 8)
                 case .startupNavigated, .startupNoNavigation:
                     formIsTimelineConformant = isSilentStartWindowAccessUnit
                         && !accessUnitBedIsAudible
                 case .midStreamNoNavigation:
+                    // Historical name: these bytes are compact zero NAVI
+                    // entries, valid for silent heights over an audible bed.
                     formIsTimelineConformant = !isPrimingAccessUnit
-                        && !accessUnitBedIsAudible
+                    if accessUnitBedIsAudible { privateBedAudibleZeroHeightFrameCount += 1 }
                 case .navigatedSilence:
                     // Ordinary navigated delivery frame decoding to zero
                     // heights: required on bed-audible height-silent access
                     // units (tbh's bed-only head and tail), never exercised
                     // by the references on fully silent access units.
-                    if !isPrimingAccessUnit, accessUnitBedIsAudible {
-                        privateBedAudibleZeroHeightFrameCount += 1
+                    if !isPrimingAccessUnit {
+                        if accessUnitBedIsAudible { privateBedAudibleZeroHeightFrameCount += 1 }
                         formIsTimelineConformant = true
                     } else {
                         formIsTimelineConformant = false
@@ -308,7 +307,15 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 fourSegmentFrameIndices.append(frameIndex)
                 let inSilentStartWindow = frameIndex >= primingFrameCount
                     && frameIndex < primingFrameCount + 2
-                if !(inSilentStartWindow && publicPlanesAreSilent && privatePlanesAreSilent) {
+                // Core codec noise can require a nonzero XLL residual over
+                // digital silence. Audit reconstructed PCM, not residuals.
+                let bedIsSilent = try !bedIsAudible(frameIndex)
+                if frameIndex < primingFrameCount
+                    || (encodeMode == .standard && !(inSilentStartWindow && bedIsSilent && privatePlanesAreSilent)) {
+                    partitionsFollowOfficialGrammar = false
+                }
+            case 8:
+                if encodeMode == .standard || frameIndex < primingFrameCount {
                     partitionsFollowOfficialGrammar = false
                 }
             default:
@@ -340,8 +347,8 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
                 || decoded.entropyCommonParameterSegmentCount > 0
                 || decoded.channelSets.contains { channelSet in
                     channelSet.decorrelationEnabled
-                        || channelSet.adaptivePredictionOrders.contains { $0 > 0 }
-                        || channelSet.fixedPredictionOrders.contains { $0 > 0 }
+                        || channelSet.adaptivePredictionOrders.contains { !(0...15).contains($0) }
+                        || channelSet.fixedPredictionOrders.contains { $0 > 1 }
                 }
             if usesResearchSyntax {
                 publicResearchSyntaxFrameCount += 1
@@ -355,7 +362,7 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
         // first source access unit (the silent-start pair). A lone or
         // displaced 4x128 window is a startup declaration over a half-active
         // start that the references never pair.
-        if fourSegmentFrameIndices != Array(
+        if encodeMode == .standard, fourSegmentFrameIndices != Array(
             primingFrameCount..<(primingFrameCount + fourSegmentFrameIndices.count)
         ) {
             partitionsFollowOfficialGrammar = false
@@ -443,17 +450,17 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
     /// Recovered silence-form classes of one private XLL-X frame. `nil`
     /// classifies an active frame.
     private enum PrivateSilenceForm: Equatable {
-        /// The 48-byte code-15 no-NAVI compact zero declaration - the form
-        /// the corpus uses on exactly the two Core-priming access units.
+        /// The 48-byte code-15 compact zero declaration. It occurs both on
+        /// priming and on fully silent 2x256 programme access units.
         case corePrimingCompact
         /// The 52-byte compact navigated 4x128 zero form of the first
         /// silent-start source access unit.
         case startupNavigated
-        /// The code-0x80/0x10 no-NAVI 4x128 zero form of the second
-        /// silent-start source access unit.
+        /// Legacy name for compact 4x128 zero NAVI with a nine-byte
+        /// prediction boundary in the silent-start window.
         case startupNoNavigation
-        /// The ordinary 2x256 code-0x20 no-NAVI source silence - legal on
-        /// exactly the fully silent (bed and heights) source access units.
+        /// Legacy name for compact 2x256 zero NAVI. The control pattern
+        /// changes with width and may accompany an audible compatibility bed.
         case midStreamNoNavigation
         /// Ordinary navigated delivery syntax decoding to all-zero heights -
         /// the required class for bed-audible height-silent access units,
@@ -491,14 +498,20 @@ public enum DTSXEarlyProgrammeGrammarVerifier {
             segmentSampleCount: segmentSampleCount,
             collectEntropyDiagnostics: true
         )
+        if decoded.noNavigationZeroSideInfo != nil {
+            _ = try privateAST.parseNavigation(
+                segmentCount: segmentCount,
+                sharedSegmentSizeBitCount: ast.segmentSizeBitCount
+            )
+        }
         let planesAreSilent = decoded.predictionResidualPlanes.allSatisfy { plane in
             plane.allSatisfy { $0 == 0 }
         }
         let silenceForm: PrivateSilenceForm?
         if !planesAreSilent {
             silenceForm = nil
-        } else if let sideInfo = decoded.noNavigationZeroSideInfo {
-            silenceForm = sideInfo.controlCode == 0x20
+        } else if decoded.noNavigationZeroSideInfo != nil {
+            silenceForm = segmentCount == 2
                 ? .midStreamNoNavigation
                 : .startupNoNavigation
         } else if decoded.usesCompactZeroEntropySyntax {

@@ -134,6 +134,7 @@ public struct DTSXNativeFileEncodingReport: Sendable, Equatable, Codable {
 /// private region of each XLL frame. No reference stream bytes are read or
 /// replayed by this path.
 public struct DTSXNativeHDMAEncoder: Sendable {
+    public let encodeMode: DTSEncodeMode
     public let verificationPolicy: DTSXNativeVerificationPolicy
     public let publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy
     public let publicXLLCodingMode: XLLCodingMode
@@ -145,35 +146,24 @@ public struct DTSXNativeHDMAEncoder: Sendable {
 
     public init(
         verificationPolicy: DTSXNativeVerificationPolicy = .none,
+        encodeMode: DTSEncodeMode = .auto,
         publicXLLCoreAssociationPolicy: XLLCoreAssociationPolicy = .coreResidual,
-        // The public XLL residual path stays free of locally selected
-        // prediction/decorrelation and entropy-state transitions, but its
-        // active segments now use ordinary Rice with explicit per-channel
-        // parameters: every observed official active delivery segment is
-        // Rice-coded, while the previous all-linear form is a grammar the
-        // corpus never exercises. With the Core carrying the declared
-        // downmix fold, residuals shrink to Core-codec-error size and an
-        // all-linear stream spends its life in small uncertified linear
-        // widths - the hardware presented that as noise-gate-like dropouts
-        // on quiet content and an unreadable first active frame.
-        publicXLLCodingMode: XLLCodingMode = .terminalOfficialRice,
+        // Score frame-local prediction with the serialized seed/residual
+        // grammar. Explicit Straight Rice bounds both partitions; channel
+        // order, hierarchy and delivery partitions stay fixed.
+        publicXLLCodingMode: XLLCodingMode? = nil,
         publicXLLForcedSegmentCount: Int? = nil,
-        // Hardware accepted the Branch-0 Straight-Rice controls while Linear
-        // controls were not recognized and Branch-2 controls clicked. The
-        // delivery default stays on fixed-order-zero Branch-0 Rice, but with
-        // the perfect-stream parameter selection: official mean-magnitude
-        // ABIT bounded to the corpus-maximum unary quotient of 22. The
-        // previous exact-minimum ABIT of ``terminalRice`` emitted unary runs
-        // past that bound on heavy-tailed height residuals, which terminal
-        // bounded readers misparse into full-scale pops.
-        privateXLLXCodingMode: DTSXPrivateCodingMode = .terminalRiceOfficial,
+        // Keep Branch-0 routing and bound mean-magnitude Rice, including the
+        // raw Part-A initialization seeds, while selecting temporal prediction.
+        privateXLLXCodingMode: DTSXPrivateCodingMode? = nil,
         sourceGuardPolicy: DTSXSourceGuardPolicy = .delivery
     ) {
         self.verificationPolicy = verificationPolicy
+        self.encodeMode = encodeMode
         self.publicXLLCoreAssociationPolicy = publicXLLCoreAssociationPolicy
-        self.publicXLLCodingMode = publicXLLCodingMode
+        self.publicXLLCodingMode = publicXLLCodingMode ?? encodeMode.publicXLLCodingMode
         self.publicXLLForcedSegmentCount = publicXLLForcedSegmentCount
-        self.privateXLLXCodingMode = privateXLLXCodingMode
+        self.privateXLLXCodingMode = privateXLLXCodingMode ?? encodeMode.privateXLLXCodingMode
         self.sourceGuardPolicy = sourceGuardPolicy
     }
 

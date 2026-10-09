@@ -44,6 +44,7 @@ public struct DTSXNativeEncoderVerificationReport: Sendable, Equatable, Codable 
     public let renderGuard: DTS714RenderGuardVerificationReport
     public let renderGuardPassed: Bool
     public let isStructurallyValid: Bool
+    public let officialPredictiveRegressionPassed: Bool
     public let isVerified: Bool
 }
 
@@ -56,7 +57,11 @@ public enum DTSXNativeEncoderVerifier {
 
     public static func verify() throws -> DTSXNativeEncoderVerificationReport {
         let source = try syntheticSource()
-        let encoder = DTSXNativeHDMAEncoder(verificationPolicy: .integrated)
+        // Keep the direct-sample control independent of the production LPC vector.
+        let encoder = DTSXNativeHDMAEncoder(
+            verificationPolicy: .integrated, publicXLLCodingMode: .terminalOfficialRice,
+            privateXLLXCodingMode: .terminalRiceOfficial
+        )
         let first = try encoder.encode(source: source, frameRate: .fps24)
         let second = try encoder.encode(source: source, frameRate: .fps24)
         let deterministic = first.stream == second.stream
@@ -121,11 +126,13 @@ public enum DTSXNativeEncoderVerifier {
         let earlyProgrammePassed = earlyProgrammePrimary.isEarlyProgrammeSafe
             && earlyProgrammeHostile.isEarlyProgrammeSafe
         let renderGuard = try DTS714RenderGuardVerifier.verify()
+        let officialPredictiveRegressionPassed = try verifyOfficialPredictiveRegression()
 
         let privateMismatchCount = first.report.privateEncoding.decodedSampleMismatchCount
         let bedMismatchCount = bedComparison.prefix.differentSamples
             + bedComparison.nonZeroPaddingSamples
         let verified = deterministic
+            && officialPredictiveRegressionPassed
             && first.report.isInternallyBitExact
             && compatibilitySafety.isCompatible
             && structural.isStructurallyValid
@@ -202,6 +209,7 @@ public enum DTSXNativeEncoderVerifier {
             renderGuard: renderGuard,
             renderGuardPassed: renderGuard.isVerified,
             isStructurallyValid: structural.isStructurallyValid,
+            officialPredictiveRegressionPassed: officialPredictiveRegressionPassed,
             isVerified: verified
         )
         guard report.isVerified else {
@@ -214,6 +222,50 @@ public enum DTSXNativeEncoderVerifier {
             )
         }
         return report
+    }
+
+    private static func verifyOfficialPredictiveRegression() throws -> Bool {
+        let count = 512 * 8 - 17
+        var planes = [[Int32]](repeating: [Int32](repeating: 0, count: count), count: 12)
+        for channel in planes.indices {
+            var state = UInt32(0x9e37_79b9 &+ UInt32(channel) &* 0x10001)
+            for sample in 1_024..<2_560 {
+                state = state &* 1_664_525 &+ 1_013_904_223
+                let excitation = (Int32((state >> 20) & 0xfff) - 2_048) * 64
+                planes[channel][sample] = Int32(
+                    (Int64(planes[channel][sample - 1]) * 3 - Int64(planes[channel][sample - 2])) / 4
+                ) + excitation
+            }
+            for edge in [1_024, 1_279, 1_280, 1_535, 1_536, 2_559] where channel == 0 || channel == 8 {
+                planes[channel][edge] = channel.isMultiple(of: 2) ? 1_000_000 : -1_000_000
+            }
+        }
+        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .integrated).encode(
+            source: DTS714PCMBuffer(planes: planes), frameRate: .fps24
+        )
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("dtsx-prediction-boundaries-\(UUID().uuidString).dtshd")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try encoded.stream.write(to: url, options: .atomic)
+        let publicFrames = try XLLPBRStreamReader.read(inputURL: url)
+        let publicAdaptive = try publicFrames.frames.contains {
+            try XLLDecoder().decodeChannelSets(frame: $0.frame).channelSets.contains {
+                $0.adaptivePredictionOrders.contains { $0 > 0 }
+            }
+        }
+        let structural = try DTSXObjectExtractor.verify(inputURL: url)
+        let grammar = try DTSXEarlyProgrammeGrammarVerifier.verify(inputURL: url)
+        let passed = encoded.report.isInternallyBitExact
+            && encoded.report.privateEncoding.adaptivePredictedPlaneCount > 0
+            && encoded.report.privateEncoding.fixedPredictionOrderHistogram.dropFirst(2).allSatisfy { $0 == 0 }
+            && publicAdaptive && structural.isStructurallyValid && grammar.isEarlyProgrammeSafe
+        guard passed else {
+            throw DTSError.malformed(
+                "official predictive vector: bitExact=\(encoded.report.isInternallyBitExact), "
+                    + "publicAdaptive=\(publicAdaptive), privateAdaptive=\(encoded.report.privateEncoding.adaptivePredictedPlaneCount), "
+                    + "structure=\(structural.isStructurallyValid), grammar=\(grammar.isEarlyProgrammeSafe)"
+            )
+        }
+        return passed
     }
 
     private static func verifyTerminalCoreResidualChannelSets(inputURL: URL) throws -> Bool {
@@ -366,10 +418,8 @@ public enum DTSXNativeEncoderVerifier {
     /// The Nature's Fury terminal reference has a frame-indexed silent-start
     /// grammar: after two Core-priming 2x256 access units, both first source
     /// frames use 4x128.
-    /// The paired private frames are an explicitly navigated 52-byte silence
-    /// and then the 56-byte code-16 no-NAVI silence. A third silent source AU
-    /// must leave startup syntax and use the official 2x256, 52-byte code-16
-    /// mid-stream form. Compression-cost search must never blur these states.
+    /// Both private startup frames carry compact NAVI at the enclosing width.
+    /// The third fully silent source AU returns to canonical 2x256 silence.
     private static func verifyTerminalStartupTransition() throws -> Bool {
         let sourceSampleCount = XLLSyntax.frameSampleCount * 3
         let silentSource = try DTS714PCMBuffer(
@@ -415,8 +465,8 @@ public enum DTSXNativeEncoderVerifier {
                 (48, 15, nil),
                 (48, 15, nil),
                 (52, 15, [2, 1, 1, 1]),
-                (56, 16, nil),
-                (52, 16, nil)
+                (52, 16, [2, 1, 1, 1]),
+                (48, 15, nil)
             ]
             for (frameIndex, pair) in zip(extraction.frames, expected).enumerated() {
                 let (record, expectation) = pair
@@ -436,7 +486,8 @@ public enum DTSXNativeEncoderVerifier {
                     return false
                 }
                 let navigation = try? ast.parseNavigation(
-                    segmentCount: record.xllSyntax?.segmentCount ?? 0
+                    segmentCount: record.xllSyntax?.segmentCount ?? 0,
+                    sharedSegmentSizeBitCount: record.xllSyntax?.segmentSizeBitCount ?? 0
                 )
                 if let segments = expectation.segments {
                     guard navigation?.crcIsValid == true,
@@ -448,15 +499,7 @@ public enum DTSXNativeEncoderVerifier {
                 }
                 if frameIndex == expected.count - 1 {
                     guard SHA256Hasher.hash(frame)
-                            == "df3fcd92dc6671572596e9c9ede1ca5a278bf4c9563f80d22c867533bdcc1144",
-                          let header = try ast.parsePredictionHeaderCandidates().first,
-                          let sideInfo = try DTSXPrivateNoNavigationZeroSideInfo.parse(
-                            ast,
-                            prediction: header,
-                            segmentCount: 2,
-                            segmentSampleCount: 256
-                          ),
-                          sideInfo.controlCode == 0x20 else {
+                            == corePrimingXLLXFrameSHA256 else {
                         return false
                     }
                 }
@@ -472,29 +515,14 @@ public enum DTSXNativeEncoderVerifier {
     }
 
     /// SHA-256 of the deterministic 48-byte compact zero XLL-X frame - the
-    /// Core-priming declaration. It must appear on exactly the two priming
-    /// access units of every delivery stream.
+    /// declaration, used for priming and fully silent 2x256 programme AUs
+    /// whose public segment width is at most eight.
     static let corePrimingXLLXFrameSHA256 =
         "0f9c24a65b214a2a81df643d102e2facf4f176e9fb784c1eb60f6c57cf1c5604"
-    /// SHA-256 of the deterministic 52-byte code-0x20 no-NAVI XLL-X frame -
-    /// the ordinary 2x256 silence declaration for fully silent (bed and
-    /// heights) source access units.
-    static let midStreamSilenceXLLXFrameSHA256 =
-        "df3fcd92dc6671572596e9c9ede1ca5a278bf4c9563f80d22c867533bdcc1144"
-    /// SHA-256 of the deterministic 316-byte ordinary navigated 2x256
-    /// delivery frame that decodes to zero heights - the required private
-    /// frame class for every bed-audible height-silent access unit (tbh's
-    /// bed-only head and tail). A compact/no-NAVI silence declaration on
-    /// such an access unit is the DTS:X-only "bed plays, DTS:X presentation
-    /// fails" defect.
-    static let bedAudibleZeroHeightsXLLXFrameByteCount = 316
-    static let bedAudibleZeroHeightsXLLXFrameSHA256 =
-        "7c312a858b6517e76082f6529524b1946031412359c1ed128f1fb4d28b7da82c"
-
     private struct HotStartPrivateFrameExpectation {
-        /// nil expects an active navigated frame whose size is content-defined.
+        /// Nil permits the enclosing public width to determine byte count.
         let byteCount: Int?
-        let code: UInt8
+        let code: UInt8?
         let expectsNavigation: Bool
         let sideInfoControlCode: UInt8?
         let sha256: String?
@@ -552,19 +580,19 @@ public enum DTSXNativeEncoderVerifier {
             expectsZeroDecodedHeights: true
         )
         let sourceSilence = HotStartPrivateFrameExpectation(
-            byteCount: 52,
-            code: 16,
+            byteCount: nil,
+            code: nil,
             expectsNavigation: false,
-            sideInfoControlCode: 0x20,
-            sha256: midStreamSilenceXLLXFrameSHA256,
+            sideInfoControlCode: nil,
+            sha256: nil,
             expectsZeroDecodedHeights: true
         )
         let bedAudibleZeroHeights = HotStartPrivateFrameExpectation(
-            byteCount: bedAudibleZeroHeightsXLLXFrameByteCount,
-            code: 17,
+            byteCount: nil,
+            code: 16,
             expectsNavigation: true,
             sideInfoControlCode: nil,
-            sha256: bedAudibleZeroHeightsXLLXFrameSHA256,
+            sha256: nil,
             expectsZeroDecodedHeights: true
         )
         let activeFrame = HotStartPrivateFrameExpectation(
@@ -655,19 +683,19 @@ public enum DTSXNativeEncoderVerifier {
             expectsZeroDecodedHeights: true
         )
         let sourceSilence = HotStartPrivateFrameExpectation(
-            byteCount: 52,
-            code: 16,
+            byteCount: nil,
+            code: nil,
             expectsNavigation: false,
-            sideInfoControlCode: 0x20,
-            sha256: midStreamSilenceXLLXFrameSHA256,
+            sideInfoControlCode: nil,
+            sha256: nil,
             expectsZeroDecodedHeights: true
         )
         let bedAudibleZeroHeights = HotStartPrivateFrameExpectation(
-            byteCount: bedAudibleZeroHeightsXLLXFrameByteCount,
-            code: 17,
+            byteCount: nil,
+            code: 16,
             expectsNavigation: true,
             sideInfoControlCode: nil,
-            sha256: bedAudibleZeroHeightsXLLXFrameSHA256,
+            sha256: nil,
             expectsZeroDecodedHeights: true
         )
         let activeFrame = HotStartPrivateFrameExpectation(
@@ -795,7 +823,10 @@ public enum DTSXNativeEncoderVerifier {
             try? FileManager.default.removeItem(at: index)
         }
 
-        let encoded = try DTSXNativeHDMAEncoder(verificationPolicy: .integrated)
+        let encoded = try DTSXNativeHDMAEncoder(
+            verificationPolicy: .integrated, publicXLLCodingMode: .terminalOfficialRice,
+            privateXLLXCodingMode: .terminalRiceOfficial
+        )
             .encode(source: try DTS714PCMBuffer(planes: planes), frameRate: .fps24)
         try encoded.stream.write(to: output, options: .atomic)
         let publicStream = try XLLPBRStreamReader.read(inputURL: output)
@@ -828,15 +859,25 @@ public enum DTSXNativeEncoderVerifier {
             )
             let ast = try DTSXPrivateFrameAST.parse(frame[...])
             guard ast.headerCRCIsValid,
-                  ast.primarySixBitCode == expectation.code,
                   try ast.parsePredictionCRC().isValid else {
                 return false
             }
+            if let code = expectation.code, ast.primarySixBitCode != code { return false }
             let navigation = try? ast.parseNavigation(
-                segmentCount: record.xllSyntax?.segmentCount ?? 0
+                segmentCount: record.xllSyntax?.segmentCount ?? 0,
+                sharedSegmentSizeBitCount: record.xllSyntax?.segmentSizeBitCount ?? 0
             )
             if expectation.expectsNavigation {
                 guard navigation?.crcIsValid == true else { return false }
+            }
+            if expectation.code == nil, expectation.expectsZeroDecodedHeights {
+                if (record.xllSyntax?.segmentSizeBitCount ?? 0) <= 8 {
+                    guard frame.count == 48, ast.primarySixBitCode == 15,
+                          SHA256Hasher.hash(frame) == corePrimingXLLXFrameSHA256 else { return false }
+                } else {
+                    guard ast.primarySixBitCode == 16,
+                          navigation?.segmentByteCounts == [2, 1] else { return false }
+                }
             }
             if let controlCode = expectation.sideInfoControlCode {
                 guard let header = try ast.parsePredictionHeaderCandidates().first,
@@ -914,6 +955,7 @@ public enum DTSXNativeEncoderVerifier {
             defer { try? FileManager.default.removeItem(at: output) }
             let encoded = try DTSXNativeHDMAEncoder(
                 verificationPolicy: .none,
+                encodeMode: .standard,
                 publicXLLForcedSegmentCount: forcedSegmentCount,
                 privateXLLXCodingMode: .terminalRice
             ).encode(source: activeSource, frameRate: .fps24)

@@ -59,6 +59,7 @@ public struct DTSAutomaticEncodeReport: Sendable, Equatable, Codable {
     public let detectedInput: DTSDetectedInput
     public let encodedProduct: DTSEncodedProduct
     public let frameRate: DTSFrameRate
+    public let encodeMode: DTSEncodeMode
     public let objectMetadataDisposition: DTSObjectMetadataDisposition
     public let atmosBedChannelCount: Int?
     public let atmosObjectCount: Int?
@@ -91,6 +92,7 @@ public enum DTSAutomaticEncoder {
         inputURL: URL,
         outputURL: URL,
         frameRateOverride: DTSFrameRate? = nil,
+        encodeMode: DTSEncodeMode = .auto,
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws -> DTSAutomaticEncodeReport {
         let progressTotal = Int64(1_000)
@@ -124,7 +126,8 @@ public enum DTSAutomaticEncoder {
             try HDMAEncoder(
                 format: pcm.format,
                 tailPolicy: .zeroPad,
-                frameRate: source.frameRate
+                frameRate: source.frameRate,
+                encodeMode: encodeMode
             ).encode(pcm, to: output, progress: { completed, total in
                 progress?(
                     250 + Int64(600 * completed / max(1, total)),
@@ -140,7 +143,7 @@ public enum DTSAutomaticEncoder {
             progress?(980, progressTotal)
 
         case .dtsx(let rendered, let compatibilityBed):
-            _ = try DTSXNativeHDMAEncoder().encode(
+            _ = try DTSXNativeHDMAEncoder(encodeMode: encodeMode).encode(
                 source: rendered,
                 to: output,
                 frameRate: source.frameRate,
@@ -167,6 +170,7 @@ public enum DTSAutomaticEncoder {
             detectedInput: source.detectedInput,
             encodedProduct: source.encodedProduct,
             frameRate: source.frameRate,
+            encodeMode: encodeMode,
             objectMetadataDisposition: source.objectMetadataDisposition,
             atmosBedChannelCount: source.atmosBedChannelCount,
             atmosObjectCount: source.atmosObjectCount,

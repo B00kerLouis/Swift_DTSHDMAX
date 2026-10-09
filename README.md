@@ -1,6 +1,6 @@
-# Switt_DTSHDMAX
+# Swift_DTSHDMAX
 
-`Switt_DTSHDMAX` is a native Swift 6 research implementation for DTS-HD Master
+`Swift_DTSHDMAX` is a native Swift 6 research implementation for DTS-HD Master
 Audio and DTS:X HDMA authoring workflows. The project implements its own
 bitstream handling, PCM processing, Core and XLL paths, container extraction,
 Atmos input handling, and validation tools. It does not link to or call an
@@ -27,8 +27,23 @@ bridge.
 The Release CLI has one production entry point:
 
 ```text
-hdmax -i INPUT -o OUTPUT.dtshd [--frame-rate FRAME_RATE]
+hdmax -i INPUT -o OUTPUT.dtshd [--encode-mode auto|standard] [--frame-rate FRAME_RATE]
 ```
+
+`--encode-mode` is optional and defaults to `auto`. Auto enables frame-local
+prediction and searches 2x256, 4x128 and 8x64 partitions using serialized public
+XLL cost, including headers, navigation and alignment. The private provider
+encodes once after selection and uses the same partition and shared NAVI width.
+The established priming and fully silent startup/tail forms remain explicit.
+`standard` disables temporal prediction and retains the qualified two-segment
+delivery with its four-segment silent-start transition. Both modes use bounded
+Straight Rice and keep Branch-0 private routing.
+
+Framework callers use the same optional argument with `HDMAX.run(arguments:)`
+or `executeWithArguments:error:`. `HDMAX.supportedEncodeModes()` returns
+`auto` and `standard`. Typed Swift APIs accept `encodeMode: DTSEncodeMode = .auto`
+in `DTSAutomaticEncoder.encode`, `HDMAEncoder`, `DTSXNativeHDMAEncoder`, and
+`DTSXHDMAEncoderConfiguration`.
 
 Input routing is automatic:
 
@@ -69,7 +84,7 @@ Build both products with Xcode:
 
 ```bash
 xcodebuild \
-  -project Switt_DTSHDMAX.xcodeproj \
+  -project Swift_DTSHDMAX.xcodeproj \
   -scheme "Build ALL" \
   -configuration Release \
   -derivedDataPath Build/DerivedData \
@@ -83,6 +98,11 @@ The Release products are placed under `Build/Products/Release/`:
 hdmax
 libhdmax.framework
 ```
+
+GitHub Actions builds both products in Release and optimized Debug with
+Xcode 26.3, then runs the in-memory encoding-mode, navigation-width, private
+entropy and integrated DTS:X regressions. Full official-player programme
+acceptance requires the local player and external test media.
 
 Example:
 
@@ -117,6 +137,19 @@ Full-stream structure verification rejects mismatched widths, which otherwise
 can pass an isolated native PCM round-trip while producing clipped height
 audio in a presentation decoder. Debug builds expose
 `verify-dtsx-navigation-width` for in-memory boundary regressions.
+
+DTS:X delivery uses frame-local fixed order 0/1 or quantized LPC with explicit
+Straight Rice. The parameter estimate uses mean absolute magnitude and bounds
+every unary quotient, including predictor initialization samples, to 22.
+Branch-0 routing and the delivery hierarchy remain fixed. Predictor choices
+follow the local PCM and serialized coding cost; this does not claim identical
+encoder decisions or a complete reproduction of the official distribution.
+
+Compact silent navigation also follows the enclosing XLL width. Fully silent
+2x256 programme tails with public width at most eight use the canonical
+48-byte zero form. File-level seek navigation uses a seven-byte prefix and
+ordinary big-endian 32-bit offsets, verified against every access unit. These
+rules cover pause/resume, stop/play and re-entry near the end of a programme.
 
 ## Repository policy
 

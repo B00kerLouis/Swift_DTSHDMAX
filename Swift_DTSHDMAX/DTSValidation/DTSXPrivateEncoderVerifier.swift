@@ -40,6 +40,7 @@ public struct DTSXPrivateEncoderVerificationReport: Sendable, Equatable, Codable
     public let terminalRiceParameterSearchPassed: Bool
     public let terminalRiceMeanMagnitudeSelectionPassed: Bool
     public let terminalRiceBoundedUnarySelectionPassed: Bool
+    public let terminalOfficialPredictionBoundariesPassed: Bool
     public let allVectorsBitExact: Bool
 }
 
@@ -162,6 +163,7 @@ public enum DTSXPrivateEncoderVerifier {
         let terminalRiceParameterSearchPassed = try verifyTerminalRiceParameterSearch()
         let terminalRiceMeanMagnitudeSelectionPassed = try verifyTerminalRiceMeanMagnitudeSelection()
         let terminalRiceBoundedUnarySelectionPassed = try verifyTerminalRiceBoundedUnarySelection()
+        let terminalOfficialPredictionBoundariesPassed = try verifyOfficialPredictionBoundaries()
         let report = DTSXPrivateEncoderVerificationReport(
             vectors: reports,
             navigationBitWidthsRoundTripped: navigationBitWidths,
@@ -181,7 +183,9 @@ public enum DTSXPrivateEncoderVerifier {
             terminalRiceParameterSearchPassed: terminalRiceParameterSearchPassed,
             terminalRiceMeanMagnitudeSelectionPassed: terminalRiceMeanMagnitudeSelectionPassed,
             terminalRiceBoundedUnarySelectionPassed: terminalRiceBoundedUnarySelectionPassed,
+            terminalOfficialPredictionBoundariesPassed: terminalOfficialPredictionBoundariesPassed,
             allVectorsBitExact: !reports.isEmpty
+                && terminalOfficialPredictionBoundariesPassed
                 && reports.allSatisfy(\.isBitExact)
                 && allNavigationBitWidthsRoundTrip
                 && adaptivePredictionVectorPassed
@@ -564,6 +568,57 @@ public enum DTSXPrivateEncoderVerifier {
     /// Proves that the bounded-unary diagnostic keeps candidate 20's exact
     /// minimum search whenever safe, but raises ABIT for a sparse outlier whose
     /// optimal code would exceed the official-corpus unary maximum.
+    /// Decode independently declared Part-A and Part-B allocations, including
+    /// transient seeds and segment edges. A symmetric PCM loop alone would
+    /// miss the bounded-reader failure caused by a long seed unary code.
+    private static func verifyOfficialPredictionBoundaries() throws -> Bool {
+        let encoder = DTSXPrivateFrameEncoder(codingMode: .terminalPredictiveOfficial)
+        var transient = filteredAutoregressive()
+        for channel in transient.indices {
+            for sample in [0, 1, 9, 63, 64, 127, 128, 255, 256, 511] {
+                transient[channel][sample] = sample.isMultiple(of: 2) ? 8_388_607 : -8_388_608
+            }
+        }
+        var sawAdaptive = false
+        for segments in [2, 4, 8] {
+            let plan = try XLLSegmentationPlan(segmentCount: segments, segmentSampleCount: 512 / segments)
+            for planes in [silence(), filteredAutoregressive(), transient, fullScaleAlternating(), impulses()] {
+                let frame = try encoder.encode(codedPlanes: planes, segmentationPlan: plan, forcesNavigation: true)
+                guard frame == (try encoder.encode(codedPlanes: planes, segmentationPlan: plan, forcesNavigation: true)) else {
+                    return false
+                }
+                let ast = try DTSXPrivateFrameAST.parse(frame[...])
+                let prediction = try ast.parsePredictionHeaderCandidate()
+                let decoded = try DTSXPrivateFrameDecoder.decode(
+                    ast, segmentCount: segments, segmentSampleCount: 512 / segments,
+                    collectEntropyDiagnostics: true
+                )
+                sawAdaptive = sawAdaptive || prediction.adaptivePredictionOrders.contains { $0 > 0 }
+                guard decoded.codedPlanes == planes, ast.headerCRCIsValid, prediction.crc.isValid,
+                      !prediction.containsReservedReflectionIndex,
+                      prediction.decorrelation.branchCode == 0,
+                      prediction.fixedPredictionOrders.compactMap({ $0 }).allSatisfy({ $0 <= 1 }) else { return false }
+                for syntax in decoded.entropySegments {
+                    guard syntax.riceCoding.allSatisfy({ $0 }),
+                          syntax.hybridLinearWidths.allSatisfy({ $0 == 0 }),
+                          !syntax.reusesPreviousParameters else { return false }
+                    for channel in planes.indices {
+                        let start = syntax.segmentIndex * plan.segmentSampleCount
+                        let seeds = syntax.partASampleCounts[channel]
+                        for offset in 0..<plan.segmentSampleCount {
+                            let sample = Int64(decoded.predictionResidualPlanes[channel][start + offset])
+                            let mapped = UInt64(sample >= 0 ? sample * 2 : -sample * 2 - 1)
+                            let parameter = offset < seeds
+                                ? syntax.partABitAllocations[channel] : syntax.partBBitAllocations[channel]
+                            guard mapped >> parameter <= 22 else { return false }
+                        }
+                    }
+                }
+            }
+        }
+        return sawAdaptive
+    }
+
     private static func verifyTerminalRiceBoundedUnarySelection() throws -> Bool {
         let input = boundedUnaryRiceOutlier()
         let segmentationPlan = DTSXPrivateFrameEncoder.defaultSegmentationPlan

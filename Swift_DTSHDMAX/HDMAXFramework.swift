@@ -27,4 +27,11 @@ public final class HDMAX: NSObject {
     public class func supportedFrameRates() -> [String] {
         DTSFrameRate.supportedArgumentValues
     }
+
+    /// The optional --encode-mode argument is shared with the CLI; omission
+    /// selects auto. Typed callers may also pass DTSEncodeMode to encoders.
+    @objc(supportedEncodeModes)
+    public class func supportedEncodeModes() -> [String] {
+        DTSEncodeMode.allCases.map(\.rawValue)
+    }
 }

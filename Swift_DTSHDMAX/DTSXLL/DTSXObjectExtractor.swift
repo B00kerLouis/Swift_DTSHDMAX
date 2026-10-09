@@ -96,6 +96,7 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
     public let allPrivateFramesMatchPublicSegmentation: Bool
     public let privateNavigationWidthMatchedFrameCount: Int
     public let allPrivateNavigationWidthsMatchPublicHeader: Bool
+    public let containerNavigationOffsetsMatchAccessUnits: Bool
     public let isStructurallyValid: Bool
 
     public init(
@@ -109,7 +110,8 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
         markerKinds: [DTSXPrivateMarkerKind],
         allPrivateFramesIndexed: Bool,
         privateSegmentationMatchedFrameCount: Int,
-        privateNavigationWidthMatchedFrameCount: Int = 0
+        privateNavigationWidthMatchedFrameCount: Int = 0,
+        containerNavigationOffsetsMatchAccessUnits: Bool = false
     ) {
         self.inputPath = inputPath
         self.expectedPath = expectedPath
@@ -133,6 +135,7 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
         self.privateNavigationWidthMatchedFrameCount = privateNavigationWidthMatchedFrameCount
         allPrivateNavigationWidthsMatchPublicHeader = summary.privateFrameCount > 0
             && privateNavigationWidthMatchedFrameCount == summary.privateFrameCount
+        self.containerNavigationOffsetsMatchAccessUnits = containerNavigationOffsetsMatchAccessUnits
         isStructurallyValid = summary.xllFrameCount > 0
             && summary.xllFrameCount == summary.privateFrameCount
             && summary.accessUnitCount == summary.dtsxAssetDescriptorFrameCount
@@ -142,6 +145,7 @@ public struct DTSXStreamVerificationReport: Sendable, Equatable, Codable {
             && allPrivateFramesIndexed
             && allPrivateFramesMatchPublicSegmentation
             && allPrivateNavigationWidthsMatchPublicHeader
+            && containerNavigationOffsetsMatchAccessUnits
     }
 }
 
@@ -379,7 +383,15 @@ public enum DTSXObjectExtractor {
             privateSegmentationMatchedFrameCount += 1
             guard let sharedWidth = syntax.segmentSizeBitCount else { continue }
             if decoded.noNavigationZeroSideInfo != nil {
-                privateNavigationWidthMatchedFrameCount += 1
+                // Legacy "side-info controls" are compact zero NAVI entries
+                // at particular widths. They are not exempt from the shared
+                // public/private width contract, especially after a seek.
+                if (try? ast.parseNavigation(
+                    segmentCount: syntax.segmentCount,
+                    sharedSegmentSizeBitCount: sharedWidth
+                )) != nil {
+                    privateNavigationWidthMatchedFrameCount += 1
+                }
                 continue
             }
             // The native entropy decoder can infer the wrong width and still
@@ -390,7 +402,9 @@ public enum DTSXObjectExtractor {
                 matching: decoded
             )
             if inferredNavigation == nil {
-                if decoded.codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
+                if privateFrame.count == 48, ast.primarySixBitCode == 15,
+                   syntax.segmentCount == 2, sharedWidth <= 8,
+                   decoded.codedPlanes.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) {
                     privateNavigationWidthMatchedFrameCount += 1
                 }
             } else if (try? ast.parseNavigation(
@@ -420,7 +434,11 @@ public enum DTSXObjectExtractor {
             markerKinds: markerKinds,
             allPrivateFramesIndexed: allPrivateFramesIndexed,
             privateSegmentationMatchedFrameCount: privateSegmentationMatchedFrameCount,
-            privateNavigationWidthMatchedFrameCount: privateNavigationWidthMatchedFrameCount
+            privateNavigationWidthMatchedFrameCount: privateNavigationWidthMatchedFrameCount,
+            containerNavigationOffsetsMatchAccessUnits: try DTSHDFileContainer.navigationOffsetsMatchAccessUnits(
+                at: input,
+                accessUnits: DTSStreamInspector().inspect(url: input, maximumAccessUnits: Int.max)
+            )
         )
     }
 

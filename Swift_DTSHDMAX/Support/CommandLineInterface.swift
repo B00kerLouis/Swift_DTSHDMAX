@@ -28,7 +28,8 @@ public enum DTSHDMACommandLine {
             let report = try DTSAutomaticEncoder.encode(
                 inputURL: options.input,
                 outputURL: options.output,
-                frameRateOverride: options.frameRate
+                frameRateOverride: options.frameRate,
+                encodeMode: options.encodeMode
             ) { completed, total in
                 progress(Int(completed), Int(total))
             }
@@ -1045,6 +1046,14 @@ public enum DTSHDMACommandLine {
                 throw DTSError.malformed(
                     "official XLL-X inverse regression is not frame- and byte-exact"
                 )
+            }
+
+        case "verify-encode-modes":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-encode-modes takes no arguments") }
+            let report = try DTSEncodeModeVerifier.verify()
+            print(try jsonString(report))
+            guard report.isVerified else {
+                throw DTSError.malformed("auto/standard mode regression failed: partitions \(report.automaticallySelectedPartitions)")
             }
 
         case "verify-dtsx-native-encoder":
@@ -2222,13 +2231,19 @@ public enum DTSHDMACommandLine {
             return .terminalRice
         case "official-rice":
             return .terminalOfficialRice
+        case "official-predictive":
+            return .terminalOfficialPredictive
+        case "auto":
+            return .terminalAutomaticPredictive
+        case "standard":
+            return .terminalOfficialRice
         case "predictive":
             return .terminalPredictive
         case "research":
             return .research
         default:
             throw DTSError.invalidArgument(
-                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, official-rice, predictive, or research"
+                "public XLL coding mode must be conservative, ordered, legacy-linear, rice, official-rice, official-predictive, predictive, or research"
             )
         }
     }
@@ -2253,6 +2268,12 @@ public enum DTSHDMACommandLine {
             return .terminalRiceBoundedUnary
         case "rice-official":
             return .terminalRiceOfficial
+        case "official-predictive":
+            return .terminalPredictiveOfficial
+        case "auto":
+            return .terminalPredictiveOfficial
+        case "standard":
+            return .terminalRiceOfficial
         case "predictive":
             return .terminalPredictive
         case "research":
@@ -2261,7 +2282,7 @@ public enum DTSHDMACommandLine {
             throw DTSError.invalidArgument(
                 "private XLL-X coding mode must be conservative, branch2-conservative, "
                     + "branch2-predictive-linear, branch2-rice, rice, rice-mean, "
-                    + "rice-bounded22, rice-official, predictive, or research"
+                    + "rice-bounded22, rice-official, official-predictive, predictive, or research"
             )
         }
     }
@@ -2283,20 +2304,29 @@ public enum DTSHDMACommandLine {
 
     private static func parseAutomaticOptions(
         _ arguments: [String]
-    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?) {
+    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode) {
         var input: URL?
         var output: URL?
         var frameRate: DTSFrameRate?
+        var encodeMode: DTSEncodeMode?
         var index = 0
         while index < arguments.count {
             let option = arguments[index]
-            guard option == "-i" || option == "-o" || option == "--frame-rate" else {
+            guard ["-i", "-o", "--frame-rate", "--encode-mode"].contains(option) else {
                 throw DTSError.invalidArgument(
-                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE]"
+                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE] [--encode-mode auto|standard]"
                 )
             }
             guard index + 1 < arguments.count else {
                 throw DTSError.invalidArgument("\(option) requires a value")
+            }
+            if option == "--encode-mode" {
+                guard encodeMode == nil else {
+                    throw DTSError.invalidArgument("--encode-mode may be specified only once")
+                }
+                encodeMode = try DTSEncodeMode(argument: arguments[index + 1])
+                index += 2
+                continue
             }
             if option == "--frame-rate" {
                 guard frameRate == nil else {
@@ -2322,7 +2352,7 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate)
+        return (input, output, frameRate, encodeMode ?? .auto)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2338,7 +2368,11 @@ public enum DTSHDMACommandLine {
         Native Swift 6 DTS HDMA / DTS:X HDMA research encoder
 
         Primary usage:
-          hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+          hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+
+        Encode modes (optional, default auto):
+          auto      -> frame-local prediction and automatic 2/4/8 partition search
+          standard  -> no prediction; qualified 2-segment/4-segment startup delivery
 
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA
@@ -2421,6 +2455,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-native-encoder
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
+          hdmax verify-encode-modes
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source-mode conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60

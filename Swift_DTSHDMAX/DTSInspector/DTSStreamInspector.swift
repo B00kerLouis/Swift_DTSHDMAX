@@ -313,18 +313,7 @@ enum DTSHDFileContainer {
         // applications use it for startup, seek and flush.  Omitting these
         // chunks leaves some native players to synthesize a flush frame from
         // stale state, which is especially unsafe for Core-associated XLL.
-        var navigation = Data()
-        appendUInt32(metrics.accessUnitCount, to: &navigation)
-        appendUInt32(0x0001_0400, to: &navigation)
-        for offset in metrics.accessUnitOffsets {
-            // DTSHD NAVI stores a 32-bit byte offset with the low 24 bits
-            // preceding the high 8-bit bank. This is a one-byte left rotation,
-            // not a plain big-endian UInt32. It is visible at every 16 MiB
-            // boundary in Encoder Suite products.
-            let value = UInt32(offset)
-            let packed = (value << 8) | (value >> 24)
-            appendUInt32(Int(packed), to: &navigation)
-        }
+        let navigation = try navigationTablePayload(accessUnitOffsets: metrics.accessUnitOffsets)
         appendChunk(tag: "NAVI-TBL", payload: navigation, to: &output)
 
         var timecode = Data()
@@ -480,20 +469,7 @@ enum DTSHDFileContainer {
             throw DTSError.malformed("DTSHD blackout access unit is unavailable")
         }
         var output = Data()
-        var navigation = Data()
-        appendUInt32(metrics.accessUnitCount, to: &navigation)
-        appendUInt32(0x0001_0400, to: &navigation)
-        for offset in metrics.accessUnitOffsets {
-            guard offset >= 0, offset <= Int(UInt32.max) else {
-                throw DTSError.valueOutOfRange(
-                    field: "DTSHD navigation offset",
-                    value: String(offset)
-                )
-            }
-            let value = UInt32(offset)
-            let packed = (value << 8) | (value >> 24)
-            appendUInt32(Int(packed), to: &navigation)
-        }
+        let navigation = try navigationTablePayload(accessUnitOffsets: metrics.accessUnitOffsets)
         appendChunk(tag: "NAVI-TBL", payload: navigation, to: &output)
 
         var timecode = Data()
@@ -513,6 +489,82 @@ enum DTSHDFileContainer {
         appendChunk(tag: "BUILDVER", payload: buildVersion, to: &output)
         appendChunk(tag: "BLACKOUT", payload: blackoutAccessUnit, to: &output)
         return output
+    }
+
+    /// File navigation is distinct from the XLL segment NAVI. Its prefix is
+    /// count:u32, AU interval:u16, offset width:u8 (seven bytes), followed by
+    /// ordinary big-endian u32 offsets relative to STRMDATA and one pad byte.
+    /// Treating the prefix as eight bytes appears correct below 16 MiB but
+    /// gives an entry the preceding offset's high byte at each bank boundary.
+    static func navigationTablePayload(accessUnitOffsets: [Int]) throws -> Data {
+        guard !accessUnitOffsets.isEmpty, accessUnitOffsets.count <= Int(UInt32.max),
+              accessUnitOffsets.first == 0 else {
+            throw DTSError.malformed("DTSHD navigation requires offsets beginning at zero")
+        }
+        var navigation = Data()
+        appendUInt32(accessUnitOffsets.count, to: &navigation)
+        appendUInt16(1, to: &navigation)
+        navigation.append(4)
+        var previous = -1
+        for offset in accessUnitOffsets {
+            guard offset > previous, offset <= Int(UInt32.max) else {
+                throw DTSError.valueOutOfRange(field: "DTSHD navigation offset", value: String(offset))
+            }
+            appendUInt32(offset, to: &navigation)
+            previous = offset
+        }
+        navigation.append(0)
+        return navigation
+    }
+
+    /// Audit file seek entries against independently scanned AU boundaries.
+    /// Read only chunk headers and bounded navigation blocks, skipping media.
+    static func navigationOffsetsMatchAccessUnits(
+        at url: URL, accessUnits: [DTSAccessUnitInfo]
+    ) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        guard try handle.read(upToCount: 8) == Data(headerTag) else {
+            return true // Elementary streams have no file-level seek table.
+        }
+        var cursor: UInt64 = 0
+        var streamRange: ElementaryStreamRange?
+        while cursor <= fileSize, fileSize - cursor >= 16 {
+            try handle.seek(toOffset: cursor)
+            guard let header = try handle.read(upToCount: 16), header.count == 16 else { return false }
+            let size = try bigEndianUInt64(header, at: 8)
+            let start = cursor + 16
+            guard size <= fileSize - start else { return false }
+            let tag = Data(header.prefix(8))
+            if tag == Data(streamDataTag) {
+                streamRange = ElementaryStreamRange(byteOffset: start, byteCount: size)
+            } else if tag == Data("NAVI-TBL".utf8) {
+                guard let streamRange, size >= 8,
+                      let prefix = try handle.read(upToCount: 7), prefix.count == 7 else { return false }
+                let count = Int(try bigEndianUInt32(prefix, at: 0))
+                guard count == accessUnits.count, size == 8 + UInt64(count) * 4,
+                      Array(prefix.suffix(3)) == [0, 1, 4] else { return false }
+                var index = 0
+                while index < count {
+                    let blockCount = min(4_096, count - index)
+                    guard let block = try handle.read(upToCount: blockCount * 4),
+                          block.count == blockCount * 4 else { return false }
+                    for item in 0..<blockCount {
+                        let unit = accessUnits[index + item]
+                        guard unit.byteOffset >= streamRange.byteOffset,
+                              unit.byteOffset < streamRange.endOffset,
+                              UInt64(try bigEndianUInt32(block, at: item * 4))
+                                == unit.byteOffset - streamRange.byteOffset else { return false }
+                    }
+                    index += blockCount
+                }
+                return try handle.read(upToCount: 1) == Data([0])
+            }
+            cursor = start + size
+        }
+        return false
     }
 
     static func authoringFrameRate(at url: URL) throws -> DTSFrameRate? {

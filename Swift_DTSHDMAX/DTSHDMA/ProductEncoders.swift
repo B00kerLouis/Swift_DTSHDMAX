@@ -7,6 +7,7 @@ public struct HDMAEncoder: Sendable {
     public let format: PCMFormat
     public let tailPolicy: DTSTailPolicy
     public let frameRate: DTSFrameRate
+    public let encodeMode: DTSEncodeMode
     public let xllCodingMode: XLLCodingMode
     public let coreAssociationPolicy: XLLCoreAssociationPolicy
     public let compactXLLPriming: Bool
@@ -16,7 +17,8 @@ public struct HDMAEncoder: Sendable {
         format: PCMFormat,
         tailPolicy: DTSTailPolicy = .reject,
         frameRate: DTSFrameRate = .fps24,
-        xllCodingMode: XLLCodingMode = .terminalConservative,
+        encodeMode: DTSEncodeMode = .auto,
+        xllCodingMode: XLLCodingMode? = nil,
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         compactXLLPriming: Bool = false,
         forcedXLLSegmentCount: Int? = nil
@@ -24,7 +26,8 @@ public struct HDMAEncoder: Sendable {
         self.format = format
         self.tailPolicy = tailPolicy
         self.frameRate = frameRate
-        self.xllCodingMode = xllCodingMode
+        self.encodeMode = encodeMode
+        self.xllCodingMode = xllCodingMode ?? encodeMode.publicXLLCodingMode
         self.coreAssociationPolicy = coreAssociationPolicy
         self.compactXLLPriming = compactXLLPriming
         self.forcedXLLSegmentCount = forcedXLLSegmentCount
@@ -112,15 +115,18 @@ public struct DTSXHDMAEncoderConfiguration: Sendable, Equatable, Codable {
     public let deliveryMode: DTSXDeliveryMode
     public let sourceDirectory: String
     public let referenceDirectory: String
+    public let encodeMode: DTSEncodeMode
 
     public init(
         deliveryMode: DTSXDeliveryMode,
         sourceDirectory: URL,
-        referenceDirectory: URL
+        referenceDirectory: URL,
+        encodeMode: DTSEncodeMode = .auto
     ) {
         self.deliveryMode = deliveryMode
         self.sourceDirectory = sourceDirectory.standardizedFileURL.path
         self.referenceDirectory = referenceDirectory.standardizedFileURL.path
+        self.encodeMode = encodeMode
     }
 
     func validateReferenceFrameRate(_ frameRate: DTSFrameRate) throws {
@@ -178,7 +184,7 @@ public struct DTSXHDMAEncoder: Sendable {
             sourceDescription: "Atmos master (\(master.version))"
         )
         try configuration.validateReferenceFrameRate(frameRate)
-        return try DTSXNativeHDMAEncoder().encode(
+        return try DTSXNativeHDMAEncoder(encodeMode: configuration.encodeMode).encode(
             source: rendered,
             to: outputURL,
             frameRate: frameRate,
@@ -196,7 +202,7 @@ public struct DTSXHDMAEncoder: Sendable {
     ) throws -> DTSXNativeFileEncodingReport {
         try configuration.validateReferenceFrameRate(frameRate)
         let source = try DTS714SourceSet.load(directory: sourceDirectory)
-        return try DTSXNativeHDMAEncoder().encode(
+        return try DTSXNativeHDMAEncoder(encodeMode: configuration.encodeMode).encode(
             source: source,
             to: outputURL,
             frameRate: frameRate,
