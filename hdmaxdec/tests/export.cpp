@@ -7,6 +7,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 namespace fs = std::filesystem;
 static void check(bool ok, const char *m) {
