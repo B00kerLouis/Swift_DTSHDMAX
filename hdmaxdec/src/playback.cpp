@@ -638,9 +638,15 @@ const hdmaxdec_device_info *hdmaxdec_player_info(const hdmaxdec_player *p) {
 }
 int hdmaxdec_player_write(hdmaxdec_player *p, const hdmaxdec_frame *f,
                           float gain) {
+  return hdmaxdec_player_write_progress(p, f, gain, nullptr, nullptr);
+}
+int hdmaxdec_player_write_progress(hdmaxdec_player *p, const hdmaxdec_frame *f,
+    float gain, hdmaxdec_progress callback, void *context) {
   if (!p || !f || f->sample_rate != 48000)
     return HD_INVALID;
   try {
+    if (callback && !callback(context, 0, f->sample_count))
+      return HD_CANCELLED;
     std::vector<float> samples(size_t(f->sample_count) * p->info.layout.count);
     int status = hdmaxdec_render_float(f, &p->info.layout, gain, samples.data(),
                                        samples.size());
@@ -648,9 +654,16 @@ int hdmaxdec_player_write(hdmaxdec_player *p, const hdmaxdec_frame *f,
       return status;
 #if defined(__APPLE__)
     std::unique_lock<std::mutex> lock(p->mutex);
-    if (!p->available.wait_for(lock, std::chrono::seconds(3),
-                               [p] { return !p->free.empty(); }))
-      return HD_DEVICE;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (p->free.empty()) {
+      if (callback && !callback(context, 0, f->sample_count))
+        return HD_CANCELLED;
+      if (std::chrono::steady_clock::now() >= deadline)
+        return HD_DEVICE;
+      p->available.wait_for(lock, std::chrono::milliseconds(5));
+    }
+    if (callback && !callback(context, 0, f->sample_count))
+      return HD_CANCELLED;
     AudioQueueBufferRef b = p->free.back();
     p->free.pop_back();
     ++p->queued;
@@ -670,6 +683,8 @@ int hdmaxdec_player_write(hdmaxdec_player *p, const hdmaxdec_frame *f,
     size_t offset = 0;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (offset < f->sample_count) {
+      if (callback && !callback(context, offset, f->sample_count))
+        return HD_CANCELLED;
       UINT32 padding = 0;
       if (FAILED(p->client->GetCurrentPadding(&padding)) || padding > p->frames)
         return HD_DEVICE;
@@ -699,6 +714,8 @@ int hdmaxdec_player_write(hdmaxdec_player *p, const hdmaxdec_frame *f,
 #elif defined(__linux__)
     size_t offset = 0;
     while (offset < f->sample_count) {
+      if (callback && !callback(context, offset, f->sample_count))
+        return HD_CANCELLED;
       snd_pcm_sframes_t count =
           snd_pcm_writei(p->pcm, samples.data() + offset * p->info.layout.count,
                          f->sample_count - offset);
@@ -720,19 +737,30 @@ int hdmaxdec_player_write(hdmaxdec_player *p, const hdmaxdec_frame *f,
   }
 }
 int hdmaxdec_player_drain(hdmaxdec_player *p) {
+  return hdmaxdec_player_drain_progress(p, nullptr, nullptr);
+}
+int hdmaxdec_player_drain_progress(hdmaxdec_player *p,
+    hdmaxdec_progress callback, void *context) {
   if (!p)
     return HD_INVALID;
 #if defined(__APPLE__)
   std::unique_lock<std::mutex> lock(p->mutex);
-  return p->available.wait_for(lock, std::chrono::seconds(5),
-                               [p] { return !p->queued; })
-             ? HD_OK
-             : HD_DEVICE;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (p->queued) {
+    if (callback && !callback(context, 0, 0))
+      return HD_CANCELLED;
+    if (std::chrono::steady_clock::now() >= deadline)
+      return HD_DEVICE;
+    p->available.wait_for(lock, std::chrono::milliseconds(5));
+  }
+  return HD_OK;
 #elif defined(_WIN32)
   if (p->thread != GetCurrentThreadId())
     return HD_INVALID;
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (true) {
+    if (callback && !callback(context, 0, 0))
+      return HD_CANCELLED;
     UINT32 padding = 0;
     if (FAILED(p->client->GetCurrentPadding(&padding)))
       return HD_DEVICE;
@@ -743,7 +771,33 @@ int hdmaxdec_player_drain(hdmaxdec_player *p) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 #elif defined(__linux__)
+  if (callback && !callback(context, 0, 0))
+    return HD_CANCELLED;
   return snd_pcm_drain(p->pcm) >= 0 ? HD_OK : HD_DEVICE;
+#else
+  return HD_UNSUPPORTED;
+#endif
+}
+int hdmaxdec_player_flush(hdmaxdec_player *p) {
+  if (!p)
+    return HD_INVALID;
+#if defined(__APPLE__)
+  // Reset returns queued buffers through completion callbacks. Do not hold
+  // the callback mutex across the synchronous reset or rebuild its free list.
+  if (AudioQueueReset(p->queue) != noErr)
+    return HD_DEVICE;
+  p->started = false;
+  return HD_OK;
+#elif defined(_WIN32)
+  if (p->thread != GetCurrentThreadId())
+    return HD_INVALID;
+  if ((p->started && FAILED(p->client->Stop())) || FAILED(p->client->Reset()))
+    return HD_DEVICE;
+  p->started = false;
+  return HD_OK;
+#elif defined(__linux__)
+  return snd_pcm_drop(p->pcm) >= 0 && snd_pcm_prepare(p->pcm) >= 0
+             ? HD_OK : HD_DEVICE;
 #else
   return HD_UNSUPPORTED;
 #endif

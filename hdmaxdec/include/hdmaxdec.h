@@ -96,6 +96,13 @@ HDMAXDEC_API int hdmaxdec_file_seek_progress(hdmaxdec_file *, uint64_t sample,
  * returned immediately. Used by interactive clients with raw .dts input. */
 HDMAXDEC_API int hdmaxdec_file_measure(hdmaxdec_file *, hdmaxdec_progress,
                                        void *);
+/* Optional session-only seek acceleration. Scan AU headers and reconstruct
+ * Core history, retaining at most 4096 states (under 64 MiB), never programme
+ * PCM. Existing reads/pending PCM are preserved, including on cancellation.
+ * Subsequent seeks restore the nearest state and replay only the local span.
+ * Without preparation, seeking retains exact replay from the stream start. */
+HDMAXDEC_API int hdmaxdec_file_prepare_seek(hdmaxdec_file *, hdmaxdec_progress,
+                                            void *);
 HDMAXDEC_API uint64_t hdmaxdec_file_sample_count(const hdmaxdec_file *);
 HDMAXDEC_API const char *hdmaxdec_file_error(const hdmaxdec_file *);
 HDMAXDEC_API void hdmaxdec_file_close(hdmaxdec_file *);
@@ -133,6 +140,14 @@ hdmaxdec_player_info(const hdmaxdec_player *);
 HDMAXDEC_API int hdmaxdec_player_write(hdmaxdec_player *,
                                        const hdmaxdec_frame *, float gain);
 HDMAXDEC_API int hdmaxdec_player_drain(hdmaxdec_player *);
+/* Discard queued monitoring PCM while retaining the open device. */
+HDMAXDEC_API int hdmaxdec_player_flush(hdmaxdec_player *);
+/* Cooperative cancellation for interactive hosts. Existing blocking entry
+ * points retain their behavior. Callbacks run on the playback thread. */
+HDMAXDEC_API int hdmaxdec_player_write_progress(hdmaxdec_player *,
+    const hdmaxdec_frame *, float gain, hdmaxdec_progress, void *);
+HDMAXDEC_API int hdmaxdec_player_drain_progress(hdmaxdec_player *,
+    hdmaxdec_progress, void *);
 HDMAXDEC_API void hdmaxdec_player_close(hdmaxdec_player *);
 
 typedef enum hdmaxdec_pcm_format {

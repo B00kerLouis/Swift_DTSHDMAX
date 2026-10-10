@@ -15,7 +15,7 @@ struct Snapshot {
   hdmaxdec_layout layout{};
   uint64_t position = 0, total = 0, span = 0, clips = 0;
   unsigned immersive = 0;
-  bool playing = false, seeking = false, loaded = false;
+  bool playing = false, seeking = false, loaded = false, scrubbing = false;
   int solo = -1;
   std::array<float, 32> peak{}, rms{};
   std::chrono::steady_clock::time_point stamp =
@@ -29,6 +29,9 @@ public:
   void toggle();
   void stop();
   void seek(uint64_t);
+  void beginScrub();
+  void previewScrub(uint64_t);
+  void endScrub(uint64_t);
   void skip(double seconds);
   void layout(const std::string &);
   void monitor(int);
@@ -44,12 +47,13 @@ private:
   hdmaxdec_layout nativeLayout_{};
   std::string pendingPath_, deviceID_, selected_ = "native";
   bool quitting_ = false, playing_ = false, loadPending_ = false,
-       seekPending_ = false;
+       seekPending_ = false, flushPending_ = false, resumeAfterScrub_ = false;
   uint64_t requested_ = 0;
   std::atomic<uint64_t> generation_{0};
   int monitor_ = 0, solo_ = -1;
   float volume_ = 0.5f;
   std::thread worker_;
+  void reconfigure(); // Called with mutex_ held.
   void run();
 };
 } // namespace hdqc

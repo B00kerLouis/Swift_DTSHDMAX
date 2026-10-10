@@ -151,7 +151,7 @@ struct App {
   std::string exportStatus;
   std::thread exportThread;
   std::string shownPath, shownLayout;
-  bool lastPlaying = false;
+  bool lastPlaying = false, scrubActive = false;
   explicit App(std::string device) : engine(std::move(device)) {
     display.fill(-60);
     hold.fill(-60);
@@ -305,9 +305,15 @@ id popup(App *c, const std::vector<std::string> &items, const char *action,
   send<void>(p, "release");
   return p;
 }
+Class seekSliderClass();
 id slider(App *c, double value, const char *action, CGRect rect,
           bool continuous) {
-  id s = send<id>(send<id>(type("NSSlider"), "alloc"), "initWithFrame:", rect);
+  bool seekControl = std::strcmp(action, "seek:") == 0;
+  id sliderType = seekControl ? reinterpret_cast<id>(seekSliderClass())
+                              : type("NSSlider");
+  id s = send<id>(send<id>(sliderType, "alloc"), "initWithFrame:", rect);
+  if (seekControl)
+    bind(s, c);
   send<void>(s, "setMinValue:", 0.0);
   send<void>(s, "setMaxValue:", 1.0);
   send<void>(s, "setDoubleValue:", value);
@@ -324,8 +330,34 @@ void backward(id object, SEL, id) { state(object)->engine.skip(-10); }
 void forward(id object, SEL, id) { state(object)->engine.skip(10); }
 void seek(id object, SEL, id sender) {
   App *c = state(object);
-  c->engine.seek(
-      uint64_t(send<double>(sender, "doubleValue") * c->current.total));
+  uint64_t position = uint64_t(send<double>(sender, "doubleValue") * c->current.total);
+  if (c->scrubActive)
+    c->engine.previewScrub(position);
+  else
+    c->engine.seek(position);
+}
+void seekMouseDown(id object, SEL selector, id event) {
+  App *c = state(object);
+  c->scrubActive = true;
+  c->engine.beginScrub();
+  objc_super parent{object, class_getSuperclass(object_getClass(object))};
+  using SuperMouseDown = void (*)(objc_super *, SEL, id);
+  reinterpret_cast<SuperMouseDown>(objc_msgSendSuper)(&parent, selector, event);
+  c->scrubActive = false;
+  c->engine.endScrub(uint64_t(send<double>(object, "doubleValue") * c->current.total));
+}
+Class seekSliderClass() {
+  Class cls = objc_getClass("B00kerHDMaxQCSeekSlider");
+  if (cls)
+    return cls;
+  cls = objc_allocateClassPair(objc_getClass("NSSlider"),
+                               "B00kerHDMaxQCSeekSlider", 0);
+  if (!cls || !class_addIvar(cls, "_hdState", sizeof(void *), 3, "^v") ||
+      !class_addMethod(cls, sel_registerName("mouseDown:"),
+                       reinterpret_cast<IMP>(seekMouseDown), "v@:@"))
+    throw std::runtime_error("Seek slider registration failed");
+  objc_registerClassPair(cls);
+  return cls;
 }
 void volume(id object, SEL, id sender) {
   App *c = state(object);
@@ -448,7 +480,7 @@ void tick(id object, SEL, id) {
   send<void>(c->duration, "setStringValue:",
              string(s.total ? timeString(s.total) : "--:--"));
   send<void>(c->seek, "setEnabled:", BOOL(s.loaded && s.total));
-  if (!send<BOOL>(send<id>(c->seek, "cell"), "isHighlighted"))
+  if (!c->scrubActive && !send<BOOL>(send<id>(c->seek, "cell"), "isHighlighted"))
     send<void>(c->seek, "setDoubleValue:",
                s.total ? double(s.position) / double(s.total) : 0.0);
   send<void>(c->description, "setStringValue:",
@@ -567,7 +599,7 @@ void build(App *c) {
   c->elapsed = label(c, "00:00", CGRectMake(24, 62, 86, 29), 21, true);
   c->duration = label(c, "--:--", CGRectMake(728, 62, 92, 29), 21, true);
   send<void>(c->duration, "setAlignment:", long(2));
-  c->seek = slider(c, 0, "seek:", CGRectMake(114, 66, 602, 20), false);
+  c->seek = slider(c, 0, "seek:", CGRectMake(114, 66, 602, 20), true);
   button(c, "", "backward:", CGRectMake(265, 104, 56, 58), "backward.fill", 29);
   c->play =
       button(c, "", "toggle:", CGRectMake(373, 91, 82, 81), "play.fill", 42);

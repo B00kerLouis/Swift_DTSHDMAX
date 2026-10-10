@@ -36,13 +36,15 @@ Build/Products/Release/hdmaxdec --play -i INPUT.dtshd --layout 7.1.5
 Build/Products/Release/hdmaxdec --play
 ```
 
-`--play` opens a dark, QuickTime-style player. Double-clicking `hdmaxdec QC.app` opens the same interface. Controls include play/pause, stop, ten-second skips, seek, monitoring volume, Peak/RMS meters, peak hold, clipping counts, channel Solo, QC layout selection, and PCM export. The interface is English. Filenames and endpoint names retain their original spelling.
+`--play` opens a dark, QuickTime-style player. Double-clicking `hdmaxdec QC.app` opens the same interface. Controls include play/pause, stop, ten-second skips, silent scrubbing with live position preview, monitoring volume, Peak/RMS meters, peak hold, clipping counts, channel Solo, QC layout selection, and PCM export. The interface is English. Filenames and endpoint names retain their original spelling.
 
 Meters and Solo labels use Dolby-style names: `L R C LFE Ls Rs Lrs Rrs Ltf Rtf Ltr Rtr`, top-middle `Ltm Rtm`, and wide `Lw Rw`. IMAX TFC is displayed as `Ctf`. These display names do not change speaker IDs or PCM order.
 
 The QC layout is independent of the DAC: a stereo device can inspect and export 7.1.5, 7.1.6, or 9.1.6. **Direct Channels (No Downmix)** sends only position-matched feeds to the device while retaining all virtual QC feeds. **Downmix to Device** explicitly folds the QC layout; **QC Meters Only** disables monitoring. Clicking a meter solos that feed to front L/R. Additional speakers with no encoded feed remain silent.
 
-Metering occurs before monitoring volume and DAC clipping. Export does not apply monitoring volume. The UI runs on the main thread; decoding, header measurement, Core-history seeking, and export run on background threads. Meter snapshots are displayed at 30 fps. There is no whole-programme PCM cache, UI persistence database, or checkpoint model.
+Metering occurs before monitoring volume and DAC clipping. Export does not apply monitoring volume. The UI runs on the main thread; decoding, header measurement, Core-history seeking, and export run on background threads. Meter snapshots are displayed at 30 fps. There is no whole-programme PCM cache, UI persistence database, or persistent checkpoint model.
+
+On opening a programme, QC prepares a session-only AU/Core-history index. It retains at most 4096 history states, below 64 MiB, and discards it when the file closes. Seeks restore the nearest exact Core state and decode only the remaining local span. Pressing the seek slider immediately discards queued monitoring audio; dragging updates the position preview silently. Releasing it performs one exact seek to the final position and restores the previous play/pause state. Keyboard seeks cancel older work so the latest position wins. Layout/monitor/Solo changes discard queued monitor audio and reuse the open audio device. Pause, seek and stop do not recreate the audio queue. Preparation is cancellable when opening another file or closing the player.
 
 The GUI is compiled entirely as C++, using the system AppKit/Core Graphics boundary through Objective-C runtime C APIs. It contains no `.m`, `.mm`, or Swift implementation. C++ runtime, Objective-C++, SwiftUI, Qt, and WebView approaches were evaluated; C++ runtime preserves the language constraint and platform isolation.
 
@@ -77,7 +79,7 @@ The headless decode/play commands retain automatic uniform peak headroom for rem
 6. Standard XLL-X sync is `0x02000850`. Decode branch-0 routing, predictors, CRC and entropy using `max(8, public nBits4SSize)`. Compact navigated zeros still validate that width. Accept the exact canonical 48-byte zero grammar only for 2x256 with public width <=8.
 7. D0 sync is `0xf14000d0`. Validate fixed metadata, mono TFC and quartet height groups, shared widths, CRC, and 2/4/8 partitions. Undo TFC C/L/R Q15 27571/13818/13818 and unity corner-height folds.
 
-File reading retains at most a 1 MiB compressed window plus bounded PCM frames. Accurate seeking replays Core history from the beginning and is cancellable; seeking near EOF is linear-time. A file NAVI entry alone cannot restore Core history.
+File reading retains at most a 1 MiB compressed window plus bounded PCM frames. Default seeking replays Core history from the beginning and is cancellable. Interactive clients may call `hdmaxdec_file_prepare_seek` once to build the bounded session index and accelerate subsequent exact seeks. The preparation pass scans AU boundaries and reconstructs Core history without decoding or retaining whole-programme XLL PCM. A file NAVI entry alone cannot restore Core history.
 
 ## C and FFmpeg integration
 

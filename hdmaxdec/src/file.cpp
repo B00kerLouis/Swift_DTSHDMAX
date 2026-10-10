@@ -13,6 +13,11 @@
 #define HD_TELL ftello
 #endif
 struct hdmaxdec_file {
+  struct SeekPoint {
+    uint64_t offset = 0, produced = 0, trim = 0;
+    hd::Core core;
+  };
+  std::vector<SeekPoint> seekPoints;
   FILE *fp = nullptr;
   hdmaxdec_decoder *decoder = nullptr;
   std::vector<uint8_t> buffer;
@@ -36,6 +41,89 @@ uint64_t big64(const uint8_t *p) {
 bool readAt(FILE *fp, uint64_t at, void *p, size_t n) {
   return at <= uint64_t(INT64_MAX) && HD_SEEK(fp, int64_t(at), SEEK_SET) == 0 &&
          std::fread(p, 1, n, fp) == n;
+}
+struct ScanWindow {
+  hdmaxdec_file *file;
+  std::vector<uint8_t> &bytes;
+  uint64_t begin = UINT64_MAX;
+  explicit ScanWindow(hdmaxdec_file *f) : file(f), bytes(f->buffer) {
+    bytes.clear();
+    f->head = 0;
+  }
+  ~ScanWindow() {
+    bytes.clear();
+    file->head = 0;
+  }
+  const uint8_t *get(uint64_t at, size_t count) {
+    hd::require(at <= file->length && count <= file->length - at &&
+                    count <= (1u << 20),
+                "AU scan exceeds input bound");
+    if (begin == UINT64_MAX || at < begin ||
+        at - begin > bytes.size() || count > bytes.size() - size_t(at - begin)) {
+      begin = at;
+      bytes.resize(size_t(std::min<uint64_t>(file->length - at, 1u << 20)));
+      hd::require(readAt(file->fp, file->start + at, bytes.data(), bytes.size()),
+                  "AU scan read failed", HD_IO);
+    }
+    return bytes.data() + size_t(at - begin);
+  }
+};
+struct ScanAU {
+  uint64_t end = 0, samples = 0;
+  size_t coreSize = 0;
+};
+ScanAU scanAU(hdmaxdec_file *f, ScanWindow &window, uint64_t at) {
+  ScanAU au;
+  const uint8_t *p = window.get(at, 10);
+  uint32_t sync = hd::be32(p);
+  uint64_t next = at;
+  uint64_t coreSamples = 0;
+  if (sync == 0x7ffe8001) {
+    hd::Bits r(p, 10);
+    r.skip(39);
+    coreSamples = uint64_t(r.get(7) + 1) * 32;
+    au.coreSize = size_t(r.get(14) + 1);
+    hd::require(au.coreSize >= 96 && au.coreSize <= f->length - at,
+                "Core scan exceeds stream");
+    if (f->coreOnly) {
+      au.end = at + au.coreSize;
+      au.samples = coreSamples;
+      return au;
+    }
+    next += (au.coreSize + 3) & ~size_t(3);
+    p = window.get(next, 10);
+    sync = hd::be32(p);
+  }
+  uint64_t xll = next;
+  if (sync == 0x64582025) {
+    hd::Bits r(p, 10);
+    r.skip(42);
+    bool wide = r.get(1);
+    size_t header = size_t(r.get(wide ? 12 : 8) + 1);
+    size_t bytes = size_t(r.get(wide ? 20 : 16) + 1);
+    hd::require(header <= bytes && bytes <= f->length - next,
+                "ExSS scan size");
+    au.end = next + bytes;
+    xll = next + header;
+  } else
+    hd::require(sync == 0x41a29547, "unsupported scan sync", HD_UNSUPPORTED);
+  p = window.get(xll, 20);
+  hd::Bits r(p, 20);
+  hd::require(r.read(32) == 0x41a29547, "XLL scan sync");
+  r.skip(12);
+  int bits = r.get(5) + 1;
+  uint64_t bytes = r.read(unsigned(bits)) + 1;
+  r.skip(4);
+  au.samples = uint64_t(1 << r.get(4)) * uint64_t(1 << r.get(4));
+  hd::require(bytes <= f->length - xll && au.samples <= 65536 &&
+                  (!au.coreSize || coreSamples == au.samples),
+              "XLL scan dimensions");
+  if (!au.end)
+    au.end = xll + bytes;
+  hd::require(au.end > at && au.end - at <= (1u << 20) &&
+                  xll + bytes <= au.end,
+              "AU scan boundary");
+  return au;
 }
 int readFrame(hdmaxdec_file *f, hdmaxdec_frame *out) {
   // Retain one compressed window and compact only across AU boundaries.
@@ -199,8 +287,8 @@ int hdmaxdec_file_seek_progress(hdmaxdec_file *f, uint64_t sample,
   if (!f || (f->total != UINT64_MAX && sample > f->total))
     return HD_INVALID;
   try {
-    // Core synthesis history is stateful. Replaying from the initial frame is
-    // bounded and exact; jumping to an XLL NAVI entry loses that Core history.
+    // Restore complete Core history, not just an XLL NAVI byte offset.
+    // Clients without a prepared session index retain replay from the start.
     hdmaxdec_reset(f->decoder);
     f->offset = 0;
     f->buffer.clear();
@@ -209,6 +297,18 @@ int hdmaxdec_file_seek_progress(hdmaxdec_file *f, uint64_t sample,
     f->trim = f->initialTrim;
     f->hasPending = false;
     f->error.clear();
+    auto point = std::upper_bound(
+        f->seekPoints.begin(), f->seekPoints.end(), sample,
+        [](uint64_t value, const hdmaxdec_file::SeekPoint &p) {
+          return value < p.produced;
+        });
+    if (point != f->seekPoints.begin()) {
+      --point;
+      hd::coreState(f->decoder) = point->core;
+      f->offset = point->offset;
+      f->produced = point->produced;
+      f->trim = point->trim;
+    }
     while (f->produced < sample) {
       if (callback && !callback(context, f->produced, sample))
         return HD_CANCELLED;
@@ -242,58 +342,13 @@ int hdmaxdec_file_measure(hdmaxdec_file *f, hdmaxdec_progress callback,
     return HD_OK;
   try {
     uint64_t at = 0, samples = 0;
+    ScanWindow window(f);
     while (at < f->length) {
       if (callback && !callback(context, at, f->length))
         return HD_CANCELLED;
-      uint8_t p[20];
-      hd::require(f->length - at >= 10 && readAt(f->fp, f->start + at, p, 10),
-                  "AU header scan failed", HD_IO);
-      uint64_t next = at;
-      uint32_t sync = hd::be32(p);
-      if (sync == 0x7ffe8001) {
-        hd::Bits r(p, 10);
-        r.skip(39);
-        int blocks = r.get(7) + 1;
-        size_t bytes = size_t(r.get(14) + 1);
-        hd::require(bytes <= f->length - at, "Core scan exceeds stream");
-        if (f->coreOnly) {
-          samples += uint64_t(blocks) * 32;
-          at += bytes;
-          continue;
-        }
-        next += (bytes + 3) & ~size_t(3);
-        hd::require(f->length - next >= 10 &&
-                        readAt(f->fp, f->start + next, p, 10),
-                    "ExSS scan failed", HD_IO);
-        sync = hd::be32(p);
-      }
-      uint64_t end = 0, xll = next;
-      if (sync == 0x64582025) {
-        hd::Bits r(p, 10);
-        r.skip(42);
-        bool wide = r.get(1);
-        size_t header = size_t(r.get(wide ? 12 : 8) + 1),
-               bytes = size_t(r.get(wide ? 20 : 16) + 1);
-        hd::require(header <= bytes && bytes <= f->length - next,
-                    "ExSS scan size");
-        end = next + bytes;
-        xll = next + header;
-      } else
-        hd::require(sync == 0x41a29547, "unsupported scan sync",
-                    HD_UNSUPPORTED);
-      hd::require(f->length - xll >= 20 && readAt(f->fp, f->start + xll, p, 20),
-                  "XLL scan failed", HD_IO);
-      hd::Bits r(p, 20);
-      hd::require(r.read(32) == 0x41a29547, "XLL scan sync");
-      r.skip(12);
-      int bits = r.get(5) + 1;
-      uint64_t bytes = r.read(unsigned(bits)) + 1;
-      r.skip(4);
-      int segments = 1 << r.get(4), perSegment = 1 << r.get(4);
-      hd::require(bytes <= f->length - xll && segments * perSegment <= 65536,
-                  "XLL scan dimensions");
-      samples += uint64_t(segments) * uint64_t(perSegment);
-      at = end ? end : xll + bytes;
+      auto au = scanAU(f, window, at);
+      samples += au.samples;
+      at = au.end;
     }
     hd::require(samples >= f->initialTrim, "scan priming exceeds samples");
     f->total = samples - f->initialTrim;
@@ -302,6 +357,64 @@ int hdmaxdec_file_measure(hdmaxdec_file *f, hdmaxdec_progress callback,
     f->error = e.what();
     return e.status;
   } catch (...) {
+    return HD_INVALID;
+  }
+}
+int hdmaxdec_file_prepare_seek(hdmaxdec_file *f, hdmaxdec_progress callback,
+                                void *context) {
+  if (!f)
+    return HD_INVALID;
+  if (!f->seekPoints.empty())
+    return HD_OK;
+  int measured = hdmaxdec_file_measure(f, callback, context);
+  if (measured != HD_OK)
+    return measured;
+  try {
+    constexpr uint64_t limit = 4096;
+    static_assert(limit * sizeof(hdmaxdec_file::SeekPoint) < (64u << 20),
+                  "seek history memory bound");
+    hd::require(f->total <= UINT64_MAX - f->initialTrim,
+                "seek index sample count overflow");
+    uint64_t stride = std::max<uint64_t>(12000, f->total / (limit - 1) + 1);
+    std::vector<hdmaxdec_file::SeekPoint> points;
+    points.reserve(size_t(std::min<uint64_t>(limit, f->total / stride + 1)));
+    hd::Core core;
+    ScanWindow window(f);
+    uint64_t at = 0, coded = 0, next = 0;
+    while (at < f->length) {
+      if (callback && !callback(context, at, f->length))
+        return HD_CANCELLED;
+      uint64_t produced = coded > f->initialTrim ? coded - f->initialTrim : 0;
+      if (produced >= next && produced < f->total) {
+        points.push_back({at, produced, coded < f->initialTrim
+                                           ? f->initialTrim - coded : 0, core});
+        next = produced + stride;
+      }
+      auto au = scanAU(f, window, at);
+      if (au.coreSize) {
+        auto audio = core.decode(window.get(at, au.coreSize), au.coreSize);
+        hd::require(audio.planes[0].size() == au.samples,
+                    "seek Core timeline mismatch");
+      }
+      hd::require(au.samples <= UINT64_MAX - coded,
+                  "seek timeline overflow");
+      coded += au.samples;
+      at = au.end;
+    }
+    hd::require(coded >= f->initialTrim + f->total && points.size() <= limit,
+                "seek index programme closure");
+    if (callback && !callback(context, f->length, f->length))
+      return HD_CANCELLED;
+    f->seekPoints = std::move(points);
+    return HD_OK;
+  } catch (const hd::Error &e) {
+    f->error = e.what();
+    return e.status;
+  } catch (const std::bad_alloc &) {
+    f->error = "seek index allocation failed";
+    return HD_MEMORY;
+  } catch (const std::exception &e) {
+    f->error = e.what();
     return HD_INVALID;
   }
 }

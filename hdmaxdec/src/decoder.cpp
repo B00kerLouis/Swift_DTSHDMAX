@@ -183,6 +183,9 @@ struct hdmaxdec_decoder {
   hd::Audio audio;
   std::string error;
 };
+namespace hd {
+Core &coreState(hdmaxdec_decoder *d) { return d->core; }
+}
 extern "C" {
 hdmaxdec_decoder *hdmaxdec_create(void) {
   try {

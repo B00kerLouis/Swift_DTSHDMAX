@@ -157,6 +157,7 @@ struct Core {
   std::array<int32_t, 8> lfe{};
   Audio decode(const uint8_t *, size_t);
 };
+Core &coreState(hdmaxdec_decoder *);
 XLL decodeXLL(const uint8_t *, size_t);
 Audio assemble(const XLL &, const Audio *);
 void decodePrivate(Audio &, const XLL &, const uint8_t *, size_t);

@@ -45,12 +45,21 @@ void Engine::load(const std::string &p, bool autoplay) {
   state_.status = "Loading audio…";
   state_.seeking = true;
   state_.loaded = false;
+  state_.scrubbing = false;
+  resumeAfterScrub_ = false;
   changed_.notify_all();
 }
 void Engine::toggle() {
   std::lock_guard<std::mutex> l(mutex_);
-  if (!state_.loaded)
+  if (state_.scrubbing) {
+    resumeAfterScrub_ = !resumeAfterScrub_;
     return;
+  }
+  if (!state_.loaded) {
+    if (loadPending_ || state_.seeking)
+      playing_ = !playing_;
+    return;
+  }
   if (playing_) {
     requested_ = displayed(state_);
     state_.position = requested_;
@@ -73,9 +82,14 @@ void Engine::toggle() {
 void Engine::stop() {
   std::lock_guard<std::mutex> l(mutex_);
   playing_ = false;
+  resumeAfterScrub_ = false;
   requested_ = 0;
   state_.position = 0;
   state_.span = 0;
+  if (!state_.loaded) {
+    changed_.notify_all();
+    return;
+  }
   state_.seeking = true;
   seekPending_ = true;
   ++generation_;
@@ -92,6 +106,46 @@ void Engine::seek(uint64_t p) {
   state_.span = 0;
   state_.seeking = true;
   state_.status = "Seeking…";
+  changed_.notify_all();
+}
+void Engine::beginScrub() {
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!state_.loaded || state_.scrubbing)
+    return;
+  resumeAfterScrub_ = playing_;
+  state_.position = displayed(state_);
+  state_.span = 0;
+  state_.playing = false;
+  state_.seeking = false;
+  state_.scrubbing = true;
+  state_.peak = {};
+  state_.rms = {};
+  state_.status = "Scrubbing";
+  playing_ = false;
+  seekPending_ = false;
+  flushPending_ = true;
+  ++generation_;
+  changed_.notify_all();
+}
+void Engine::previewScrub(uint64_t p) {
+  std::lock_guard<std::mutex> l(mutex_);
+  if (state_.scrubbing)
+    state_.position = state_.total ? std::min(p, state_.total) : p;
+}
+void Engine::endScrub(uint64_t p) {
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!state_.scrubbing)
+    return;
+  state_.scrubbing = false;
+  playing_ = resumeAfterScrub_;
+  resumeAfterScrub_ = false;
+  requested_ = state_.total ? std::min(p, state_.total) : p;
+  state_.position = requested_;
+  state_.span = 0;
+  state_.seeking = true;
+  state_.status = "Seeking…";
+  seekPending_ = true;
+  ++generation_;
   changed_.notify_all();
 }
 void Engine::skip(double seconds) {
@@ -111,22 +165,36 @@ void Engine::layout(const std::string &name) {
   state_.solo = -1;
   state_.peak = {};
   state_.rms = {};
+  reconfigure();
   changed_.notify_all();
 }
 void Engine::monitor(int value) {
   std::lock_guard<std::mutex> l(mutex_);
   monitor_ = value;
+  reconfigure();
   changed_.notify_all();
 }
 void Engine::solo(int channel) {
   std::lock_guard<std::mutex> l(mutex_);
   solo_ = solo_ == channel ? -1 : channel;
   state_.solo = solo_;
+  reconfigure();
   changed_.notify_all();
 }
 void Engine::volume(float value) {
   std::lock_guard<std::mutex> l(mutex_);
   volume_ = std::clamp(value, 0.0f, 1.0f);
+}
+void Engine::reconfigure() {
+  if (!state_.loaded || !playing_)
+    return;
+  if (!state_.seeking)
+    requested_ = displayed(state_);
+  state_.position = requested_;
+  state_.span = 0;
+  state_.seeking = true;
+  seekPending_ = true;
+  ++generation_;
 }
 void Engine::run() {
   using File = std::unique_ptr<hdmaxdec_file, decltype(&hdmaxdec_file_close)>;
@@ -144,19 +212,24 @@ void Engine::run() {
     auto *c = static_cast<Cancel *>(p);
     return c->engine->generation_.load() == c->generation;
   };
-  auto fail = [&](const std::string &message) {
+  auto fail = [&](const std::string &message, uint64_t gen) {
     player.reset();
     std::lock_guard<std::mutex> l(mutex_);
+    if (gen != generation_.load())
+      return;
     playing_ = false;
     state_.playing = false;
     state_.seeking = false;
+    state_.scrubbing = false;
+    resumeAfterScrub_ = false;
     state_.span = 0;
     state_.status = message;
   };
   while (true) {
     std::unique_lock<std::mutex> lock(mutex_);
     changed_.wait(lock, [&] {
-      return quitting_ || loadPending_ || seekPending_ || (playing_ && file);
+      return quitting_ || loadPending_ || flushPending_ || seekPending_ ||
+             (playing_ && file);
     });
     if (quitting_)
       break;
@@ -171,21 +244,21 @@ void Engine::run() {
       cursor = 0;
       deadline = Clock::now();
       if (!file) {
-        fail("Unable to open file or unsupported stream");
+        fail("Unable to open file or unsupported stream", gen);
         continue;
       }
       Cancel c{this, gen};
-      int measured = hdmaxdec_file_measure(file.get(), check, &c);
+      int measured = hdmaxdec_file_prepare_seek(file.get(), check, &c);
       if (measured == HD_CANCELLED)
         continue;
       if (measured != HD_OK) {
-        fail(hdmaxdec_file_error(file.get()));
+        fail(hdmaxdec_file_error(file.get()), gen);
         continue;
       }
       hdmaxdec_frame first{};
       int initial = hdmaxdec_file_read(file.get(), &first);
       if (initial != HD_OK) {
-        fail(hdmaxdec_file_error(file.get()));
+        fail(hdmaxdec_file_error(file.get()), gen);
         continue;
       }
       hdmaxdec_layout sourceLayout = first.layout;
@@ -208,22 +281,34 @@ void Engine::run() {
       state_.clips = 0;
       state_.status = "Ready";
     }
+    if (flushPending_ || seekPending_) {
+      flushPending_ = false;
+      lock.unlock();
+      if (player && hdmaxdec_player_flush(player.get()) != HD_OK) {
+        fail("Audio device failed or disconnected", gen);
+        continue;
+      }
+      lock.lock();
+      if (gen != generation_.load())
+        continue;
+    }
     if (seekPending_) {
       uint64_t wanted = requested_;
       seekPending_ = false;
       lock.unlock();
-      player.reset();
       Cancel c{this, gen};
       int status = hdmaxdec_file_seek_progress(file.get(), wanted, check, &c);
       if (status == HD_CANCELLED)
         continue;
       if (status != HD_OK) {
-        fail("Seek failed: " + std::string(hdmaxdec_file_error(file.get())));
+        fail("Seek failed: " + std::string(hdmaxdec_file_error(file.get())), gen);
         continue;
       }
       cursor = wanted;
       deadline = Clock::now();
       lock.lock();
+      if (gen != generation_.load())
+        continue;
       state_.position = cursor;
       state_.span = 0;
       state_.seeking = false;
@@ -232,7 +317,6 @@ void Engine::run() {
       state_.status = playing_ ? "Playing" : "Paused";
     }
     if (!playing_) {
-      player.reset();
       state_.playing = false;
       state_.stamp = Clock::now();
       continue;
@@ -244,10 +328,23 @@ void Engine::run() {
     hdmaxdec_frame f{};
     int decoded = hdmaxdec_file_read(file.get(), &f);
     if (decoded == HD_NEED_MORE) {
-      if (player)
-        hdmaxdec_player_drain(player.get());
-      player.reset();
+      Cancel c{this, gen};
+      if (player) {
+        int drained = hdmaxdec_player_drain_progress(player.get(), check, &c);
+        if (drained == HD_CANCELLED)
+          continue;
+        if (drained != HD_OK) {
+          fail("Audio device failed or disconnected", gen);
+          continue;
+        }
+        if (hdmaxdec_player_flush(player.get()) != HD_OK) {
+          fail("Audio device failed or disconnected", gen);
+          continue;
+        }
+      }
       lock.lock();
+      if (gen != generation_.load())
+        continue;
       playing_ = false;
       state_.playing = false;
       state_.position = state_.total;
@@ -258,17 +355,17 @@ void Engine::run() {
       continue;
     }
     if (decoded != HD_OK) {
-      fail("Decode failed: " + std::string(hdmaxdec_file_error(file.get())));
+      fail("Decode failed: " + std::string(hdmaxdec_file_error(file.get())), gen);
       continue;
     }
     hdmaxdec_layout qc = f.layout;
     if (name != "native" && hdmaxdec_layout_named(name.c_str(), &qc) != HD_OK) {
-      fail("Unsupported QC layout");
+      fail("Unsupported QC layout", gen);
       continue;
     }
     float matrix[32 * 32];
     if (hdmaxdec_frame_mix_matrix(&f, &qc, matrix) != HD_OK) {
-      fail("QC channel mapping failed");
+      fail("QC channel mapping failed", gen);
       continue;
     }
     // QC is measured before master volume and before DAC clipping. This plane
@@ -300,9 +397,7 @@ void Engine::run() {
         info = *hdmaxdec_player_info(player.get());
     } else if (player)
       info = *hdmaxdec_player_info(player.get());
-    if (monitor == 2)
-      player.reset();
-    if (player) {
+    if (player && monitor != 2) {
       hdmaxdec_frame physical{};
       physical.sample_rate = 48000;
       physical.bit_depth = 24;
@@ -334,8 +429,13 @@ void Engine::run() {
         }
         physical.planes[o] = pcm[o].data();
       }
-      if (hdmaxdec_player_write(player.get(), &physical, volume) != HD_OK) {
-        fail("Audio device failed or disconnected");
+      Cancel c{this, gen};
+      int written = hdmaxdec_player_write_progress(player.get(), &physical,
+                                                  volume, check, &c);
+      if (written == HD_CANCELLED)
+        continue;
+      if (written != HD_OK) {
+        fail("Audio device failed or disconnected", gen);
         continue;
       }
     }
@@ -353,7 +453,7 @@ void Engine::run() {
     state_.rms = rms;
     state_.clips += clips;
     state_.solo = solo;
-    state_.device = player ? std::string(info.name) + " · " +
+    state_.device = player && monitor != 2 ? std::string(info.name) + " · " +
                                  std::to_string(info.layout.count) + " ch"
                     : monitor == 2 ? "QC only, no monitoring"
                                    : "Device unavailable, QC only";
@@ -366,7 +466,8 @@ void Engine::run() {
     changed_.wait_until(lock, deadline, [&] {
       return quitting_ || !playing_ || loadPending_ || seekPending_;
     });
-    if (!quitting_ && !loadPending_ && !seekPending_) {
+    if (gen == generation_.load() && !quitting_ && !loadPending_ &&
+        !seekPending_ && !flushPending_ && !state_.scrubbing) {
       state_.position = cursor;
       state_.span = 0;
       state_.stamp = Clock::now();

@@ -35,6 +35,10 @@ jobs:
               -F"$products" -framework libhdmaxdec -Wl,-rpath,"$products" \
               -o "$products/hdmaxdec_export_tests"
             "$products/hdmaxdec_export_tests"
+            xcrun clang++ -std=c++17 -Ihdmaxdec/include hdmaxdec/tests/seek.cpp \
+              -F"$products" -framework libhdmaxdec -Wl,-rpath,"$products" \
+              -o "$products/hdmaxdec_seek_tests"
+            "$products/hdmaxdec_seek_tests"
             test -x "$products/hdmaxdec QC.app/Contents/MacOS/hdmaxdec"
           done
   portable:
