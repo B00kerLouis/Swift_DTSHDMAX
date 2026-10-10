@@ -9,6 +9,34 @@ external codec at runtime.
 This is interoperability research software. It is not an official DTS encoder,
 decoder, certification result, or trademark license.
 
+## Validation status
+
+B00kerLouis confirms that the project's tested DTS:X output bitstreams have
+achieved **ALL PASS** with both the **official DTS:X decoder** and the
+**DTS:X Bitstream Tools validator**.
+
+| Validation | Result for tested output bitstreams |
+| --- | --- |
+| Official DTS:X decoder / DTS:X MediaPlayer | **ALL PASS** |
+| DTS:X Bitstream Tools validator | **ALL PASS** |
+
+Recorded official decoder playback uses DTS:X MediaPlayer **1.1.0.73**.
+The complete TBH (229.9167 s), Nature's Fury (108.3333 s), and Water
+(93.0833 s) programmes passed in both `auto` and `standard` modes. Each file
+played from the beginning to EOF with Downmix Monitor and Legacy Monitor Off;
+all twelve native 7.1.4 channels reported **zero clipped samples**. Pause/resume,
+stop/play, and re-entry near EOF also passed for all six files.
+
+These results describe the checks performed on the tested bitstreams. Official
+decoder playback, bitstream validation, independent PCM decoding, and native
+self-round-trip are distinct validation results. Hardware playback, IMAX
+presentation acceptance, and formal DTS certification remain separate external
+acceptance requirements.
+
+Official-tool validation is performed locally. GitHub Actions runs builds and
+project regressions separately. Test media, proprietary tools, and research
+logs remain local and are excluded from the tracked repository.
+
 ## Products
 
 The Xcode project contains four product targets and the `Build ALL` shared scheme:
