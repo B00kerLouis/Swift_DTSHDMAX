@@ -53,9 +53,9 @@ jobs:
       - name: Configure Windows MSVC
         if: runner.os == 'Windows'
         run: cmake -S hdmaxdec -B Build/DecoderCI -A x64
-      - name: Build and run C++ regressions
-        run: |
-          cmake --build Build/DecoderCI --config Release --parallel 4
-          ctest --test-dir Build/DecoderCI -C Release --output-on-failure
+      - name: Build decoder
+        run: cmake --build Build/DecoderCI --config Release --parallel 4
+      - name: Run C++ regressions
+        run: ctest --test-dir Build/DecoderCI -C Release --output-on-failure
       - name: Install decoder and license texts
         run: cmake --install Build/DecoderCI --config Release --prefix Build/DecoderInstall

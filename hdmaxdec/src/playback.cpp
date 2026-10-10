@@ -243,12 +243,14 @@ void completed(void *ctx, AudioQueueRef, AudioQueueBufferRef buffer) {
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <windows.h>
 #include <audioclient.h>
-#include <functiondiscoverykeys_devpkey.h>
 #include <ks.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
-#include <windows.h>
+#include <initguid.h>
+#include <propkeydef.h>
+#include <functiondiscoverykeys_devpkey.h>
 struct hdmaxdec_player {
   hdmaxdec_device_info info{};
   IMMDeviceEnumerator *enumerator = nullptr;
