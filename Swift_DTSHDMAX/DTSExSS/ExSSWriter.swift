@@ -27,6 +27,14 @@ struct ExSSWriter: Sendable {
                 xllXByteOffset: xll.privateDataByteRange.lowerBound,
                 xllXFrameByteCount: xll.privateDataByteRange.count
             )
+        case .dtsxIMAX:
+            guard backwardCompatibleCore else { throw DTSError.invalidArgument("IMAX requires compatible Core") }
+            let xll = try XLLFrameASTParser.parse(xllFrame.data)
+            let imax = try DTSIMAXPrivateFrame.parse(xll.privateData)
+            dtsxSignal = try ExSSDTSXAssetDescriptorSignal(
+                imaxOffset: xll.privateDataByteRange.lowerBound,
+                groupByteCounts: imax.groups.map(\.chunkByteCount)
+            )
         }
         let format = xllFrame.info.format
         let assetDescriptor = try encodeAssetDescriptor(
@@ -113,6 +121,8 @@ struct ExSSWriter: Sendable {
                     "DTS:X ExSS header must use a 23-byte descriptor and total 40 bytes"
                 )
             }
+        case .dtsxIMAX:
+            guard headerByteCount == 44 else { throw DTSError.malformed("IMAX ExSS header is not 44 bytes") }
         }
         try writer.write(bytes: xllFrame.data, field: "XLL asset")
         guard writer.byteCount == frameByteCount, frameByteCount.isMultiple(of: 4) else {
@@ -131,7 +141,8 @@ struct ExSSWriter: Sendable {
         let descriptorSizeOffset = writer.bitCount
         try writer.write(0, bitCount: 9, field: "nuAssetDescriptFsizeMinus1")
         try writer.write(0, bitCount: 3, field: "nuAssetIndex")
-        try writer.write(0, bitCount: 1, field: "bAssetTypeDescrPresent")
+        try writer.write(dtsxSignal?.isIMAX == true ? 1 : 0, bitCount: 1, field: "bAssetTypeDescrPresent")
+        if dtsxSignal?.isIMAX == true { try writer.write(13, bitCount: 4, field: "IMAX asset type") }
         try writer.write(0, bitCount: 1, field: "bLanguageDescrPresent")
         try writer.write(0, bitCount: 1, field: "bInfoTextPresent")
         try writer.write(23, bitCount: 5, field: "nuBitResolutionMinus1")
@@ -212,6 +223,11 @@ struct ExSSWriter: Sendable {
                 bitCount: 16,
                 field: "nuDTSXXLLXByteOffset"
             )
+            if let counts = signal.imaxGroupByteCounts {
+                try writer.write(ExSSDTSXAssetDescriptorSignal.imaxSignature, bitCount: 40, field: "IMAX metadata/chunk declarations")
+                for count in counts { try writer.write(UInt64(count - 1), bitCount: 15, field: "IMAX associated chunk size") }
+                try writer.write(0, bitCount: 4, field: "IMAX descriptor padding")
+            } else {
             try writer.write(
                 ExSSDTSXAssetDescriptorSignal.signature,
                 bitCount: 24,
@@ -223,6 +239,7 @@ struct ExSSWriter: Sendable {
                 field: "nuDTSXXLLXPayloadNibbleCount"
             )
             try writer.write(0, bitCount: 6, field: "DTSXDescriptorZeroPad")
+            }
             guard writer.bitCount.isMultiple(of: 8) else {
                 throw DTSError.malformed("DTS:X asset descriptor is not byte aligned")
             }
@@ -231,7 +248,7 @@ struct ExSSWriter: Sendable {
         }
 
         let descriptorByteCount = writer.byteCount
-        if dtsxSignal != nil, descriptorByteCount != 23 {
+        if let signal = dtsxSignal, descriptorByteCount != (signal.isIMAX ? 27 : 23) {
             throw DTSError.malformed("DTS:X asset descriptor is not 23 bytes")
         }
         try writer.patch(

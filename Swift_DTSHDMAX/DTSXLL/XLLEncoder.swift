@@ -111,6 +111,7 @@ struct XLLEncoder: Sendable {
     }
 
     private let codingMode: XLLCodingMode
+    private let maximumPredictionOrder: Int
     private var usesBoundedPrediction: Bool {
         codingMode == .terminalOfficialPredictive || codingMode == .terminalAutomaticPredictive
     }
@@ -125,10 +126,12 @@ struct XLLEncoder: Sendable {
 
     init(
         codingMode: XLLCodingMode = .research,
-        enforcesOfficialHierarchyGrammar: Bool = false
+        enforcesOfficialHierarchyGrammar: Bool = false,
+        maximumPredictionOrder: Int = 15
     ) {
         self.codingMode = codingMode
         self.enforcesOfficialHierarchyGrammar = enforcesOfficialHierarchyGrammar
+        self.maximumPredictionOrder = min(15, max(0, maximumPredictionOrder))
     }
 
     func encode(
@@ -334,6 +337,24 @@ struct XLLEncoder: Sendable {
             ?? privateExtension
         try validatePrivateExtension(resolvedPrivateExtension)
         if !resolvedPrivateExtension.isEmpty {
+            if DTSIMAXPrivateFrame.isIMAX(resolvedPrivateExtension) {
+                let imax = try DTSIMAXPrivateFrame.parse(resolvedPrivateExtension)
+                try imax.validate(plan: segmentationPlan, allowWiderWidth: true)
+                if imax.navigationWidth > max(8, segmentSizeBitCount) {
+                    segmentSizeBitCount = imax.navigationWidth
+                    guard segmentSizeBitCount <= XLLSyntax.segmentSizeBitCount else {
+                        throw DTSError.malformed("IMAX shared navigation width exceeds public XLL capacity")
+                    }
+                    navigation = try encodeNavigation(segmentByteCounts: segments.map { $0.map(\.count) },
+                                                      segmentSizeBitCount: segmentSizeBitCount)
+                    segmentationPlan = try XLLSegmentationPlan(
+                        segmentCount: segmentCount, segmentSampleCount: segmentSampleCount,
+                        segmentSizeBitCount: segmentSizeBitCount, navigationByteCount: navigation.count,
+                        segmentEntropyByteCounts: segments.map { $0.map(\.count) }
+                    )
+                }
+                try imax.validate(plan: segmentationPlan)
+            } else {
             let privateAST = try DTSXPrivateFrameAST.parse(resolvedPrivateExtension[...])
             var privateNavigation = try? privateAST.parseNavigation(segmentCount: segmentCount)
             if privateNavigation == nil {
@@ -391,6 +412,7 @@ struct XLLEncoder: Sendable {
                     segmentCount: segmentCount,
                     sharedSegmentSizeBitCount: segmentSizeBitCount
                 )
+            }
             }
         }
         let channelHeaders = try channelSets.map {
@@ -479,6 +501,10 @@ struct XLLEncoder: Sendable {
 
     private func validatePrivateExtension(_ privateExtension: Data) throws {
         guard !privateExtension.isEmpty else { return }
+        if DTSIMAXPrivateFrame.isIMAX(privateExtension) {
+            _ = try DTSIMAXPrivateFrame.parse(privateExtension)
+            return
+        }
         guard privateExtension.count.isMultiple(of: 4),
               privateExtension.count >= 4,
               privateExtension[0] == 0x02,
@@ -490,6 +516,57 @@ struct XLLEncoder: Sendable {
             )
         }
         _ = try DTSXPrivateFrameAST.parse(privateExtension[...])
+    }
+
+    /// Encodes one independent IMAX audio group with the same bounded Rice
+    /// seeds/residuals as delivery XLL. Public planning has already selected
+    /// the partition; this method performs no second partition search.
+    func encodeIMAXChannelSet(
+        planes: [[Int32]], segmentCount: Int
+    ) throws -> DTSIMAXBareChannelSet {
+        guard [1, 4].contains(planes.count), [2, 4, 8].contains(segmentCount),
+              planes.allSatisfy({ $0.count == 512 && $0.allSatisfy { (-8_388_608...8_388_607).contains(Int($0)) } }) else {
+            throw DTSError.invalidArgument("IMAX audio group requires 1 or 4 signed-24 planes and 2/4/8 segments")
+        }
+        let channels = planes.count
+        let samples = 512 / segmentCount
+        let input = ChannelSetInput(
+            planes: planes, speakerMask: UInt64((1 << channels) - 1),
+            residualChannelMask: UInt64((1 << channels) - 1), primary: true,
+            hierarchical: false, downmixScaleCodes: [], downmixCoefficientCodes: [],
+            decorrelationEnabled: false, originalOrder: Array(0..<channels),
+            decorrelationCoefficients: Array(repeating: 0, count: channels / 2),
+            adaptivePredictionOrders: Array(repeating: 0, count: channels),
+            adaptiveReflectionCoefficientIndices: Array(repeating: [], count: channels),
+            fixedPredictionOrders: Array(repeating: 0, count: channels),
+            scalableLSBWidths: Array(repeating: 0, count: channels),
+            scalableLSBPlanes: Array(repeating: Array(repeating: 0, count: 512), count: channels)
+        )
+        let predicted = applyingPrediction(to: [input], segmentSampleCount: samples)[0]
+        let modes = selectEntropyModes(
+            dtsPlanes: predicted.planes, adaptivePredictionOrders: predicted.adaptivePredictionOrders,
+            segmentCount: segmentCount, segmentSampleCount: samples
+        )
+        let segments = try (0..<segmentCount).map { segment in
+            try encodeSegment(
+                index: segment, segmentSampleCount: samples, dtsPlanes: predicted.planes,
+                modes: modes[segment], previousModes: segment > 0 ? modes[segment - 1] : nil,
+                adaptivePredictionOrders: predicted.adaptivePredictionOrders,
+                scalableLSBWidths: predicted.scalableLSBWidths,
+                scalableLSBPlanes: predicted.scalableLSBPlanes
+            )
+        }
+        let width = max(8, requiredUnsignedBitCount(maximumValue: (segments.map(\.count).max() ?? 1) - 1))
+        let header = try encodeChannelSetHeader(
+            input: predicted, channelMaskBitCount: channels, segmentSizeBitCount: width,
+            segmentSampleCount: samples, scalableLSBs: false, alternateMapping: true
+        )
+        return DTSIMAXBareChannelSet(
+            header: header, segments: segments, channelCount: channels,
+            segmentSampleCount: samples, requiredNavigationWidth: width,
+            predictionOrders: predicted.adaptivePredictionOrders,
+            fixedPredictionOrders: predicted.fixedPredictionOrders
+        )
     }
 
     private func makeChannelSets(
@@ -1099,7 +1176,7 @@ struct XLLEncoder: Sendable {
     }
 
     private func levinsonReflectionCandidates(_ plane: [Int32]) -> [[Int32]]? {
-        let maximumOrder = min(15, plane.count - 1)
+        let maximumOrder = min(maximumPredictionOrder, plane.count - 1)
         guard maximumOrder > 0 else { return nil }
         var autocorrelation = Array(repeating: 0.0, count: maximumOrder + 1)
         for lag in 0...maximumOrder {
@@ -1457,7 +1534,8 @@ struct XLLEncoder: Sendable {
         channelMaskBitCount: Int,
         segmentSizeBitCount: Int,
         segmentSampleCount: Int,
-        scalableLSBs: Bool
+        scalableLSBs: Bool,
+        alternateMapping: Bool = false
     ) throws -> Data {
         let channels = input.planes.count
         var writer = BitWriter()
@@ -1471,6 +1549,11 @@ struct XLLEncoder: Sendable {
         try writer.write(0, bitCount: 2, field: "nFsInterpolate")
         try writer.write(0, bitCount: 2, field: "nReplacementSet")
 
+        if alternateMapping {
+            // The D0 audio groups replace the public speaker mapping with
+            // two profile bits. Prediction and entropy retain XLL grammar.
+            try writer.write(0, bitCount: 2, field: "IMAX channel-set mapping")
+        } else {
         // bOne2OneMapChannels2Speakers is true in the enclosing asset descriptor.
         try writer.write(input.primary ? 1 : 0, bitCount: 1, field: "bPrimaryChSet")
         let hasDownmix = !input.downmixCoefficientCodes.isEmpty
@@ -1509,6 +1592,7 @@ struct XLLEncoder: Sendable {
             bitCount: channelMaskBitCount,
             field: "nChMask"
         )
+        }
 
         guard input.adaptivePredictionOrders.count == channels,
               input.adaptivePredictionOrders.allSatisfy({ (0...15).contains($0) }),

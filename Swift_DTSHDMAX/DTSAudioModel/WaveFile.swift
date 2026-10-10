@@ -205,6 +205,32 @@ public enum WaveFile {
         return try DTS714PCMBuffer(planes: planes)
     }
 
+    /// Explicit IMAX selection gives zero-mask thirteen-channel WAVE the
+    /// A1...A13 order. A named mask uses ascending WAVE speaker-bit order.
+    public static func readIMAX(from url: URL) throws -> DTSIMAXPCMBuffer {
+        let parsed = try parseWave(from: url)
+        let format = parsed.format
+        let namedMask: UInt32 = 0x0002_f63f
+        guard format.channelCount == 13, [UInt32(0), namedMask].contains(format.speakerMask),
+              format.sampleRate == 48_000, format.containerBits == 24, format.validBits == 24,
+              format.blockAlign == 39, parsed.dataRange.count.isMultiple(of: 39) else {
+            throw DTSError.unsupported("IMAX WAVE requires 13 channels, 48 kHz packed 24-bit PCM and mask 0 or 0x2f63f")
+        }
+        let count = parsed.dataRange.count / 39
+        var planes = Array(repeating: [Int32](), count: 13)
+        for channel in planes.indices { planes[channel].reserveCapacity(count) }
+        let order = format.speakerMask == 0 ? Array(0..<13) : [0,1,2,3,6,7,4,5,8,12,9,10,11]
+        var cursor = parsed.dataRange.lowerBound
+        for _ in 0..<count {
+            for channel in 0..<13 {
+                let value = UInt32(parsed.data[cursor]) | UInt32(parsed.data[cursor+1]) << 8 | UInt32(parsed.data[cursor+2]) << 16
+                planes[order[channel]].append(value & 0x800000 == 0 ? Int32(value) : Int32(Int64(value)-0x1000000))
+                cursor += 3
+            }
+        }
+        return try DTSIMAXPCMBuffer(planes: planes)
+    }
+
     /// Reads little-endian signed PCM in 32-bit containers without applying a
     /// 24-bit range check or shifting the samples. The Core/XLL differential
     /// verifier uses this for a development trace captured before the public

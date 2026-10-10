@@ -34,4 +34,9 @@ public final class HDMAX: NSObject {
     public class func supportedEncodeModes() -> [String] {
         DTSEncodeMode.allCases.map(\.rawValue)
     }
+
+    @objc(supportedDTSXVisions)
+    public class func supportedDTSXVisions() -> [String] {
+        DTSXVision.allCases.map(\.rawValue)
+    }
 }

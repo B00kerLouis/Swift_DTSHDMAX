@@ -1,0 +1,61 @@
+name: Independent C and C++ decoder
+
+on:
+  push:
+    paths: ["hdmaxdec/**", "LICENSE", "LICENSES/**", "Swift_DTSHDMAX.xcodeproj/**", ".github/workflows/hdmaxdec.yml"]
+  pull_request:
+    paths: ["hdmaxdec/**", "LICENSE", "LICENSES/**", "Swift_DTSHDMAX.xcodeproj/**", ".github/workflows/hdmaxdec.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xcode:
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build decoder CLI and Framework
+        run: |
+          set -euo pipefail
+          for configuration in Release Debug; do
+            xcodebuild -project Swift_DTSHDMAX.xcodeproj -scheme "decoder cli" \
+              -configuration "$configuration" -derivedDataPath Build/DecoderCI/DerivedData \
+              OBJROOT="$GITHUB_WORKSPACE/Build/DecoderCI/Intermediates/$configuration" \
+              CODE_SIGNING_ALLOWED=NO build
+            products="$GITHUB_WORKSPACE/Build/Products/$configuration"
+            "$products/hdmaxdec" --version
+            xcrun clang++ -std=c++17 -Ihdmaxdec/include -Ihdmaxdec/src \
+              hdmaxdec/tests/regression.cpp -F"$products" -framework libhdmaxdec \
+              -Wl,-rpath,"$products" -o "$products/hdmaxdec_tests"
+            "$products/hdmaxdec_tests"
+            xcrun clang++ -std=c++17 -Ihdmaxdec/include hdmaxdec/tests/export.cpp \
+              -F"$products" -framework libhdmaxdec -Wl,-rpath,"$products" \
+              -o "$products/hdmaxdec_export_tests"
+            "$products/hdmaxdec_export_tests"
+            test -x "$products/hdmaxdec QC.app/Contents/MacOS/hdmaxdec"
+          done
+  portable:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux development libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libavutil-dev pkg-config
+      - name: Configure Linux GCC and AVFrame integration
+        if: runner.os == 'Linux'
+        run: cmake -S hdmaxdec -B Build/DecoderCI -DCMAKE_BUILD_TYPE=Release -DHDMAXDEC_FFMPEG=ON
+      - name: Configure Windows MSVC
+        if: runner.os == 'Windows'
+        run: cmake -S hdmaxdec -B Build/DecoderCI -A x64
+      - name: Build and run C++ regressions
+        run: |
+          cmake --build Build/DecoderCI --config Release --parallel 4
+          ctest --test-dir Build/DecoderCI -C Release --output-on-failure
+      - name: Install decoder and license texts
+        run: cmake --install Build/DecoderCI --config Release --prefix Build/DecoderInstall

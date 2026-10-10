@@ -26,12 +26,17 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
     static let signature: UInt64 = 0x001145
     static let fixedPrivatePrefixByteCount = 24
     static let encodedBitCount = 5 + 16 + 24 + 16 + 6
+    static let imaxEncodedBitCount = 5 + 16 + 40 + 15 + 15 + 4
+    static let imaxSignature: UInt64 = 0x1112_1544_44
 
     let xllXByteOffset: Int
     let xllXPayloadNibbleCount: Int
+    let imaxGroupByteCounts: [Int]?
+    var isIMAX: Bool { imaxGroupByteCounts != nil }
 
     var xllXFrameByteCount: Int {
-        Self.fixedPrivatePrefixByteCount + xllXPayloadNibbleCount / 2
+        if let counts = imaxGroupByteCounts { return (45 + counts.reduce(0, +) + 3) & ~3 }
+        return Self.fixedPrivatePrefixByteCount + xllXPayloadNibbleCount / 2
     }
 
     init(xllXByteOffset: Int, xllXFrameByteCount: Int) throws {
@@ -56,6 +61,7 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         }
         self.xllXByteOffset = xllXByteOffset
         self.xllXPayloadNibbleCount = nibbleCount
+        imaxGroupByteCounts = nil
     }
 
     init(xllXByteOffset: Int, xllXPayloadNibbleCount: Int) throws {
@@ -69,12 +75,24 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         }
         self.xllXByteOffset = xllXByteOffset
         self.xllXPayloadNibbleCount = xllXPayloadNibbleCount
+        imaxGroupByteCounts = nil
+    }
+
+    init(imaxOffset: Int, groupByteCounts: [Int]) throws {
+        guard (0...0xffff).contains(imaxOffset), groupByteCounts.count == 2,
+              groupByteCounts.allSatisfy({ (1...0x8000).contains($0) }) else {
+            throw DTSError.invalidArgument("IMAX descriptor navigation is out of range")
+        }
+        xllXByteOffset = imaxOffset
+        xllXPayloadNibbleCount = 0
+        imaxGroupByteCounts = groupByteCounts
     }
 }
 
 enum ExSSAssetDescriptorProfile: Sendable, Equatable {
     case standardHDMA
     case dtsxXLLX
+    case dtsxIMAX
 }
 
 struct ExSSFrameInfo: Sendable, Equatable, Codable {

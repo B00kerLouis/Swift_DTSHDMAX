@@ -8,6 +8,7 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
     public let atmosBedChannelCount: Int?
     public let atmosObjectCount: Int?
     public let renderedFromAtmos: Bool
+    public let dtsxVision: DTSXVision?
 
     public init(
         inputURL: URL,
@@ -16,7 +17,8 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
         sourceChannelCount: Int,
         atmosBedChannelCount: Int? = nil,
         atmosObjectCount: Int? = nil,
-        renderedFromAtmos: Bool = false
+        renderedFromAtmos: Bool = false,
+        dtsxVision: DTSXVision? = nil
     ) {
         self.inputURL = inputURL.standardizedFileURL
         self.resolvedInputURL = resolvedInputURL.standardizedFileURL
@@ -25,6 +27,7 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
         self.atmosBedChannelCount = atmosBedChannelCount
         self.atmosObjectCount = atmosObjectCount
         self.renderedFromAtmos = renderedFromAtmos
+        self.dtsxVision = dtsxVision
     }
 }
 
@@ -301,13 +304,13 @@ public enum DTSHDMADeliveryArtifactWriter {
             roundingUp: true
         )
         let endTimecode = timecode(frameIndex: endFrames, frameRate: frameRate)
-        let inputLabel = input.renderedFromAtmos
+        let inputLabel = input.dtsxVision == .imax && !input.renderedFromAtmos ? "Interleaved IMAX 12.1" : input.renderedFromAtmos
             ? "Atmos Master"
             : (pcm.format.layout == .sevenOne ? "Interleaved 7.1" : "Interleaved 5.1")
         let layout = pcm.format.layout == .sevenOne
             ? "7.1 - L, R, C, LFE, Lss, Rss, Lsr, Rsr"
             : "5.1 - L, R, C, LFE, Ls, Rs"
-        let streamType = input.renderedFromAtmos
+        let streamType = input.dtsxVision == .imax ? "DTS HD Master Audio with DTS:X IMAX (12.1 including TFC)" : input.renderedFromAtmos
             ? "DTS HD Master Audio with DTS:X"
             : "DTS HD Master Audio"
         let fullScaleSamples = pcm.planes.reduce(0) { count, plane in

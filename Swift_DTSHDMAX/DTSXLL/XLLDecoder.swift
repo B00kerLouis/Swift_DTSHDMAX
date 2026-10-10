@@ -226,6 +226,27 @@ struct XLLDecoder: Sendable {
         var parser = try XLLFrameDecoderParser(data: data)
         return try parser.decode()
     }
+
+    /// D0 groups carry an ordinary XLL predictor/entropy body behind a
+    /// two-bit mapping prefix and an explicitly declared, CRC-closed NAVI.
+    func decodeIMAXChannelSet(
+        data: Data, segmentCount: Int, segmentSizeBitCount: Int
+    ) throws -> [[Int32]] {
+        guard [2, 4, 8].contains(segmentCount), (8...16).contains(segmentSizeBitCount) else {
+            throw DTSError.malformed("IMAX audio-group dimensions are invalid")
+        }
+        var parser = try XLLFrameDecoderParser(data: data)
+        parser.frameByteCount = data.count
+        parser.channelSetCount = 1
+        parser.segmentCount = segmentCount
+        parser.segmentSampleCount = 512 / segmentCount
+        parser.segmentSampleCountLog2 = Int.ceilLog2(parser.segmentSampleCount)
+        parser.segmentSizeBitCount = segmentSizeBitCount
+        let sets = try parser.parseChannelSetHeaders(alternateMapping: true)
+        let navigation = try parser.parseNavigation(channelSets: sets)
+        let decoded = try parser.decodeBandData(channelSets: sets, navigation: navigation)
+        return decoded[0]
+    }
 }
 
 private struct XLLBandConfiguration {
@@ -372,7 +393,7 @@ private struct XLLFrameDecoderParser {
         try reader.seek(to: commonHeaderByteCount * 8, field: "XLL common-header end")
     }
 
-    mutating func parseChannelSetHeaders() throws -> [XLLChannelSetConfiguration] {
+    mutating func parseChannelSetHeaders(alternateMapping: Bool = false) throws -> [XLLChannelSetConfiguration] {
         var output: [XLLChannelSetConfiguration] = []
         output.reserveCapacity(channelSetCount)
         var lowerHierarchyChannelCount = 0
@@ -398,22 +419,32 @@ private struct XLLFrameDecoderParser {
                   frequencyModifier == 0, replacementSet == 0 else {
                 throw DTSError.unsupported("XLL channel-set audio characteristics")
             }
-            let primary = try reader.read(1, field: "bPrimaryChSet[\(channelSetIndex)]") == 1
+            var primary = true
+            var downmixCoefficientsPresent = false
+            var downmixEmbedded = false
+            var hierarchical = false
+            var downmixScaleCodes: [Int] = []
+            var downmixCoefficientCodes: [Int] = []
+            var speakerMask = UInt64.lowBitMask(width: channelCount)
+            if alternateMapping {
+                guard [1, 4].contains(channelCount), residualMask == UInt64.lowBitMask(width: channelCount),
+                      try reader.read(2, field: "IMAX mapping prefix") == 0 else {
+                    throw DTSError.malformed("IMAX audio-group mapping is invalid")
+                }
+            } else {
+            primary = try reader.read(1, field: "bPrimaryChSet[\(channelSetIndex)]") == 1
             guard primary == (channelSetIndex == 0) else {
                 throw DTSError.malformed("XLL primary channel-set ordering is invalid")
             }
-            let downmixCoefficientsPresent = try reader.read(1, field: "bDownmixCoeffCodeEmbedded[\(channelSetIndex)]") == 1
-            var downmixEmbedded = false
+            downmixCoefficientsPresent = try reader.read(1, field: "bDownmixCoeffCodeEmbedded[\(channelSetIndex)]") == 1
             if downmixCoefficientsPresent {
                 downmixEmbedded = try reader.read(1, field: "bDownmixEmbedded[\(channelSetIndex)]") == 1
                 if primary { _ = try reader.read(3, field: "nLLDownmixType[\(channelSetIndex)]") }
             }
-            let hierarchical = try reader.read(1, field: "bHierChSet[\(channelSetIndex)]") == 1
+            hierarchical = try reader.read(1, field: "bHierChSet[\(channelSetIndex)]") == 1
             guard hierarchical || channelSetCount == 1 else {
                 throw DTSError.unsupported("XLL channel set outside hierarchy")
             }
-            var downmixScaleCodes: [Int] = []
-            var downmixCoefficientCodes: [Int] = []
             if downmixCoefficientsPresent {
                 let downmixInputCount = primary ? 2 : lowerHierarchyChannelCount
                 guard downmixInputCount > 0 else {
@@ -437,15 +468,19 @@ private struct XLLFrameDecoderParser {
             guard try reader.read(1, field: "bChMaskEnabled[\(channelSetIndex)]") == 1 else {
                 throw DTSError.unsupported("XLL channel mask is disabled")
             }
-            let speakerMask = try reader.read(channelMaskBitCount, field: "nChMask[\(channelSetIndex)]")
+            speakerMask = try reader.read(channelMaskBitCount, field: "nChMask[\(channelSetIndex)]")
             guard speakerMask.nonzeroBitCount == channelCount else {
                 throw DTSError.malformed("XLL channel mask does not match channel count")
+            }
             }
             let bitAllocationWidth = storageBitDepth > 16 ? 5 : (storageBitDepth > 8 ? 4 : 3)
             let band = try parseBandConfiguration(
                 channelSetIndex: channelSetIndex,
                 channelCount: channelCount
             )
+            if alternateMapping, reader.bitOffset > (headerEnd - 2) * 8 {
+                throw DTSError.malformed("IMAX prediction fields overlap the channel-header CRC")
+            }
             try reader.seek(to: headerEnd * 8, field: "XLL channel-set-header end")
             output.append(XLLChannelSetConfiguration(
                 index: channelSetIndex,

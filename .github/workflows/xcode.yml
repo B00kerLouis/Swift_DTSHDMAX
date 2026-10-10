@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           for check in verify-encode-modes verify-dtsx-navigation-width \
-            verify-xllx-native-encoder verify-dtsx-native-encoder; do
+            verify-xllx-native-encoder verify-dtsx-native-encoder verify-dtsx-imax-encoder; do
             Build/CI/Products/Debug/hdmax "$check" \
               | tee "Build/CI/Logs/$check.json"
           done

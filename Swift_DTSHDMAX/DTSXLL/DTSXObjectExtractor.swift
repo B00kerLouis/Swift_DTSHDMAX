@@ -370,6 +370,18 @@ public enum DTSXObjectExtractor {
             let privateFrame = payload.subdata(
                 in: payloadFileOffset..<(payloadFileOffset + frame.payloadByteCount)
             )
+            if DTSIMAXPrivateFrame.isIMAX(privateFrame) {
+                if let imax = try? DTSIMAXPrivateFrame.parse(privateFrame),
+                   (try? imax.decode()) != nil,
+                   imax.groups.allSatisfy({ $0.segmentCount == syntax.segmentCount }),
+                   let width = syntax.segmentSizeBitCount {
+                    privateSegmentationMatchedFrameCount += 1
+                    if imax.groups.allSatisfy({ $0.navigationWidth == max(8, width) }) {
+                        privateNavigationWidthMatchedFrameCount += 1
+                    }
+                }
+                continue
+            }
             guard let ast = try? DTSXPrivateFrameAST.parse(privateFrame[...]),
                   let decoded = try? DTSXPrivateFrameDecoder.decode(
                       ast,

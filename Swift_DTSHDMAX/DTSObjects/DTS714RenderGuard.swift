@@ -255,7 +255,13 @@ public enum DTS714RenderGuard {
     /// `DTS714Channel.allCases` order and may carry pre-saturation values in
     /// the full `Int32` range.
     public static func apply(to planes: inout [[Int32]]) -> DTS714RenderGuardReport {
-        precondition(planes.count == 12, "DTS:X render guard requires 12 planes")
+        apply(to: &planes, imax: false)
+    }
+
+    /// Reuses the qualified attack/hold/release envelope with the IMAX fold
+    /// constraints. The standard twelve-plane arithmetic stays unchanged.
+    static func apply(to planes: inout [[Int32]], imax: Bool) -> DTS714RenderGuardReport {
+        precondition(planes.count == (imax ? 13 : 12), "DTS:X render guard plane count is invalid")
         let sampleCount = planes.first?.count ?? 0
         precondition(
             planes.allSatisfy { $0.count == sampleCount },
@@ -271,7 +277,7 @@ public enum DTS714RenderGuard {
         var gains = [Int32](repeating: Int32(unityQ30), count: sampleCount)
         var anyOverload = false
         for sample in 0..<sampleCount {
-            let extremes = constraintExtremes(planes, sample)
+            let extremes = imax ? DTSIMAXCompatibilityBedRenderer.constraintExtremes(planes, sample) : constraintExtremes(planes, sample)
             maximumComposite = max(maximumComposite, extremes.maximumMagnitude)
             guard extremes.overloads else { continue }
             if extremes.planeOverloads { planeOverloads += 1 }
@@ -341,7 +347,7 @@ public enum DTS714RenderGuard {
             gainReduced += 1
             minimumGain = min(minimumGain, gain)
             var planeEscapedBounds = false
-            for channel in 0..<12 {
+            for channel in planes.indices {
                 let value = Int64(planes[channel][sample])
                 let scaled = value >= 0
                     ? (value * gain + (unityQ30 >> 1)) >> 30
@@ -357,7 +363,8 @@ public enum DTS714RenderGuard {
             // Every constraint must close after rescaling; the targets leave
             // margin for the per-plane and in-fold rounding, so a violation
             // here is a guard defect rather than expected behavior.
-            if planeEscapedBounds || constraintExtremes(planes, sample).overloads {
+            let remaining = imax ? DTSIMAXCompatibilityBedRenderer.constraintExtremes(planes, sample) : constraintExtremes(planes, sample)
+            if planeEscapedBounds || remaining.overloads {
                 residualClipped += 1
             }
         }

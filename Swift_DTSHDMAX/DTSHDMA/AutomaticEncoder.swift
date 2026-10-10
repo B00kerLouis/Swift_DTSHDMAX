@@ -3,18 +3,21 @@ import Foundation
 public enum DTSDetectedInput: String, Sendable, Codable {
     case fiveOnePCM = "5.1PCM"
     case sevenOnePCM = "7.1PCM"
+    case imaxPCM = "12.1PCM"
     case atmosMaster = "AtmosMaster"
 }
 
 public enum DTSEncodedProduct: String, Sendable, Codable {
     case dtsHDMA = "DTS HDMA"
     case dtsxHDMA = "DTS:X HDMA"
+    case dtsxIMAX = "DTS:X IMAX HDMA"
 }
 
 public enum DTSObjectMetadataDisposition: String, Sendable, Codable {
     case notApplicable
     case renderedToSevenOneBed
     case renderedToSevenOneFour
+    case renderedToIMAX
 }
 
 public struct DTSAutomaticVerificationReport: Sendable, Equatable, Codable {
@@ -60,6 +63,7 @@ public struct DTSAutomaticEncodeReport: Sendable, Equatable, Codable {
     public let encodedProduct: DTSEncodedProduct
     public let frameRate: DTSFrameRate
     public let encodeMode: DTSEncodeMode
+    public let dtsxVision: DTSXVision?
     public let objectMetadataDisposition: DTSObjectMetadataDisposition
     public let atmosBedChannelCount: Int?
     public let atmosObjectCount: Int?
@@ -74,6 +78,7 @@ public enum DTSAutomaticEncoder {
     private enum EncodingSource {
         case hdma(PCMBuffer)
         case dtsx(rendered: DTS714PCMBuffer, compatibilityBed: PCMBuffer)
+        case imax(rendered: DTSIMAXPCMBuffer, compatibilityBed: PCMBuffer)
     }
 
     private struct LoadedSource {
@@ -88,11 +93,21 @@ public enum DTSAutomaticEncoder {
         let deliveryInput: DTSHDMADeliveryInput
     }
 
+    /// Preserve the existing typed entry point and its default 7.1.4 path.
+    public static func encode(
+        inputURL: URL, outputURL: URL, frameRateOverride: DTSFrameRate? = nil,
+        encodeMode: DTSEncodeMode = .auto, progress: ((Int64, Int64) -> Void)? = nil
+    ) throws -> DTSAutomaticEncodeReport {
+        try encode(inputURL: inputURL, outputURL: outputURL, frameRateOverride: frameRateOverride,
+                   encodeMode: encodeMode, dtsxVision: .sevenOneFour, progress: progress)
+    }
+
     public static func encode(
         inputURL: URL,
         outputURL: URL,
         frameRateOverride: DTSFrameRate? = nil,
         encodeMode: DTSEncodeMode = .auto,
+        dtsxVision: DTSXVision,
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws -> DTSAutomaticEncodeReport {
         let progressTotal = Int64(1_000)
@@ -112,6 +127,7 @@ public enum DTSAutomaticEncoder {
         let source = try loadSource(
             inputURL: input,
             frameRateOverride: frameRateOverride,
+            dtsxVision: dtsxVision,
             progress: { completed, total in
                 progress?(
                     Int64(250) * completed / max(1, total),
@@ -161,6 +177,18 @@ public enum DTSAutomaticEncoder {
                 frameRate: source.frameRate
             )
             progress?(980, progressTotal)
+        case .imax(let rendered, let compatibilityBed):
+            let encoded = try DTSIMAXNativeHDMAEncoder(encodeMode: encodeMode).encode(
+                source: rendered, to: output, frameRate: source.frameRate,
+                progress: { completed, total in
+                    progress?(250 + Int64(600) * Int64(completed) / Int64(max(1, total)), progressTotal)
+                }
+            )
+            artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(
+                pcm: compatibilityBed, input: source.deliveryInput, outputURL: output, frameRate: source.frameRate
+            )
+            guard encoded.privatePCMVerified else { throw DTSError.malformed("IMAX private PCM verification failed") }
+            progress?(980, progressTotal)
         }
 
         let report = DTSAutomaticEncodeReport(
@@ -171,6 +199,7 @@ public enum DTSAutomaticEncoder {
             encodedProduct: source.encodedProduct,
             frameRate: source.frameRate,
             encodeMode: encodeMode,
+            dtsxVision: dtsxVision,
             objectMetadataDisposition: source.objectMetadataDisposition,
             atmosBedChannelCount: source.atmosBedChannelCount,
             atmosObjectCount: source.atmosObjectCount,
@@ -185,6 +214,7 @@ public enum DTSAutomaticEncoder {
     private static func loadSource(
         inputURL: URL,
         frameRateOverride: DTSFrameRate?,
+        dtsxVision: DTSXVision,
         progress: ((Int64, Int64) -> Void)?
     ) throws -> LoadedSource {
         var isDirectory: ObjCBool = false
@@ -197,6 +227,7 @@ public enum DTSAutomaticEncoder {
                 inputURL: inputURL,
                 resolvedURL: inputURL,
                 frameRateOverride: frameRateOverride,
+                dtsxVision: dtsxVision,
                 progress: progress
             )
         }
@@ -207,9 +238,11 @@ public enum DTSAutomaticEncoder {
                     inputURL: inputURL,
                     resolvedURL: inputURL,
                     frameRateOverride: frameRateOverride,
+                    dtsxVision: dtsxVision,
                     progress: progress
                 )
             }
+            if dtsxVision == .imax { return try loadIMAXWave(inputURL: inputURL, frameRateOverride: frameRateOverride) }
             let pcm = try WaveFile.read(from: inputURL)
             let frameRate = try DTSFrameRate.resolve(
                 metadataFramesPerSecond: nil,
@@ -258,6 +291,7 @@ public enum DTSAutomaticEncoder {
 
         let resolved = try AtmosInputReader.resolve(url: inputURL)
         if try hasWaveHeader(resolved), try !hasADMMetadata(resolved) {
+            if dtsxVision == .imax { return try loadIMAXWave(inputURL: resolved, frameRateOverride: frameRateOverride) }
             let pcm = try WaveFile.read(from: resolved)
             let frameRate = try DTSFrameRate.resolve(
                 metadataFramesPerSecond: nil,
@@ -292,6 +326,7 @@ public enum DTSAutomaticEncoder {
             inputURL: inputURL,
             resolvedURL: resolved,
             frameRateOverride: frameRateOverride,
+            dtsxVision: dtsxVision,
             progress: progress
         )
     }
@@ -300,8 +335,32 @@ public enum DTSAutomaticEncoder {
         inputURL: URL,
         resolvedURL: URL,
         frameRateOverride: DTSFrameRate?,
+        dtsxVision: DTSXVision,
         progress: ((Int64, Int64) -> Void)?
     ) throws -> LoadedSource {
+        if dtsxVision == .imax {
+            let master: AtmosMaster
+            let rendered: DTSIMAXPCMBuffer
+            if resolvedURL.pathExtension.lowercased() == "mxf" {
+                let iab = try IMFIABReader.read(url: resolvedURL)
+                master = iab.master
+                rendered = try DTSIMAXRenderer.render(iab: iab, progress: progress)
+            } else {
+                master = try AtmosInputReader.read(url: resolvedURL)
+                rendered = try DTSIMAXRenderer.render(master: master, progress: progress)
+            }
+            let rate = try DTSFrameRate.resolve(metadataFramesPerSecond: master.framesPerSecond,
+                                                override: frameRateOverride, sourceDescription: "Atmos IMAX render")
+            return LoadedSource(
+                resolvedInputURL: resolvedURL, detectedInput: .atmosMaster, encodedProduct: .dtsxIMAX,
+                objectMetadataDisposition: .renderedToIMAX, atmosBedChannelCount: master.bedChannels.count,
+                atmosObjectCount: master.objects.count, frameRate: rate,
+                source: .imax(rendered: rendered, compatibilityBed: try DTSIMAXCompatibilityBedRenderer.render(rendered)),
+                deliveryInput: DTSHDMADeliveryInput(inputURL: inputURL, resolvedInputURL: resolvedURL,
+                    detectedInput: .atmosMaster, sourceChannelCount: master.audioFormat.channelCount,
+                    atmosBedChannelCount: master.bedChannels.count, atmosObjectCount: master.objects.count, renderedFromAtmos: true, dtsxVision: .imax)
+            )
+        }
         let master: AtmosMaster
         let rendered: DTS714PCMBuffer
         if resolvedURL.pathExtension.lowercased() == "mxf" {
@@ -340,6 +399,18 @@ public enum DTSAutomaticEncoder {
                 renderedFromAtmos: true
             )
         )
+    }
+
+    private static func loadIMAXWave(inputURL: URL, frameRateOverride: DTSFrameRate?) throws -> LoadedSource {
+        let pcm = try WaveFile.readIMAX(from: inputURL)
+        var planes = pcm.planes
+        _ = DTS714RenderGuard.apply(to: &planes, imax: true)
+        let rendered = try DTSIMAXPCMBuffer(planes: planes)
+        let rate = try DTSFrameRate.resolve(metadataFramesPerSecond: nil, override: frameRateOverride, sourceDescription: "IMAX PCM WAVE")
+        return LoadedSource(resolvedInputURL: inputURL, detectedInput: .imaxPCM, encodedProduct: .dtsxIMAX,
+            objectMetadataDisposition: .notApplicable, atmosBedChannelCount: nil, atmosObjectCount: nil,
+            frameRate: rate, source: .imax(rendered: rendered, compatibilityBed: try DTSIMAXCompatibilityBedRenderer.render(rendered)),
+            deliveryInput: DTSHDMADeliveryInput(inputURL: inputURL, resolvedInputURL: inputURL, detectedInput: .imaxPCM, sourceChannelCount: 13, dtsxVision: .imax))
     }
 
     private static func hasWaveHeader(_ url: URL) throws -> Bool {

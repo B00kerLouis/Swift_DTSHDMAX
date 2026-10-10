@@ -671,8 +671,8 @@ public enum DTSXNativeEncoderVerifier {
     /// navigated zero-height delivery frame, and every fully silent access
     /// unit must carry the code-0x20 mid-stream silence declaration. Neither
     /// class may ever re-enter the startup or Core-priming grammar
-    /// mid-stream or at the tail. This pins the fix for tbh's bed-only tail
-    /// (片尾) failing on hardware while height-active regions play.
+    /// mid-stream or at the tail. This pins the fix for TBH's bed-only
+    /// programme tails failing on hardware while height-active regions play.
     private static func verifyTerminalBedOnlyProgrammeTimeline() throws -> Bool {
         let corePriming = HotStartPrivateFrameExpectation(
             byteCount: 48,

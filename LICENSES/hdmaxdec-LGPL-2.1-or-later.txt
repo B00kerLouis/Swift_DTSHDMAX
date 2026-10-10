@@ -1,0 +1,27 @@
+hdmaxdec
+Copyright (c) 2026 B00kerLouis.
+SPDX-License-Identifier: LGPL-2.1-or-later
+
+This library is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.
+
+This library is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public
+License along with this library; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+The grant covers the project-owned hdmaxdec/ C/C++ decoder, CLI, macOS QC
+interface, optional FFmpeg adapter, tests and build support, the decoder cli
+and decoder framework Xcode target additions and shared schemes, and
+.github/workflows/hdmaxdec.yml. Encoder restrictions do not apply to these
+components. Third-party copyright and license notices must be preserved.
+
+The complete LGPL version 2.1 text is in LGPL-2.1.txt. The incorporated GPL
+version 2 text is in GPL-2.0.txt. The Swift encoder remains separately licensed
+as described in LICENSES/README.md in the source repository.

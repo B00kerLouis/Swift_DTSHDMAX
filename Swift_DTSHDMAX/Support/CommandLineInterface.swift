@@ -29,7 +29,8 @@ public enum DTSHDMACommandLine {
                 inputURL: options.input,
                 outputURL: options.output,
                 frameRateOverride: options.frameRate,
-                encodeMode: options.encodeMode
+                encodeMode: options.encodeMode,
+                dtsxVision: options.dtsxVision
             ) { completed, total in
                 progress(Int(completed), Int(total))
             }
@@ -1055,6 +1056,10 @@ public enum DTSHDMACommandLine {
             guard report.isVerified else {
                 throw DTSError.malformed("auto/standard mode regression failed: partitions \(report.automaticallySelectedPartitions)")
             }
+
+        case "verify-dtsx-imax-encoder":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-dtsx-imax-encoder does not accept arguments") }
+            print(try jsonString(DTSIMAXEncoderVerifier.verify()))
 
         case "verify-dtsx-native-encoder":
             guard values.isEmpty else {
@@ -2304,21 +2309,28 @@ public enum DTSHDMACommandLine {
 
     private static func parseAutomaticOptions(
         _ arguments: [String]
-    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode) {
+    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode, dtsxVision: DTSXVision) {
         var input: URL?
         var output: URL?
         var frameRate: DTSFrameRate?
         var encodeMode: DTSEncodeMode?
+        var dtsxVision: DTSXVision?
         var index = 0
         while index < arguments.count {
             let option = arguments[index]
-            guard ["-i", "-o", "--frame-rate", "--encode-mode"].contains(option) else {
+            guard ["-i", "-o", "--frame-rate", "--encode-mode", "--dtsx-vision"].contains(option) else {
                 throw DTSError.invalidArgument(
-                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE] [--encode-mode auto|standard]"
+                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE] [--encode-mode auto|standard] [--dtsx-vision 1|2]"
                 )
             }
             guard index + 1 < arguments.count else {
                 throw DTSError.invalidArgument("\(option) requires a value")
+            }
+            if option == "--dtsx-vision" {
+                guard dtsxVision == nil else { throw DTSError.invalidArgument("--dtsx-vision may be specified only once") }
+                dtsxVision = try DTSXVision(argument: arguments[index + 1])
+                index += 2
+                continue
             }
             if option == "--encode-mode" {
                 guard encodeMode == nil else {
@@ -2352,7 +2364,7 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate, encodeMode ?? .auto)
+        return (input, output, frameRate, encodeMode ?? .auto, dtsxVision ?? .sevenOneFour)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2368,11 +2380,16 @@ public enum DTSHDMACommandLine {
         Native Swift 6 DTS HDMA / DTS:X HDMA research encoder
 
         Primary usage:
-          hdmax -i INPUT_5.1.wav|INPUT_7.1.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+          hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
 
         Encode modes (optional, default auto):
           auto      -> frame-local prediction and automatic 2/4/8 partition search
           standard  -> no prediction; qualified 2-segment/4-segment startup delivery
+
+        DTS:X vision (optional, default 1):
+          --dtsx-vision 1 -> existing 7.1.4 DTS:X
+          --dtsx-vision 2 -> fixed 12.1 DTS:X IMAX, including Top Front C
+          IMAX accepts Atmos masters or 13-channel 48 kHz/24-bit WAVE.
 
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA
@@ -2390,10 +2407,9 @@ public enum DTSHDMACommandLine {
           Supported values are 23.976, 24, 47.952, 25, 29.97, 30, 48, 50,
           59.94, and 60; all are non-drop SMPTE timebases.
 
-        Atmos inputs are rendered by the native 7.1.4 renderer, then encoded
-        as Core + scalable XLL compatibility bed + four-height XLL-X. The
-        current private profile preserves rendered height PCM but not separate
-        object IDs or trajectories.
+        Atmos inputs render to fixed 7.1.4 (vision 1) or IMAX 12.1 including
+        TFC (vision 2). Both encode Core + scalable XLL compatibility bed and
+        private lossless height audio, retaining fixed-channel presentations.
 
         """
 
