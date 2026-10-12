@@ -31,54 +31,6 @@ public enum DTSHDMACommandLine {
             print(try jsonString(DTSXDynamicStreamInspector.inspect(input: URL(fileURLWithPath: arguments[1]))))
             return
         }
-        if command == "encode-dtsx-dynamic" {
-            let values = Array(arguments.dropFirst())
-            guard values.count >= 4 else {
-                throw DTSError.invalidArgument("encode-dtsx-dynamic requires INPUT.mxf OUTPUT.dtshd --layout 7.1.4|7.1.5 [--dynamic-objects 4] [--encode-mode auto|standard] [--stems-directory PATH]")
-            }
-            var layout: DTSXDynamicLayout?, mode = DTSEncodeMode.auto
-            var rate: DTSFrameRate?, objectCount: Int?, stems: URL?
-            var seen: Set<String> = []
-            var index = 2
-            while index < values.count {
-                let option = values[index]
-                guard index + 1 < values.count, seen.insert(option).inserted else { throw DTSError.invalidArgument("Missing or repeated dynamic option \(option)") }
-                let value = values[index+1]
-                switch option {
-                case "--layout":
-                    guard let parsed = DTSXDynamicLayout(rawValue: value) else { throw DTSError.invalidArgument("Dynamic layout must be 7.1.4 or 7.1.5") }
-                    layout = parsed
-                case "--dynamic-objects":
-                    guard let count = Int(value), count == 4 else { throw DTSError.invalidArgument("Dynamic object count must be four, excluding reserved IMAX TFC") }
-                    objectCount = count
-                case "--encode-mode":
-                    guard let parsed = DTSEncodeMode(rawValue: value) else { throw DTSError.invalidArgument("Encode mode must be auto or standard") }
-                    mode = parsed
-                case "--frame-rate": rate = try DTSFrameRate(argument: value)
-                case "--stems-directory": stems = URL(fileURLWithPath: value)
-                default: throw DTSError.invalidArgument("Unknown dynamic option \(option)")
-                }
-                index += 2
-            }
-            guard let layout, objectCount == nil || objectCount == layout.dynamicObjectCount else {
-                throw DTSError.invalidArgument("Select 7.1.4 or 7.1.5 with four dynamic objects, excluding reserved IMAX TFC")
-            }
-            let input = URL(fileURLWithPath: values[0]).standardizedFileURL
-            let output = URL(fileURLWithPath: values[1]).standardizedFileURL
-            guard input.pathExtension.lowercased() == "mxf", input != output else { throw DTSError.invalidArgument("Dynamic input must be IMF IAB MXF and differ from output") }
-            let iab = try IMFIABReader.read(url: input)
-            let progress = makeEncodingProgressReporter()
-            let source = try DTSXDynamicRenderer.render(iab: iab, layout: layout, progress: { completed, total in
-                progress(250 * completed / max(1,total), 1000)
-            })
-            let report = try DTSXDynamicHDMAEncoder(encodeMode: mode).encode(source: source, to: output,
-                frameRate: rate ?? DTSFrameRate(framesPerSecond: iab.master.framesPerSecond ?? 24),
-                stemsDirectory: stems, progress: { completed, total in
-                    progress(250 + 750 * completed / max(1,total), 1000)
-                })
-            print(try jsonString(report))
-            return
-        }
         if command.hasPrefix("-") {
             if command == "-h" || command == "--help" {
                 printUsage()
@@ -91,7 +43,9 @@ public enum DTSHDMACommandLine {
                 outputURL: options.output,
                 frameRateOverride: options.frameRate,
                 encodeMode: options.encodeMode,
-                dtsxVision: options.dtsxVision
+                dtsxVision: options.dtsxVision,
+                objectMode: options.objectMode,
+                stemsDirectory: options.stemsDirectory
             ) { completed, total in
                 progress(Int(completed), Int(total))
             }
@@ -101,6 +55,10 @@ public enum DTSHDMACommandLine {
 #if DEBUG
         let values = Array(arguments.dropFirst())
         switch command {
+        case "verify-object-modes":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-object-modes takes no arguments") }
+            print(try jsonString(DTSObjectModeVerifier.verify()))
+
         case "verify-dtsx-dynamic-encoder":
             guard values.isEmpty else { throw DTSError.invalidArgument("verify-dtsx-dynamic-encoder does not accept arguments") }
             print(try jsonString(DTSXDynamicEncoderVerifier.verify()))
@@ -2382,24 +2340,35 @@ public enum DTSHDMACommandLine {
         }
     }
 
-    private static func parseAutomaticOptions(
+    static func parseAutomaticOptions(
         _ arguments: [String]
-    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode, dtsxVision: DTSXVision) {
+    ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode,
+                 dtsxVision: DTSXVision, objectMode: DTSObjectMode, stemsDirectory: URL?) {
         var input: URL?
         var output: URL?
         var frameRate: DTSFrameRate?
         var encodeMode: DTSEncodeMode?
         var dtsxVision: DTSXVision?
+        var objectMode: DTSObjectMode?
+        var stemsDirectory: URL?
         var index = 0
         while index < arguments.count {
             let option = arguments[index]
-            guard ["-i", "-o", "--frame-rate", "--encode-mode", "--dtsx-vision"].contains(option) else {
+            guard ["-i", "-o", "--frame-rate", "--encode-mode", "--dtsx-vision", "--object-mode", "--stems-directory"].contains(option) else {
                 throw DTSError.invalidArgument(
-                    "unknown option \(option); use -i INPUT -o OUTPUT [--frame-rate VALUE] [--encode-mode auto|standard] [--dtsx-vision 1|2]"
+                    "unknown option \(option); use -i INPUT -o OUTPUT [--object-mode dynamic|channelbase] [--frame-rate VALUE] [--encode-mode auto|standard] [--dtsx-vision 1|2]"
                 )
             }
             guard index + 1 < arguments.count else {
                 throw DTSError.invalidArgument("\(option) requires a value")
+            }
+            if option == "--object-mode" {
+                guard objectMode == nil else { throw DTSError.invalidArgument("--object-mode may be specified only once") }
+                objectMode = try DTSObjectMode(argument: arguments[index+1]); index += 2; continue
+            }
+            if option == "--stems-directory" {
+                guard stemsDirectory == nil else { throw DTSError.invalidArgument("--stems-directory may be specified only once") }
+                stemsDirectory = URL(fileURLWithPath: arguments[index+1]); index += 2; continue
             }
             if option == "--dtsx-vision" {
                 guard dtsxVision == nil else { throw DTSError.invalidArgument("--dtsx-vision may be specified only once") }
@@ -2439,7 +2408,8 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate, encodeMode ?? .auto, dtsxVision ?? .sevenOneFour)
+        return (input, output, frameRate, encodeMode ?? .auto, dtsxVision ?? .sevenOneFour,
+                objectMode ?? .dynamic, stemsDirectory)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2455,21 +2425,27 @@ public enum DTSHDMACommandLine {
         Native Swift 6 DTS HDMA / DTS:X HDMA research encoder
 
         Primary usage:
-          hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+          hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+
+        Object modes for Atmos inputs (optional, default dynamic):
+          dynamic     -> 7.1.4 + four moving aggregates (vision 1)
+                      -> 7.1.5 + four moving aggregates and reserved IMAX TFC (vision 2)
+          channelbase -> established fixed 7.1.4 (vision 1) or IMAX 12.1 (vision 2)
+          Ordinary PCM has no object metadata and retains its channel presentation.
+          --stems-directory PATH exports dynamic Atmos QC PCM, folds and positions.
 
         Encode modes (optional, default auto):
           auto      -> frame-local prediction and automatic 2/4/8 partition search
           standard  -> no prediction; qualified 2-segment/4-segment startup delivery
 
         DTS:X vision (optional, default 1):
-          --dtsx-vision 1 -> existing 7.1.4 DTS:X
-          --dtsx-vision 2 -> fixed 12.1 DTS:X IMAX, including Top Front C
+          --dtsx-vision 1 -> standard height profile
+          --dtsx-vision 2 -> IMAX profile, including reserved Top Front C
           IMAX accepts Atmos masters or 13-channel 48 kHz/24-bit WAVE.
 
         Experimental dynamic objects (CLI and Framework):
           hdmax dtsx-dynamic-profiles
           hdmax inspect-dtsx-dynamic INPUT.dtshd
-          hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.4|7.1.5 [--dynamic-objects 4] [--encode-mode auto|standard] [--stems-directory PATH]
           7.1.4+4 and 7.1.5+4 are experimental interoperability profiles.
           7.1.5 reserves one fixed IMAX TFC record separately from four dynamic objects.
           Official player playback and Bitstream Tools validation are required for acceptance.
@@ -2477,7 +2453,7 @@ public enum DTSHDMACommandLine {
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA
           7.1 WAVE                    -> DTS HDMA
-          DAMF / ADM BWF / IMF IAB    -> DTS:X HDMA from rendered 7.1.4
+          DAMF / ADM BWF / IMF IAB    -> DTS:X HDMA using the selected object mode
 
         Automatic delivery sidecars:
           OUTPUT.dtspbr
@@ -2490,9 +2466,9 @@ public enum DTSHDMACommandLine {
           Supported values are 23.976, 24, 47.952, 25, 29.97, 30, 48, 50,
           59.94, and 60; all are non-drop SMPTE timebases.
 
-        Atmos inputs render to fixed 7.1.4 (vision 1) or IMAX 12.1 including
-        TFC (vision 2). Both encode Core + scalable XLL compatibility bed and
-        private lossless height audio, retaining fixed-channel presentations.
+        Atmos object mode and vision select separate presentation paths.
+        Both modes encode Core + scalable XLL compatibility bed and private
+        lossless audio. IMAX TFC is always separate from the four moving slots.
 
         """
 
@@ -2555,6 +2531,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax verify-encode-modes
+          hdmax verify-object-modes
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source-mode conservative|rice|predictive|research SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60

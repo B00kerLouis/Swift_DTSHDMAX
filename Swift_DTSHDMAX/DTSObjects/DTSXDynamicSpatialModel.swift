@@ -1,7 +1,7 @@
 // Copyright (c) B00kerLouis.
 import Foundation
 
-public struct DTSXSpatialAggregationReport: Sendable, Codable {
+public struct DTSXSpatialAggregationReport: Sendable, Equatable, Codable {
     public let sourceObjectCount: Int
     public let analysedFrameCount: Int
     public let energyWeightedNearestImageError: Double

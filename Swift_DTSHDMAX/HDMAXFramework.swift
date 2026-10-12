@@ -40,6 +40,13 @@ public final class HDMAX: NSObject {
         DTSXVision.allCases.map(\.rawValue)
     }
 
+    /// CLI and Framework default to dynamic for Atmos inputs. Explicit
+    /// channelbase selects the established fixed-channel presentation.
+    @objc(supportedObjectModes)
+    public class func supportedObjectModes() -> [String] {
+        DTSObjectMode.allCases.map(\.rawValue)
+    }
+
     @objc(experimentalDynamicLayouts)
     public class func experimentalDynamicLayouts() -> [String] {
         DTSXDynamicLayout.allCases.map(\.rawValue)

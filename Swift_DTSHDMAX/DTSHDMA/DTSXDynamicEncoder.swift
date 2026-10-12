@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DTSXDynamicEncodingReport: Sendable, Codable {
+public struct DTSXDynamicEncodingReport: Sendable, Equatable, Codable {
     public let layout: DTSXDynamicLayout
     public let dynamicObjectCount: Int
     public let reservedIMAXObjectCount: Int
@@ -14,6 +14,7 @@ public struct DTSXDynamicEncodingReport: Sendable, Codable {
     public let nativePrivatePCMVerified: Bool
     public let officialPlaybackQualified: Bool
     public let spatialAggregation: DTSXSpatialAggregationReport?
+    public let deliveryArtifacts: DTSHDMADeliveryArtifactReport?
 }
 
 /// Constant carriers separate bed recovery from presentation motion. Official
@@ -153,7 +154,8 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
     }
 
     public func encode(source input: DTSXDynamicPCMBuffer, to output: URL, frameRate: DTSFrameRate,
-                       stemsDirectory: URL? = nil, progress: ((Int, Int) -> Void)? = nil) throws -> DTSXDynamicEncodingReport {
+                       stemsDirectory: URL? = nil, deliveryInput: DTSHDMADeliveryInput? = nil,
+                       progress: ((Int, Int) -> Void)? = nil) throws -> DTSXDynamicEncodingReport {
         guard output.pathExtension.lowercased() == "dtshd" else { throw DTSError.invalidArgument("Object output requires .dtshd") }
         let folds = DTSXDynamicFoldPlan(source: input)
         let (source, gain, maximum) = try condition(input, folds: folds)
@@ -196,6 +198,9 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
                 xllCodingMode: encodeMode.publicXLLCodingMode, officialHierarchyGrammarEnforced: true
             )).encodeDynamic(pcm, session: session, writingAccessUnitsTo: { try writer.append(accessUnit: $0) }, progress: progress)
             try writer.finish()
+            let artifacts = try deliveryInput.map {
+                try DTSHDMADeliveryArtifactWriter.writeCompleted(pcm: pcm,input: $0,outputURL: output,frameRate: frameRate)
+            }
             var changes = 0
             for frame in 1..<source.positions.count {
                 changes += zip(source.positions[frame-1], source.positions[frame]).filter { $0 != $1 }.count
@@ -206,7 +211,7 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
                 maximumInputCompositeMagnitude: maximum, positionChangeCount: changes,
                 dynamicFoldCodes: folds.codes,
                 segmentCounts: try session.finish(), nativePrivatePCMVerified: true, officialPlaybackQualified: false,
-                spatialAggregation: source.aggregation)
+                spatialAggregation: source.aggregation, deliveryArtifacts: artifacts)
         } catch { writer.cancel(); throw error }
     }
 }

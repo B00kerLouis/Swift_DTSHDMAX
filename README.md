@@ -63,7 +63,7 @@ bridge.
 The Release CLI has one production entry point:
 
 ```text
-hdmax -i INPUT -o OUTPUT.dtshd [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate FRAME_RATE]
+hdmax -i INPUT -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate FRAME_RATE]
 ```
 
 `--encode-mode` is optional and defaults to `auto`. Auto enables frame-local
@@ -81,9 +81,21 @@ or `executeWithArguments:error:`. `HDMAX.supportedEncodeModes()` returns
 in `DTSAutomaticEncoder.encode`, `HDMAEncoder`, `DTSXNativeHDMAEncoder`, and
 `DTSXHDMAEncoderConfiguration`.
 
-`--dtsx-vision` is optional and defaults to `1`, preserving the existing 7.1.4
-DTS:X path. `2` selects fixed IMAX 12.1: thirteen PCM channels including Top
-Front C. It retains default `auto` prediction and public 2/4/8 partition
+`--object-mode dynamic|channelbase` is optional and defaults to `dynamic` for
+Atmos inputs, including DAMF, ADM BWF and IMF IAB. Dynamic uses four moving
+aggregates; channelbase selects the established fixed-channel render and
+encoding path. The modes own separate gain, aggregation and provider state.
+Ordinary PCM has no object metadata and retains its channel presentation.
+CLI and Framework share this option; `HDMAX.supportedObjectModes()` returns
+`dynamic` and `channelbase`. Existing typed automatic overloads remain
+source-compatible and now default to dynamic. Pass `objectMode: .channelbase`
+to select the original presentation explicitly.
+
+`--dtsx-vision` is optional and defaults to `1`. In dynamic mode, vision 1
+selects 7.1.4+4 and vision 2 selects 7.1.5+4, with an independent reserved IMAX
+TFC. In channelbase mode, vision 1 retains fixed 7.1.4 and vision 2 retains
+fixed IMAX 12.1: thirteen PCM channels including Top Front C.
+Vision and object mode are independent of `auto` prediction and public 2/4/8 partition
 selection. `standard` disables prediction and keeps explicit priming,
 silent-start and zero-height frame policies. Framework callers use the same
 argument; `HDMAX.supportedDTSXVisions()` returns `1` and `2`. Typed callers can
@@ -102,10 +114,10 @@ Input routing is automatic:
 | Input | Output |
 | --- | --- |
 | 48 kHz, 24-bit 5.1 or 7.1 PCM WAVE | DTS HDMA |
-| DAMF Atmos | DTS:X HDMA after native 7.1.4 rendering |
-| ADM BWF | DTS:X HDMA after native 7.1.4 rendering |
-| IMF IAB MXF | DTS:X HDMA after native 7.1.4 rendering |
-| Atmos input with `--dtsx-vision 2` | DTS:X IMAX HDMA after fixed 12.1 rendering |
+| DAMF / ADM BWF / IMF IAB, default options | DTS:X 7.1.4 + four dynamic aggregates |
+| Atmos input with `--dtsx-vision 2` | DTS:X 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
+| Atmos input with `--object-mode channelbase` | Established fixed 7.1.4 DTS:X |
+| Atmos input with `--object-mode channelbase --dtsx-vision 2` | Established fixed IMAX 12.1 DTS:X |
 | 13-channel PCM WAVE with `--dtsx-vision 2` | DTS:X IMAX HDMA |
 
 The output file must use the `.dtshd` extension. Delivery also writes:
@@ -175,8 +187,8 @@ Build/Products/Release/hdmax \
 
 The implementation uses planar integer PCM internally and includes native
 parsers, writers, validation, Core decoding, XLL decoding, XLL encoding, and
-the Core plus XLL HDMA delivery path. DTS:X authoring renders supported Atmos
-inputs to a 7.1.4 PCM representation before native encoding.
+the Core plus XLL HDMA delivery path. DTS:X authoring selects dynamic aggregate
+delivery or channelbase rendering from supported Atmos inputs before encoding.
 
 Atmos object gains are sample-continuous. The 7.1.4 renderer keeps per-object
 Q30 gain history, ramps ordinary automation over one pan sub-block, and limits
@@ -184,7 +196,7 @@ large moves to at most `1/480` full-scale gain per sample. A target that arrives
 mid-ramp starts from the exact current gain, preventing zipper steps across the
 four height feeds without inserting a limiter into the lossless PCM path.
 
-The default DTS:X private profile preserves rendered height PCM. Its fixed
+The channelbase DTS:X private profile preserves rendered height PCM. Its fixed
 rendering path does not retain independent object identifiers or trajectories.
 Hardware playback and formal DTS certification remain external acceptance
 requirements.
@@ -198,17 +210,21 @@ plus four dynamic aggregates. The other four private feeds are fixed heights.
 
 ```sh
 hdmax dtsx-dynamic-profiles
-hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.4 --dynamic-objects 4
-hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.5 --dynamic-objects 4
+hdmax -i INPUT.mxf -o OUTPUT.dtshd
+hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode dynamic --dtsx-vision 2
+hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode channelbase
+hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode channelbase --dtsx-vision 2
 hdmax inspect-dtsx-dynamic OUTPUT.dtshd
 ```
 
-These commands are shared by the CLI and `HDMAX.run(arguments:)`; typed callers
+The single `-i/-o` entry point is shared by CLI and `HDMAX.run(arguments:)`.
+It replaces the former `encode-dtsx-dynamic` subcommand. Typed callers
 use `DTSXDynamicRenderer`, `DTSXDynamicPCMBuffer` and `DTSXDynamicHDMAEncoder`.
-`--encode-mode auto|standard` defaults to auto. `--stems-directory PATH` writes
+`--encode-mode auto|standard` defaults to auto. In dynamic Atmos mode,
+`--stems-directory PATH` writes
 the actual conditioned fixed/object PCM, compatible bed, AU positions and
-constant fold rows for independent comparison. The existing automatic encoder and vision defaults
-remain unchanged.
+constant fold rows for independent comparison. Prediction still defaults to
+auto and vision to 1; Atmos object mode now defaults to dynamic.
 
 The four-slot reduction fits source speaker images with nonnegative weights,
 uses stable identity matching at crossings, and retains sample-continuous
@@ -227,7 +243,9 @@ TFC separation and the linked programme headroom gain. Spatial reduction is
 not lossless reconstruction of the original IAB tracks; sample-exact coding
 refers to the resulting fixed/object PCM. The panner fit is a qualified 7.1.4
 display model; software PCM and meter checks do not establish hardware IMAX
-presentation acceptance. Debug adds `verify-dtsx-dynamic-encoder`,
+presentation acceptance. Debug adds `verify-object-modes` for default selection,
+alternating invocation isolation, direct channelbase byte identity and ordinary
+PCM identity; `verify-dtsx-dynamic-encoder`,
 `generate-dtsx-dynamic-vectors` and `debug-dtsx-dynamic-position`.
 
 The IMAX profile encodes independent TFC and four-height audio groups behind

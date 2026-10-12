@@ -130,14 +130,43 @@ public enum DTSXDynamicRenderer {
     public static func render(iab: IABMaster, layout: DTSXDynamicLayout,
                               maximumSampleCount: Int? = nil,
                               progress: ((Int, Int) -> Void)? = nil) throws -> DTSXDynamicPCMBuffer {
-        let master = iab.master
-        guard master.audioFormat.sampleCount <= UInt64(Int.max),
-              master.audioFormat.sampleRate == 48_000, master.audioFormat.bitDepth == 24,
-              maximumSampleCount == nil || maximumSampleCount! > 0 else { throw DTSError.invalidArgument("Invalid dynamic render input") }
-        let count = min(Int(master.audioFormat.sampleCount), maximumSampleCount ?? Int.max)
-        guard count > 0 else { throw DTSError.invalidArgument("Empty IAB programme") }
+        let handle = try FileHandle(forReadingFrom: iab.master.audioURL)
+        defer { try? handle.close() }
+        var pending = Data(), frame = 0
+        return try render(master: iab.master, layout: layout, maximumSampleCount: maximumSampleCount,
+                          progress: progress) { byteCount in
+            while pending.count < byteCount && frame < iab.frames.count {
+                pending.append(try IMFIABReader.decodeFrameAudio(iab: iab, frameIndex: frame, handle: handle)); frame += 1
+            }
+            let bytes = Data(pending.prefix(byteCount)); pending.removeFirst(bytes.count)
+            return bytes
+        }
+    }
+
+    /// DAMF/ADM reuse the same local gain and aggregation state as IAB. Only
+    /// the bounded input adapter differs; no channelbase renderer is invoked.
+    public static func render(master: AtmosMaster, layout: DTSXDynamicLayout,
+                              maximumSampleCount: Int? = nil,
+                              progress: ((Int, Int) -> Void)? = nil) throws -> DTSXDynamicPCMBuffer {
+        guard master.audioFormat.container != .iabMXF else {
+            throw DTSError.invalidArgument("IAB masters render via render(iab:)")
+        }
         let handle = try FileHandle(forReadingFrom: master.audioURL)
         defer { try? handle.close() }
+        try handle.seek(toOffset: master.audioFormat.audioDataOffset)
+        return try render(master: master,layout: layout,maximumSampleCount: maximumSampleCount,
+                          progress: progress) { try handle.read(upToCount: $0) ?? Data() }
+    }
+
+    private static func render(master: AtmosMaster, layout: DTSXDynamicLayout,
+                               maximumSampleCount: Int?, progress: ((Int, Int) -> Void)?,
+                               readBlock: (Int) throws -> Data) throws -> DTSXDynamicPCMBuffer {
+        guard master.audioFormat.sampleCount <= UInt64(Int.max),
+              master.audioFormat.sampleRate == 48_000, master.audioFormat.bitDepth == 24,
+              master.audioFormat.bytesPerPacket == master.audioFormat.channelCount*3,
+              maximumSampleCount == nil || maximumSampleCount! > 0 else { throw DTSError.invalidArgument("Invalid dynamic render input") }
+        let count = min(Int(master.audioFormat.sampleCount), maximumSampleCount ?? Int.max)
+        guard count > 0 else { throw DTSError.invalidArgument("Empty Atmos programme") }
         let channels = master.audioFormat.channelCount
         var fixed = Array(repeating: Array(repeating: Int32(0), count: count), count: layout.fixedPlaneCount)
         var moving = Array(repeating: Array(repeating: Int32(0), count: count), count: layout.dynamicObjectCount)
@@ -149,7 +178,7 @@ public enum DTSXDynamicRenderer {
         var previouslyAudible = Array(repeating: false,count: sourceCount)
         var aggregator = DTSXSpatialAggregator(count: layout.dynamicObjectCount)
         var positions: [[DTSXObjectPosition]] = []
-        var pending = Data(), frame = 0, event = 0
+        var event = 0
         var nearestError = 0.0, fittedError = 0.0, errorMass = 0.0
         var angularError = 0.0, distanceError = 0.0
         let bedRoutes = master.bedChannels.map { bed in
@@ -166,11 +195,8 @@ public enum DTSXDynamicRenderer {
         }
         for start in stride(from: 0, to: count, by: 512) {
             let samples = min(512, count - start), byteCount = samples * channels * 3
-            while pending.count < byteCount && frame < iab.frames.count {
-                pending.append(try IMFIABReader.decodeFrameAudio(iab: iab, frameIndex: frame, handle: handle)); frame += 1
-            }
-            guard pending.count >= byteCount else { throw DTSError.truncated(field: "Dynamic IAB PCM", bitOffset: start * channels * 24) }
-            let bytes = Data(pending.prefix(byteCount)); pending.removeFirst(byteCount)
+            let bytes = try readBlock(byteCount)
+            guard bytes.count == byteCount else { throw DTSError.truncated(field: "Dynamic Atmos PCM", bitOffset: start * channels * 24) }
             var audio = Array(repeating: Array(repeating: Int32(0), count: samples), count: sourceCount)
             var energy = Array(repeating: 0.0, count: sourceCount)
             var radiusMass = energy
