@@ -10,6 +10,30 @@ public struct DTSXSpatialAggregationReport: Sendable, Equatable, Codable {
     public let maximumDistanceQuantizationError: Double
     public let reservedTFCNonzeroSamples: Int
     public let reservedTFCExcludedFromDynamicAggregation: Bool
+    public let fixedBedCarriesSpatialResidual: Bool
+}
+
+/// Measured native 7.1.4 presentation transition. First declarations install
+/// directly; subsequent targets use a sample-continuous one-pole transition.
+/// The fixed bed carries the image outside the four moving columns, including
+/// their transition, so quiet centre/height sources cannot disappear.
+struct DTSXDynamicPresentationState {
+    private(set) var gains: [[Double]] = []
+    private var targets: [[Double]] = []
+    static let transitionCoefficient = 0.001098198738079148
+
+    mutating func retarget(_ columns: [[Double]]) {
+        if gains.isEmpty { gains = columns }
+        targets = columns
+    }
+
+    mutating func advance() {
+        for slot in gains.indices {
+            for channel in gains[slot].indices {
+                gains[slot][channel] += (targets[slot][channel]-gains[slot][channel])*Self.transitionCoefficient
+            }
+        }
+    }
 }
 
 /// Enumerates all sixteen active subsets of four speaker-image columns,

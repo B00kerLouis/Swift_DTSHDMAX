@@ -26,7 +26,80 @@ public struct DTSXDynamicInspectionReport: Sendable, Codable {
     public let officialPlaybackQualified: Bool
 }
 
+/// Presentation and navigation checks without decoding private PCM.
+public struct DTSXDynamicMetadataInspectionReport: Sendable, Codable {
+    public let layout: DTSXDynamicLayout
+    public let primaryMetadataHeader: String
+    public let declaredObjectRecordCount: Int
+    public let dynamicObjectCount: Int
+    public let reservedIMAXObjectCount: Int
+    public let recordRoles: [String]
+    public let initialPositions: [DTSXObjectPosition]
+    public let initialGainCodes: [Int]
+    public let fixedHeightFoldDestinations: [String]
+    public let fixedHeightFoldCode: Int
+    public let matchesSelectedHeightFoldProfile: Bool
+    public let accessUnitCount: Int
+    public let allPresentationCRCsValid: Bool
+    public let allExSSNavigationMatches: Bool
+    public let fileNavigationValid: Bool
+    public let audioDecoded: Bool
+}
+
 public enum DTSXDynamicStreamInspector {
+    public static func inspectMetadata(input: URL) throws -> DTSXDynamicMetadataInspectionReport {
+        let infos = try DTSStreamInspector().inspect(url: input, maximumAccessUnits: Int.max)
+        guard !infos.isEmpty else { throw DTSError.malformed("Empty object stream") }
+        let handle = try FileHandle(forReadingFrom: input)
+        defer { try? handle.close() }
+        var firstMetadata: DTSXDynamicMetadata?
+        var firstHeader = ""
+        for info in infos {
+            guard info.byteCount <= 1_048_576 else { throw DTSError.malformed("Object AU exceeds bounded input window") }
+            try handle.seek(toOffset: UInt64(info.byteOffset))
+            guard let bytes = try handle.read(upToCount: info.byteCount), bytes.count == info.byteCount else {
+                throw DTSError.truncated(field: "Object metadata inspection AU", bitOffset: Int(info.byteOffset)*8)
+            }
+            let au = try DTSOfficialStreamASTParser.parseAccessUnit(bytes)
+            // ExSSParser checks declared metadata/audio extents against the
+            // actual private frame. CRC-valid bytes alone are insufficient.
+            let exss = try ExSSParser().parse(frame: au.exss.serialize())
+            let xll = try XLLFrameASTParser.parse(exss.xllData)
+            let frame = try DTSXDynamicPrivateFrame.parse(xll.privateData)
+            guard frame.groups.allSatisfy({ $0.segmentCount == xll.segmentCount &&
+                $0.navigationWidth == max(8,xll.segmentSizeBitCount) }) else {
+                throw DTSError.malformed("Object metadata inspection found an inconsistent NAVI width")
+            }
+            let metadata = frame.metadata
+            if let firstMetadata {
+                guard metadata.reservedTFC == firstMetadata.reservedTFC,
+                      metadata.positions.count == firstMetadata.positions.count,
+                      metadata.heightBedColumns == firstMetadata.heightBedColumns,
+                      metadata.heightFoldCode == firstMetadata.heightFoldCode else {
+                    throw DTSError.malformed("Fixed object roles or height folds changed within a programme")
+                }
+            } else {
+                firstMetadata = metadata
+                firstHeader = xll.privateData.prefix(4).map { String(format: "%02X",$0) }.joined()
+            }
+        }
+        let metadata = firstMetadata!
+        let layout: DTSXDynamicLayout = metadata.reservedTFC ? .sevenOneFive : .sevenOneFour
+        let navigation = try DTSHDFileContainer.navigationOffsetsMatchAccessUnits(at: input,accessUnits: infos)
+        guard navigation else { throw DTSError.malformed("Object file NAVI does not match AU boundaries") }
+        let names = ["C","L","R","LFE","TFL","TFR","Lsr","Rsr","Lss","Rss","TBL","TBR"]
+        return DTSXDynamicMetadataInspectionReport(layout: layout,primaryMetadataHeader: "0x"+firstHeader,
+            declaredObjectRecordCount: metadata.positions.count,dynamicObjectCount: layout.dynamicObjectCount,
+            reservedIMAXObjectCount: layout.reservedIMAXObjectCount,
+            recordRoles: (metadata.reservedTFC ? ["Reserved IMAX TFC"] : []) + (0..<4).map { "Dynamic Object \($0)" },
+            initialPositions: metadata.positions,initialGainCodes: metadata.gainCodes,
+            fixedHeightFoldDestinations: metadata.heightBedColumns.map { names[$0] },
+            fixedHeightFoldCode: metadata.heightFoldCode!,
+            matchesSelectedHeightFoldProfile: metadata.heightBedColumns == [1,2,6,7],
+            accessUnitCount: infos.count,allPresentationCRCsValid: true,allExSSNavigationMatches: true,
+            fileNavigationValid: true,audioDecoded: false)
+    }
+
     /// Walks complete AUs and decodes only bounded 512-sample private groups.
     /// No waveform or compressed programme is loaded wholesale.
     public static func inspect(input: URL) throws -> DTSXDynamicInspectionReport {

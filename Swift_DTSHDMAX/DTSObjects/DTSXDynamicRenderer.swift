@@ -177,6 +177,7 @@ public enum DTSXDynamicRenderer {
         var mix = Array(repeating: DTS714ObjectGainSmoother(),count: sourceCount)
         var previouslyAudible = Array(repeating: false,count: sourceCount)
         var aggregator = DTSXSpatialAggregator(count: layout.dynamicObjectCount)
+        var presentation = DTSXDynamicPresentationState()
         var positions: [[DTSXObjectPosition]] = []
         var event = 0
         var nearestError = 0.0, fittedError = 0.0, errorMass = 0.0
@@ -237,6 +238,10 @@ public enum DTSXDynamicRenderer {
                             if layout == .sevenOneFive { fixedAccumulator[12] += Int64(value)*gain }
                             continue
                         }
+                        // Preserve the complete authored speaker image first.
+                        // The bounded aggregate render is removed below; its
+                        // unrepresented image remains on the fixed bed.
+                        fixedAccumulator[channel] += Int64(value)*gain
                         let linear = Double(gain)/Double(1 << 30)
                         power += linear*linear
                     }
@@ -302,6 +307,7 @@ public enum DTSXDynamicRenderer {
             }
             positions.append(quantized)
             let columns = quantized.map { DTSXDynamicSpatialModel.image(position: $0,layout: layout) }
+            presentation.retarget(columns)
             for slot in 0..<4 {
                 let point = aggregator.centres[slot]
                 let radius = aggregator.distances[slot]
@@ -336,6 +342,7 @@ public enum DTSXDynamicRenderer {
                 }
             }
             for sample in 0..<samples {
+                presentation.advance()
                 var mixed = Array(repeating: Int64(0),count: 4)
                 for source in 0..<sourceCount {
                     if start > 0 { mix[source].advance() }
@@ -349,6 +356,17 @@ public enum DTSXDynamicRenderer {
                     guard value >= Int64(Int32.min), value <= Int64(Int32.max) else { throw DTSError.malformed("Dynamic aggregate exceeds working PCM range") }
                     moving[slot][start+sample] = Int32(value)
                 }
+                for channel in 0..<12 {
+                    var rendered = 0.0
+                    for slot in moving.indices {
+                        rendered += Double(moving[slot][start+sample])*presentation.gains[slot][channel]
+                    }
+                    let residual = (Double(fixed[channel][start+sample])-rendered).rounded()
+                    guard residual.isFinite,residual >= Double(Int32.min),residual <= Double(Int32.max) else {
+                        throw DTSError.malformed("Dynamic spatial residual exceeds working PCM range")
+                    }
+                    fixed[channel][start+sample] = Int32(residual)
+                }
             }
             progress?(start+samples, count)
         }
@@ -357,7 +375,7 @@ public enum DTSXDynamicRenderer {
             energyWeightedFittedImageError: fittedError/max(1e-20,errorMass),
             maximumAngularQuantizationErrorDegrees: angularError,maximumDistanceQuantizationError: distanceError,
             reservedTFCNonzeroSamples: layout == .sevenOneFive ? fixed[12].lazy.filter { $0 != 0 }.count : 0,
-            reservedTFCExcludedFromDynamicAggregation: true)
+            reservedTFCExcludedFromDynamicAggregation: true,fixedBedCarriesSpatialResidual: true)
         return try DTSXDynamicPCMBuffer(layout: layout,fixedPlanes: fixed,dynamicPlanes: moving,positions: positions,aggregation: report)
     }
 

@@ -39,7 +39,14 @@ public enum DTSXDynamicEncoderVerifier {
                             segmentSizeBitCount: width, navigationByteCount: 2, segmentEntropyByteCounts: Array(repeating: [1], count: segments))
                         let frame = try DTSXDynamicPrivateFrame.encode(layout: layout, positions: positions,
                             dynamicFoldCodes: positions.map { $0.foldCodes(for: layout) }, planes: planes, plan: plan, mode: mode)
+                        // Independent field extraction: the fourth byte's low
+                        // nibble is a count, never an IMAX/standard label.
+                        var declaration = try BitReader(data: frame.data)
+                        try declaration.skip(28,field: "Declaration-count offset")
+                        let declarationCount = Int(try declaration.read(4,field: "Declared records minus one"))+1
                         guard try frame.decode() == planes,
+                              declarationCount == layout.recordCount,
+                              frame.metadata.heightBedColumns == [1,2,6,7],
                               Array(frame.metadata.positions.suffix(layout.dynamicObjectCount)) == positions,
                               frame.metadata.reservedTFC == (layout == .sevenOneFive),
                               frame.groups.count == 2 else { throw DTSError.malformed("Dynamic vector role/PCM mismatch") }
@@ -103,8 +110,8 @@ public enum DTSXDynamicEncoderVerifier {
         guard (try? DTSXDynamicMetadata.parse(writer.data())) == nil else { throw DTSError.malformed("Moving IMAX reserved record was accepted") }
         var carrierCases = 0
         for layout in DTSXDynamicLayout.allCases {
-            // A sustained waveform traverses opposite anchors while the
-            // carrier remains fixed, including silent priming and a short tail.
+            // Motion updates coefficients without adding/removing reference
+            // columns, including silent priming and a short tail.
             let count = 1025
             var fixed = Array(repeating: Array(repeating: Int32(0),count: count),count: layout.fixedPlaneCount)
             if layout == .sevenOneFive { fixed[12] = Array(repeating: 1234,count: count) }
@@ -119,18 +126,20 @@ public enum DTSXDynamicEncoderVerifier {
                 navigationByteCount: 2,segmentEntropyByteCounts: [[1],[1]])
             for frame in 0..<session.frameCount {
                 let encoded = try DTSXDynamicPrivateFrame.parse(session.encodeFrame(at: frame,plan: plan))
-                guard Array(encoded.metadata.foldCodes.suffix(4)) == folds.codes,
+                guard Array(encoded.metadata.foldCodes.suffix(4)) == folds.frameCodes[max(0,frame-2)],
+                      Array(encoded.metadata.gainCodes.suffix(4)) == Array(repeating: DTSXDynamicFoldPlan.objectGainCode,count: 4),
                       Array(encoded.metadata.positions.suffix(4)) == poses[max(0,frame-2)],
                       encoded.metadata.reservedTFC == (layout == .sevenOneFive) else {
-                    throw DTSError.malformed("Moving pose changed programme carriers or reserved IMAX identity")
+                    throw DTSError.malformed("Moving reference rows or reserved IMAX identity differ")
                 }
                 let decoded = try encoded.decode()
                 if frame < 2 {
                     guard decoded.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) else { throw DTSError.malformed("Carrier priming is audible") }
                 } else {
                     let offset = layout.reservedIMAXObjectCount
-                    let expected = frame == 4 ? [Int32(100_000)]+Array(repeating: Int32(0),count: 511)
-                        : Array(repeating: Int32(100_000),count: 512)
+                    let value = Int32(DTSXDynamicFoldPlan.codedSample(100_000))
+                    let expected = frame == 4 ? [value]+Array(repeating: Int32(0),count: 511)
+                        : Array(repeating: value,count: 512)
                     guard decoded[offset] == expected else { throw DTSError.malformed("Carrier change altered object PCM or tail") }
                     if layout == .sevenOneFive {
                         let tfc = frame == 4 ? [Int32(1234)]+Array(repeating: Int32(0),count: 511)
@@ -140,11 +149,20 @@ public enum DTSXDynamicEncoderVerifier {
                 }
             }
             _ = try session.finish()
-            // This input has almost equal power at L/R. The nearest Q15
-            // carrier must retain both, rather than following the final pose.
-            guard folds.codes[0][0] > 0,folds.codes[0][1] > 0,
-                  abs(folds.gains[0][0]-folds.gains[0][1]) < 1024 else {
-                throw DTSError.malformed("Programme carrier ignored source energy")
+            let masks = folds.frameCodes.map { frame in frame.map { row in row.enumerated().reduce(0) {
+                $0 | ($1.element > 0 ? (1 << $1.offset) : 0)
+            } } }
+            guard masks.allSatisfy({ $0 == [247,247,247,247] }),
+                  folds.frameCodes[0] != folds.frameCodes[1],
+                  DTSXDynamicMetadata.referenceGainQ15(1) == 0 else {
+                throw DTSError.malformed("Reference-column identity changed during motion")
+            }
+            var reference = DTSXDynamicReferenceState()
+            reference.retarget(folds.frameCodes[0]);reference.advance()
+            let previous = reference.gains[0][0]
+            reference.retarget(folds.frameCodes[1]);reference.advance()
+            guard abs(reference.gains[0][0]-previous) < 0.002 else {
+                throw DTSError.malformed("Compatibility reference transition stepped")
             }
             carrierCases += 1
         }

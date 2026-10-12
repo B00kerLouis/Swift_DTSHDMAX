@@ -10,6 +10,7 @@ public struct DTSXDynamicEncodingReport: Sendable, Equatable, Codable {
     public let maximumInputCompositeMagnitude: Int64
     public let positionChangeCount: Int
     public let dynamicFoldCodes: [[Int]]
+    public let dynamicObjectGainCode: Int
     public let segmentCounts: [String: Int]
     public let nativePrivatePCMVerified: Bool
     public let officialPlaybackQualified: Bool
@@ -17,37 +18,49 @@ public struct DTSXDynamicEncodingReport: Sendable, Equatable, Codable {
     public let deliveryArtifacts: DTSHDMADeliveryArtifactReport?
 }
 
-/// Constant carriers separate bed recovery from presentation motion. Official
-/// decoders smooth changing fold rows; an AU-static public fold then leaves
-/// impulses in the restored bed. Each row minimizes the energy-weighted error
-/// of the programme's compatible image over the actual quantized Q15 table.
+/// Position-derived reference rows retain every full-range column. Keeping
+/// column identity stable prevents fold-transition resets. The coded object
+/// gain reserves coefficient range for unity IMAX height folds.
 struct DTSXDynamicFoldPlan: Sendable {
-    let codes: [[Int]]
-    let gains: [[Int64]]
+    static let objectGainCode = 55
+    static var objectGainQ15: Int64 { DTSXDynamicMetadata.gainQ15(objectGainCode) }
+    static func codedSample(_ value: Int32) -> Int64 {
+        let numerator = Int64(value)*32768
+        let half = objectGainQ15/2
+        return numerator >= 0 ? (numerator+half)/objectGainQ15 : -((-numerator+half)/objectGainQ15)
+    }
+    let frameCodes: [[[Int]]]
+    var codes: [[Int]] { frameCodes[0] }
     init(source: DTSXDynamicPCMBuffer) {
-        var rows: [[Int]] = []
-        for object in source.dynamicPlanes.indices {
-            var mass = 0.0
-            var weighted = Array(repeating: 0.0, count: 8)
-            for frame in source.positions.indices {
-                let start = frame*512, end = min(start+512,source.sampleCount)
-                var energy = 0.0
-                for sample in start..<end {
-                    let value = Double(source.dynamicPlanes[object][sample])
-                    energy += value*value
-                }
-                guard energy > 0 else { continue }
-                let image = source.positions[frame][object].foldCodes(for: source.layout)
-                mass += energy
-                for channel in 0..<8 { weighted[channel] += energy*Double(DTSXDynamicMetadata.gainQ15(image[channel])) }
+        frameCodes = source.positions.map { frame in frame.map { position in
+            let field = DTSXDynamicSpatialModel.image(position: position,layout: source.layout)
+            var row = Array(field.prefix(8))
+            let height = Double(DTSXDynamicMetadata.gainQ15(source.layout == .sevenOneFive ? 61 : 55))/32768
+            let destinations = [0,1,6,7]
+            for h in 0..<4 { row[destinations[h]] += field[h+8]*height }
+            return row.enumerated().map { channel,value in
+                if channel == 3 { return 0 }
+                let target = value*Double(Self.objectGainQ15)
+                return (1...61).min {
+                    abs(Double(DTSXDynamicMetadata.referenceGainQ15($0))-target)
+                        < abs(Double(DTSXDynamicMetadata.referenceGainQ15($1))-target)
+                }!
             }
-            let row = mass > 0 ? weighted.map { value in
-                (0...61).min { abs(Double(DTSXDynamicMetadata.gainQ15($0))-value/mass)
-                    < abs(Double(DTSXDynamicMetadata.gainQ15($1))-value/mass) }!
-            } : source.positions[0][object].foldCodes(for: source.layout)
-            rows.append(row)
-        }
-        codes = rows; gains = rows.map { $0.map(DTSXDynamicMetadata.gainQ15) }
+        } }
+    }
+}
+
+struct DTSXDynamicReferenceState {
+    var gains: [[Double]] = []
+    var targets: [[Double]] = []
+    mutating func retarget(_ codes: [[Int]]) {
+        targets = codes.map { $0.map { Double(DTSXDynamicMetadata.referenceGainQ15($0))/32768 } }
+        if gains.isEmpty { gains = targets }
+    }
+    mutating func advance() {
+        for slot in gains.indices { for channel in gains[slot].indices {
+            gains[slot][channel] += (targets[slot][channel]-gains[slot][channel])*DTSXDynamicPresentationState.transitionCoefficient
+        } }
     }
 }
 
@@ -87,9 +100,10 @@ final class DTSXDynamicStreamSession: @unchecked Sendable {
         }
         let reserved = source.layout == .sevenOneFive ? [plane(source.fixedPlanes[12])] : []
         let heights = source.fixedPlanes[8..<12].map(plane)
-        let audio = reserved + source.dynamicPlanes.map(plane) + heights
+        let audio = reserved + source.dynamicPlanes.map { plane($0).map { Int32(DTSXDynamicFoldPlan.codedSample($0)) } } + heights
         let result = try DTSXDynamicPrivateFrame.encode(layout: source.layout, positions: source.positions[sourceIndex],
-                                                       dynamicFoldCodes: folds.codes,
+                                                       dynamicFoldCodes: folds.frameCodes[sourceIndex],
+                                                       dynamicGainCode: DTSXDynamicFoldPlan.objectGainCode,
                                                        planes: audio, plan: plan, mode: mode)
         lock.lock(); defer { lock.unlock() }
         guard !completed[index] else { throw DTSError.malformed("Object private provider called twice for one AU") }
@@ -118,11 +132,14 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
 
     private func condition(_ input: DTSXDynamicPCMBuffer, folds: DTSXDynamicFoldPlan) throws -> (DTSXDynamicPCMBuffer, Int64, Int64) {
         var maximum: Int64 = 1
+        var reference = DTSXDynamicReferenceState()
         for sample in 0..<input.sampleCount {
+            if sample.isMultiple(of: 512) { reference.retarget(folds.frameCodes[sample/512]) }
+            reference.advance()
             let fixed = input.fixedPlanes.map { Int64($0[sample]) }
             var bed = Array(fixed.prefix(8))
             do {
-                let destinations = input.layout == .sevenOneFive ? [0,1,4,5] : [0,1,6,7]
+                let destinations = [0,1,6,7]
                 let gain = DTSXDynamicMetadata.gainQ15(input.layout == .sevenOneFive ? 61 : 55)
                 for height in 0..<4 { bed[destinations[height]] += (fixed[height+8] * gain + 16384) >> 15 }
             }
@@ -133,8 +150,10 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
             }
             var objectsMagnitude: Int64 = 0
             for object in input.dynamicPlanes.indices {
-                let value = Int64(input.dynamicPlanes[object][sample]); objectsMagnitude += abs(value)
-                let coefficients = folds.gains[object]
+                let value = DTSXDynamicFoldPlan.codedSample(input.dynamicPlanes[object][sample])
+                objectsMagnitude += abs(Int64(input.dynamicPlanes[object][sample]))
+                maximum = max(maximum,abs(value))
+                let coefficients = reference.gains[object].map { Int64(($0*32768).rounded()) }
                 for channel in 0..<8 { bed[channel] += (value * coefficients[channel] + 16384) >> 15 }
             }
             maximum = max(maximum, fixed.map { abs($0) }.max() ?? 0,
@@ -160,15 +179,22 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
         let folds = DTSXDynamicFoldPlan(source: input)
         let (source, gain, maximum) = try condition(input, folds: folds)
         if let stemsDirectory {
-            try DTSXDynamicRenderer.writeStems(source, directory: stemsDirectory)
+            let coded = try DTSXDynamicPCMBuffer(layout: source.layout,fixedPlanes: source.fixedPlanes,
+                dynamicPlanes: source.dynamicPlanes.map { $0.map { Int32(DTSXDynamicFoldPlan.codedSample($0)) } },
+                positions: source.positions,aggregation: source.aggregation)
+            try DTSXDynamicRenderer.writeStems(coded, directory: stemsDirectory)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
             try encoder.encode(folds.codes).write(to: stemsDirectory.appendingPathComponent("fold-codes.json"),options: .atomic)
+            try encoder.encode(folds.frameCodes).write(to: stemsDirectory.appendingPathComponent("fold-codes-by-au.json"),options: .atomic)
         }
         var bed = Array(source.fixedPlanes.prefix(8))
+        var reference = DTSXDynamicReferenceState()
         for sample in 0..<source.sampleCount {
+            if sample.isMultiple(of: 512) { reference.retarget(folds.frameCodes[sample/512]) }
+            reference.advance()
             var values = bed.map { Int64($0[sample]) }
             do {
-                let destinations = source.layout == .sevenOneFive ? [0,1,4,5] : [0,1,6,7]
+                let destinations = [0,1,6,7]
                 let coefficient = DTSXDynamicMetadata.gainQ15(source.layout == .sevenOneFive ? 61 : 55)
                 for height in 0..<4 { values[destinations[height]] += (Int64(source.fixedPlanes[height+8][sample])*coefficient + 16384) >> 15 }
             }
@@ -178,7 +204,7 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
                 }
             }
             for object in source.dynamicPlanes.indices {
-                let coefficients = folds.gains[object], value = Int64(source.dynamicPlanes[object][sample])
+                let coefficients = reference.gains[object].map { Int64(($0*32768).rounded()) }, value = DTSXDynamicFoldPlan.codedSample(source.dynamicPlanes[object][sample])
                 for channel in 0..<8 { values[channel] += (value * coefficients[channel] + 16384) >> 15 }
             }
             guard values.allSatisfy({ (-8_388_608...8_388_607).contains($0) }) else { throw DTSError.malformed("Object compatibility fold clipped") }
@@ -210,6 +236,7 @@ public struct DTSXDynamicHDMAEncoder: Sendable {
                 accessUnitCount: session.frameCount, minimumProgrammeGainQ30: gain,
                 maximumInputCompositeMagnitude: maximum, positionChangeCount: changes,
                 dynamicFoldCodes: folds.codes,
+                dynamicObjectGainCode: DTSXDynamicFoldPlan.objectGainCode,
                 segmentCounts: try session.finish(), nativePrivatePCMVerified: true, officialPlaybackQualified: false,
                 spatialAggregation: source.aggregation, deliveryArtifacts: artifacts)
         } catch { writer.cancel(); throw error }

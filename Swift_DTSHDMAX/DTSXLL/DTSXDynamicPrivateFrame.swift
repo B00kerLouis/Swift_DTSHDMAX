@@ -76,7 +76,7 @@ public struct DTSXObjectPosition: Sendable, Equatable, Codable {
     func foldCodes(for layout: DTSXDynamicLayout) -> [Int] {
         let field = DTS714VBAPPanner.transportGains(azimuth: azimuth,elevation: elevation,distance: distance)
         var gains = Array(field.prefix(8))
-        let destinations = layout == .sevenOneFive ? [0,1,4,5] : [0,1,6,7]
+        let destinations = [0,1,6,7]
         let height = Double(DTSXDynamicMetadata.gainQ15(layout == .sevenOneFive ? 61 : 55))/32768
         for index in 0..<4 { gains[destinations[index]] += field[index+8]*height }
         let maximum = max(1,gains.max() ?? 1)
@@ -94,18 +94,24 @@ struct DTSXDynamicMetadata: Sendable {
     let positions: [DTSXObjectPosition]
     /// Canonical L/R/C/LFE/Lss/Rss/Lsr/Rsr order.
     let foldCodes: [[Int]]
+    let gainCodes: [Int]
     let heightFoldCode: Int?
     let reservedTFC: Bool
     let byteCount: Int
     let chunkByteCounts: [Int]
+    let heightBedColumns: [Int]
 
     static let referenceOrder = [2, 0, 1, 3, 6, 7, 4, 5]
     static func gainQ15(_ code: Int) -> Int64 {
         code == 0 ? 0 : Int64(XLLSyntax.downmixCoefficientsQ15[4 * code - 3])
     }
 
+    /// Code 1 is the native rendered-reference silence placeholder. Keeping
+    /// it present preserves matrix-column identity through object motion.
+    static func referenceGainQ15(_ code: Int) -> Int64 { code <= 1 ? 0 : gainQ15(code) }
+
     static func encode(layout: DTSXDynamicLayout, positions moving: [DTSXObjectPosition],
-                       dynamicFoldCodes: [[Int]]) throws -> Data {
+                       dynamicFoldCodes: [[Int]], dynamicGainCode: Int = 61) throws -> Data {
         guard moving.count == layout.dynamicObjectCount,
               dynamicFoldCodes.count == layout.dynamicObjectCount,
               dynamicFoldCodes.allSatisfy({ $0.count == 8 && $0.allSatisfy({ (0...61).contains($0) }) }) else {
@@ -113,16 +119,21 @@ struct DTSXDynamicMetadata: Sendable {
         }
         let positions = (layout.reservedIMAXObjectCount == 1 ? [.reservedTFC] : []) + moving
         let folds = (layout.reservedIMAXObjectCount == 1 ? [[46,46,58,0,0,0,0,0]] : []) + dynamicFoldCodes
+        guard (1...61).contains(dynamicGainCode) else { throw DTSError.invalidArgument("Object gain code") }
         var w = BitWriter()
         func put(_ value: Int, _ bits: Int) throws { try w.write(UInt64(value), bitCount: bits, field: "Object metadata") }
         try put(0xf1, 8); try put(0x40, 8); try put(0, 5); try put(1, 4)
+        // The low nibble of F14000Dn is the declaration count minus one,
+        // not a presentation-profile identifier. Four moving records require
+        // D3; reserved TFC plus four moving records require D4.
         try put(1, 1); try put(0, 1); try put(1, 1); try put(positions.count - 1, 4)
         try put(0b001100000, 9); try put(2, 3); try put(0x084b, 12); try put(0, 8)
         for index in positions.indices {
             try put(1, 1); try put(3, 2); try put(index, 3); try put(1, 2); try put(0, 10)
         }
         for index in positions.indices {
-            try put(0, 3); try put(0x20, 7); try put(1, 1); try put(1, 1); try put(0, 2); try put(61, 6)
+            let gainCode = index == 0 && layout.reservedIMAXObjectCount == 1 ? 61 : dynamicGainCode
+            try put(0, 3); try put(0x20, 7); try put(1, 1); try put(1, 1); try put(0, 2); try put(gainCode, 6)
             try put(positions[index].distanceCode, 6); try put(positions[index].azimuthCode, 8)
             try put(positions[index].elevationCode, 7); try put(0, 1)
             try put(1, 1); try put(0, 1)
@@ -147,7 +158,7 @@ struct DTSXDynamicMetadata: Sendable {
             try put(0, 1); try put(0, 1); try put(0, 4)
             try put(1, 1); try put(61, 6); try put(0, 1); try put(3, 3); try put(0x886b, 16)
             try put(2, 5); try put(0, 6); try put(1, 1); try put(0, 1); try put(0x3fa, 12)
-            let bedColumns = layout == .sevenOneFive ? [1,2,8,9] : [1,2,6,7]
+            let bedColumns = [1,2,6,7]
             for (index, heightColumn) in [4,5,10,11].enumerated() {
                 let bed = bedColumns[index]
                 try put((1 << bed) | (1 << heightColumn), 12)
@@ -174,9 +185,12 @@ struct DTSXDynamicMetadata: Sendable {
         for index in 0..<count {
             try expect(1, 1); try expect(2, 3); try expect(3, index); try expect(2, 1); try expect(10, 0)
         }
-        var positions: [DTSXObjectPosition] = [], folds: [[Int]] = []
+        var positions: [DTSXObjectPosition] = [], folds: [[Int]] = [], gainCodes: [Int] = []
         for _ in 0..<count {
-            try expect(3, 0); try expect(7, 0x20); try expect(1, 1); try expect(1, 1); try expect(2, 0); try expect(6, 61)
+            try expect(3, 0); try expect(7, 0x20); try expect(1, 1); try expect(1, 1); try expect(2, 0)
+            let gain = try get(6)
+            guard (1...61).contains(gain) else { throw DTSError.malformed("Object presentation gain escape") }
+            gainCodes.append(gain)
             let distance = try get(6), azimuth = try get(8), elevation = try get(7)
             positions.append(try DTSXObjectPosition(azimuthCode: azimuth, elevationCode: elevation, distanceCode: distance))
             try expect(1, 0); try expect(1, 1); try expect(1, 0)
@@ -198,7 +212,7 @@ struct DTSXDynamicMetadata: Sendable {
                     try expect(1, 1); try expect(1, 1); try expect(6, 61)
                 }
             }
-            guard count == 5, positions[0] == .reservedTFC, folds[0] == [46,46,58,0,0,0,0,0] else {
+            guard count == 5, positions[0] == .reservedTFC, gainCodes[0] == 61, folds[0] == [46,46,58,0,0,0,0,0] else {
                 throw DTSError.malformed("Reserved IMAX object was changed or mixed with dynamic slots")
             }
         }
@@ -206,15 +220,26 @@ struct DTSXDynamicMetadata: Sendable {
         try align()
         let objectBytes = r.bitOffset / 8
         var heightCode: Int?
+        var heightBedColumns: [Int] = []
         do {
             try expect(8, 3); try expect(8, 0); try expect(1, 0); try expect(4, 1); try expect(4, 1)
             try expect(1, 0); try expect(1, 0); try expect(4, 0)
             try expect(1, 1); try expect(6, 61); try expect(1, 0); try expect(3, 3); try expect(16, 0x886b)
             try expect(5, 2); try expect(6, 0); try expect(1, 1); try expect(1, 0); try expect(12, 0x3fa)
             heightCode = reserved ? 61 : 55
-            let bedColumns = reserved ? [1,2,8,9] : [1,2,6,7]
+            let bedColumns = [1,2,6,7]
+            var legacySideFold: Bool?
             for (index, height) in [4,5,10,11].enumerated() {
-                try expect(12, (1 << bedColumns[index]) | (1 << height))
+                let mask = try get(12)
+                let canonical = (1 << bedColumns[index]) | (1 << height)
+                let legacy = reserved && index >= 2 ? (1 << (index+6)) | (1 << height) : canonical
+                guard mask == canonical || mask == legacy else { throw DTSError.malformed("Unknown fixed-height fold destination") }
+                heightBedColumns.append(mask == canonical ? bedColumns[index] : index+6)
+                if reserved && index >= 2 {
+                    let found = mask == legacy
+                    guard legacySideFold == nil || legacySideFold == found else { throw DTSError.malformed("Inconsistent rear-height fold destinations") }
+                    legacySideFold = found
+                }
                 try expect(6, heightCode!); try expect(6, 61)
             }
             try align()
@@ -225,8 +250,9 @@ struct DTSXDynamicMetadata: Sendable {
             throw DTSError.malformed("Object presentation CRC or fixed/dynamic role count is invalid")
         }
         let chunks = [objectBytes, end - objectBytes - 2]
-        return DTSXDynamicMetadata(positions: positions, foldCodes: folds, heightFoldCode: heightCode,
-                                   reservedTFC: reserved, byteCount: end, chunkByteCounts: chunks)
+        return DTSXDynamicMetadata(positions: positions, foldCodes: folds, gainCodes: gainCodes, heightFoldCode: heightCode,
+                                   reservedTFC: reserved, byteCount: end, chunkByteCounts: chunks,
+                                   heightBedColumns: heightBedColumns)
     }
 }
 
@@ -241,7 +267,7 @@ struct DTSXDynamicPrivateFrame: Sendable {
         bytes.count >= 4 && bytes[0] == 0xf1 && bytes[1] == 0x40 && bytes[2] == 0 && [0xd3,0xd4].contains(bytes[3])
     }
 
-    static func encode(layout: DTSXDynamicLayout, positions: [DTSXObjectPosition], dynamicFoldCodes: [[Int]], planes: [[Int32]],
+    static func encode(layout: DTSXDynamicLayout, positions: [DTSXObjectPosition], dynamicFoldCodes: [[Int]], dynamicGainCode: Int = 61, planes: [[Int32]],
                        plan: XLLSegmentationPlan, mode: DTSEncodeMode) throws -> DTSXDynamicPrivateFrame {
         guard let publicWidth = plan.segmentSizeBitCount,
               planes.count == layout.recordCount + 4 else {
@@ -252,7 +278,7 @@ struct DTSXDynamicPrivateFrame: Sendable {
         var sets = [try codec.encodeObjectChannelSet(planes: Array(planes.prefix(layout.recordCount)), segmentCount: plan.segmentCount)]
         sets.append(try codec.encodeObjectChannelSet(planes: Array(planes.suffix(4)), segmentCount: plan.segmentCount))
         let width = max(8, publicWidth, sets.map(\.requiredNavigationWidth).max() ?? 0)
-        var data = try DTSXDynamicMetadata.encode(layout: layout, positions: positions, dynamicFoldCodes: dynamicFoldCodes)
+        var data = try DTSXDynamicMetadata.encode(layout: layout, positions: positions, dynamicFoldCodes: dynamicFoldCodes, dynamicGainCode: dynamicGainCode)
         for (index, set) in sets.enumerated() {
             data.append(index == 0 ? 3 : 2)
             data.append(contentsOf: [0x34,0x38,0x8c,0x4f])

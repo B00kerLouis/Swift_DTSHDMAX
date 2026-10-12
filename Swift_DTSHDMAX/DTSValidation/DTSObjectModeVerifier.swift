@@ -12,6 +12,16 @@ public enum DTSObjectModeVerifier {
             throw DTSError.malformed("Object mode defaults or Framework command surface differ")
         }
         var parserCases = 0
+        for vision in DTSXVision.allCases {
+            for coding in DTSEncodeMode.allCases {
+                let options = try DTSHDMACommandLine.parseAutomaticOptions(base + ["--dtsx-vision",vision.rawValue,
+                    "--encode-mode",coding.rawValue])
+                guard options.objectMode == DTSObjectMode.defaultMode(for: vision) else {
+                    throw DTSError.malformed("Vision-specific default object mode differs")
+                }
+                parserCases += 1
+            }
+        }
         for object in DTSObjectMode.allCases {
             for vision in DTSXVision.allCases {
                 for coding in DTSEncodeMode.allCases {
@@ -36,6 +46,34 @@ public enum DTSObjectModeVerifier {
         defer { try? FileManager.default.removeItem(at: folder) }
         let manifest = try writeFixture(folder: folder)
         let master = try AtmosInputReader.read(url: manifest)
+        var residualCases = 0
+        for vision in DTSXVision.allCases {
+            let layout: DTSXDynamicLayout = vision == .imax ? .sevenOneFive : .sevenOneFour
+            let source = try DTSXDynamicRenderer.render(master: master,layout: layout)
+            let reference: [[Int32]]
+            if vision == .imax { reference = try DTSIMAXRenderer.render(master: master).planes }
+            else { reference = try DTS714Renderer.render(master: master).planes }
+            var presentation = DTSXDynamicPresentationState()
+            for sample in 0..<source.sampleCount {
+                if sample.isMultiple(of: 512) {
+                    presentation.retarget(source.positions[sample/512].map {
+                        DTSXDynamicSpatialModel.image(position: $0,layout: layout)
+                    })
+                }
+                presentation.advance()
+                for channel in reference.indices {
+                    var rendered = Double(source.fixedPlanes[channel][sample])
+                    for slot in 0..<4 { rendered += Double(source.dynamicPlanes[slot][sample])*presentation.gains[slot][channel] }
+                    guard abs(rendered-Double(reference[channel][sample])) <= 1 else {
+                        throw DTSError.malformed("Dynamic reduction lost the native speaker image")
+                    }
+                }
+            }
+            guard source.aggregation?.fixedBedCarriesSpatialResidual == true else {
+                throw DTSError.malformed("Dynamic fixed bed omitted its spatial residual")
+            }
+            residualCases += 1
+        }
         var streamCases = 0
         for vision in DTSXVision.allCases {
             for coding in DTSEncodeMode.allCases {
@@ -65,8 +103,12 @@ public enum DTSObjectModeVerifier {
                     }
                     if object == .dynamic {
                         let frame = try DTSXDynamicPrivateFrame.parse(xll.privateData)
+                        let metadata = try DTSXDynamicStreamInspector.inspectMetadata(input: output)
                         guard frame.metadata.reservedTFC == (vision == .imax),report.dynamicEncoding?.dynamicObjectCount == 4,
                               report.dynamicEncoding?.reservedIMAXObjectCount == (vision == .imax ? 1 : 0),
+                              metadata.declaredObjectRecordCount == (vision == .imax ? 5 : 4),
+                              metadata.dynamicObjectCount == 4,metadata.matchesSelectedHeightFoldProfile,
+                              !metadata.audioDecoded,
                               report.objectMetadataDisposition == (vision == .imax ? .aggregatedToFourDynamicObjectsWithReservedIMAXTFC : .aggregatedToFourDynamicObjects) else {
                             throw DTSError.malformed("Dynamic slots or reserved IMAX role differ")
                         }
@@ -96,6 +138,14 @@ public enum DTSObjectModeVerifier {
         guard defaultReport.objectMode == .dynamic,try Data(contentsOf: implicit) == Data(contentsOf: explicit) else {
             throw DTSError.malformed("Typed default does not select dynamic")
         }
+        let implicitIMAX = folder.appendingPathComponent("default-imax.dtshd")
+        let explicitIMAX = folder.appendingPathComponent("channelbase-imax.dtshd")
+        let imaxReport = try DTSAutomaticEncoder.encode(inputURL: manifest,outputURL: implicitIMAX,dtsxVision: .imax)
+        _ = try DTSAutomaticEncoder.encode(inputURL: manifest,outputURL: explicitIMAX,dtsxVision: .imax,objectMode: .channelbase)
+        guard imaxReport.objectMode == .channelbase,imaxReport.dynamicEncoding == nil,
+              try Data(contentsOf: implicitIMAX) == Data(contentsOf: explicitIMAX) else {
+            throw DTSError.malformed("Typed IMAX default does not preserve channelbase")
+        }
         let pcmURL = folder.appendingPathComponent("plain.wav")
         let pcm = try PCMBuffer(format: PCMFormat(sampleRate: 48_000,bitDepth: 24,layout: .fiveOneSide),
             planes: Array(repeating: Array(repeating: Int32(12345),count: 1025),count: 6))
@@ -110,7 +160,8 @@ public enum DTSObjectModeVerifier {
             plainBytes = bytes
         }
         return ["selectorCases":parserCases,"invalidOptionsRejected":invalid.count,"alternatingStreamCases":streamCases,
-                "legacyEncoderIdentityCases":4,"typedDefaultIdentityCases":1,"plainPCMIdentityCases":2,
+                "legacyEncoderIdentityCases":4,"typedDefaultIdentityCases":2,"plainPCMIdentityCases":2,
+                "fullSpeakerImageResidualCases":residualCases,
                 "officialPlaybackQualified":0]
     }
 

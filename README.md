@@ -81,15 +81,17 @@ or `executeWithArguments:error:`. `HDMAX.supportedEncodeModes()` returns
 in `DTSAutomaticEncoder.encode`, `HDMAEncoder`, `DTSXNativeHDMAEncoder`, and
 `DTSXHDMAEncoderConfiguration`.
 
-`--object-mode dynamic|channelbase` is optional and defaults to `dynamic` for
-Atmos inputs, including DAMF, ADM BWF and IMF IAB. Dynamic uses four moving
+`--object-mode dynamic|channelbase` is optional. For Atmos inputs, including
+DAMF, ADM BWF and IMF IAB, vision 1 defaults to `dynamic` and vision 2 defaults
+to `channelbase`. Explicit selection overrides that default for either vision.
+Dynamic uses four moving
 aggregates; channelbase selects the established fixed-channel render and
 encoding path. The modes own separate gain, aggregation and provider state.
 Ordinary PCM has no object metadata and retains its channel presentation.
 CLI and Framework share this option; `HDMAX.supportedObjectModes()` returns
 `dynamic` and `channelbase`. Existing typed automatic overloads remain
-source-compatible and now default to dynamic. Pass `objectMode: .channelbase`
-to select the original presentation explicitly.
+source-compatible and use the same vision-specific defaults. Pass an explicit
+`objectMode` to select either presentation.
 
 `--dtsx-vision` is optional and defaults to `1`. In dynamic mode, vision 1
 selects 7.1.4+4 and vision 2 selects 7.1.5+4, with an independent reserved IMAX
@@ -115,7 +117,8 @@ Input routing is automatic:
 | --- | --- |
 | 48 kHz, 24-bit 5.1 or 7.1 PCM WAVE | DTS HDMA |
 | DAMF / ADM BWF / IMF IAB, default options | DTS:X 7.1.4 + four dynamic aggregates |
-| Atmos input with `--dtsx-vision 2` | DTS:X 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
+| Atmos input with `--dtsx-vision 2` | Established fixed IMAX DTS:X |
+| Atmos input with `--object-mode dynamic --dtsx-vision 2` | Experimental 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
 | Atmos input with `--object-mode channelbase` | Established fixed 7.1.4 DTS:X |
 | Atmos input with `--object-mode channelbase --dtsx-vision 2` | Established fixed IMAX DTS:X |
 | THE IMAX Master input with `--dtsx-vision 2` | Established fixed IMAX DTS:X  |
@@ -214,6 +217,7 @@ hdmax -i INPUT.mxf -o OUTPUT.dtshd
 hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode dynamic --dtsx-vision 2
 hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode channelbase
 hdmax -i INPUT.mxf -o OUTPUT.dtshd --object-mode channelbase --dtsx-vision 2
+hdmax inspect-dtsx-dynamic-metadata OUTPUT.dtshd
 hdmax inspect-dtsx-dynamic OUTPUT.dtshd
 ```
 
@@ -223,20 +227,41 @@ use `DTSXDynamicRenderer`, `DTSXDynamicPCMBuffer` and `DTSXDynamicHDMAEncoder`.
 `--encode-mode auto|standard` defaults to auto. In dynamic Atmos mode,
 `--stems-directory PATH` writes
 the actual conditioned fixed/object PCM, compatible bed, AU positions and
-constant fold rows for independent comparison. Prediction still defaults to
-auto and vision to 1; Atmos object mode now defaults to dynamic.
+reference rows per AU and object gain code for independent comparison. Prediction still defaults to
+auto and vision to 1; object mode defaults to dynamic for vision 1 and
+channelbase for vision 2. Explicit IMAX dynamic selection remains experimental.
+
+`inspect-dtsx-dynamic-metadata` checks presentation records, reserved TFC,
+fixed-height folds, ExSS metadata/audio extents and file navigation over the
+whole stream before decoding PCM. `F14000D3` declares four records and
+`F14000D4` declares five; the low nibble is the record count minus one, not an
+IMAX profile flag. MediaInfo 26.05 omits D3 from its DTS:X detection switch
+and recognizes IMAX only at D0. Its label therefore does not establish a
+metadata error for these dynamic profiles. Do not rewrite a record count or
+add a placeholder object to force a legacy label.
 
 The four-slot reduction fits source speaker images with nonnegative weights,
 uses stable identity matching at crossings, and retains sample-continuous
 source gain/activation. IMAX TFC uses a separate native gain state before the
 dynamic fit. Speaker anchors determine spherical coordinates; distance is
 retained independently, and gains are fitted to quantized transport positions.
-Dynamic compatibility folds use constant programme carriers, selected by PCM
-energy over the actual Q15 table. Position metadata continues to move the
-objects. This keeps bed recovery continuous through decoder fold smoothing;
-legacy 7.1 playback receives the programme's average compatible object image.
-Fixed height and reserved IMAX folds retain their established profiles.
+Dynamic compatibility folds follow the quantized object positions. Every
+full-range reference column remains declared throughout the programme, using
+the native silence placeholder for an inactive contribution. Both metadata
+and public PCM use continuous reference transitions, avoiding matrix-identity
+resets. Coded object PCM uses the reciprocal of position gain code 55, reserving
+range for unity IMAX height folds while retaining the presentation level.
+Fixed heights fold into L/R/Lsr/Rsr: standard uses -3 dB and IMAX unity.
+Reserved IMAX TFC retains its established independent position and C/L/R folds.
 Both private groups participate in shared NAVI and ExSS chunk-size finalization.
+
+The fixed bed carries the speaker-image residual outside the four aggregate
+columns, including the measured sample-continuous presentation transition.
+This preserves quiet centre/height components that an undercomplete four-ray
+fit would otherwise omit. The reserved IMAX TFC plane is excluded from this
+subtraction. This compensation is qualified against the software 7.1.4 display
+model; it does not establish other hardware render layouts. QC fixed stems
+include this residual, and the aggregation report declares it explicitly.
 
 The encode report states spatial fit error, coordinate quantization error,
 TFC separation and the linked programme headroom gain. Spatial reduction is

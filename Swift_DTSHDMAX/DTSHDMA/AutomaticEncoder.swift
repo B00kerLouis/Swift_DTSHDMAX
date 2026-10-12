@@ -98,8 +98,8 @@ public enum DTSAutomaticEncoder {
         let deliveryInput: DTSHDMADeliveryInput
     }
 
-    /// Existing signatures remain source-compatible. Atmos defaults to
-    /// dynamic; channelbase is selected explicitly through the mode overload.
+    /// Existing signatures remain source-compatible. Standard Atmos defaults
+    /// to dynamic; IMAX defaults to the established channelbase presentation.
     public static func encode(
         inputURL: URL, outputURL: URL, frameRateOverride: DTSFrameRate? = nil,
         encodeMode: DTSEncodeMode = .auto, progress: ((Int64, Int64) -> Void)? = nil
@@ -117,7 +117,8 @@ public enum DTSAutomaticEncoder {
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws -> DTSAutomaticEncodeReport {
         try encode(inputURL: inputURL,outputURL: outputURL,frameRateOverride: frameRateOverride,
-                   encodeMode: encodeMode,dtsxVision: dtsxVision,objectMode: .dynamic,progress: progress)
+                   encodeMode: encodeMode,dtsxVision: dtsxVision,
+                   objectMode: DTSObjectMode.defaultMode(for: dtsxVision),progress: progress)
     }
 
     public static func encode(

@@ -31,6 +31,11 @@ public enum DTSHDMACommandLine {
             print(try jsonString(DTSXDynamicStreamInspector.inspect(input: URL(fileURLWithPath: arguments[1]))))
             return
         }
+        if command == "inspect-dtsx-dynamic-metadata" {
+            guard arguments.count == 2 else { throw DTSError.invalidArgument("inspect-dtsx-dynamic-metadata requires INPUT.dtshd") }
+            print(try jsonString(DTSXDynamicStreamInspector.inspectMetadata(input: URL(fileURLWithPath: arguments[1]))))
+            return
+        }
         if command.hasPrefix("-") {
             if command == "-h" || command == "--help" {
                 printUsage()
@@ -2408,8 +2413,9 @@ public enum DTSHDMACommandLine {
         guard output.pathExtension.lowercased() == "dtshd" else {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
-        return (input, output, frameRate, encodeMode ?? .auto, dtsxVision ?? .sevenOneFour,
-                objectMode ?? .dynamic, stemsDirectory)
+        let selectedVision = dtsxVision ?? .sevenOneFour
+        return (input, output, frameRate, encodeMode ?? .auto, selectedVision,
+                objectMode ?? DTSObjectMode.defaultMode(for: selectedVision), stemsDirectory)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2427,10 +2433,12 @@ public enum DTSHDMACommandLine {
         Primary usage:
           hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
 
-        Object modes for Atmos inputs (optional, default dynamic):
+        Object modes for Atmos inputs (optional):
           dynamic     -> 7.1.4 + four moving aggregates (vision 1)
                       -> 7.1.5 + four moving aggregates and reserved IMAX TFC (vision 2)
           channelbase -> established fixed 7.1.4 (vision 1) or IMAX 12.1 (vision 2)
+          Default: dynamic for vision 1; channelbase for vision 2.
+          Explicit --object-mode overrides that default for either vision.
           Ordinary PCM has no object metadata and retains its channel presentation.
           --stems-directory PATH exports dynamic Atmos QC PCM, folds and positions.
 
@@ -2446,6 +2454,7 @@ public enum DTSHDMACommandLine {
         Experimental dynamic objects (CLI and Framework):
           hdmax dtsx-dynamic-profiles
           hdmax inspect-dtsx-dynamic INPUT.dtshd
+          hdmax inspect-dtsx-dynamic-metadata INPUT.dtshd
           7.1.4+4 and 7.1.5+4 are experimental interoperability profiles.
           7.1.5 reserves one fixed IMAX TFC record separately from four dynamic objects.
           Official player playback and Bitstream Tools validation are required for acceptance.
