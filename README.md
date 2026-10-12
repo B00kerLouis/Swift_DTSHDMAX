@@ -206,8 +206,8 @@ hdmax inspect-dtsx-dynamic OUTPUT.dtshd
 These commands are shared by the CLI and `HDMAX.run(arguments:)`; typed callers
 use `DTSXDynamicRenderer`, `DTSXDynamicPCMBuffer` and `DTSXDynamicHDMAEncoder`.
 `--encode-mode auto|standard` defaults to auto. `--stems-directory PATH` writes
-the actual conditioned fixed/object PCM, compatible bed and AU positions for
-independent comparison. The existing automatic encoder and vision defaults
+the actual conditioned fixed/object PCM, compatible bed, AU positions and
+constant fold rows for independent comparison. The existing automatic encoder and vision defaults
 remain unchanged.
 
 The four-slot reduction fits source speaker images with nonnegative weights,
@@ -215,7 +215,11 @@ uses stable identity matching at crossings, and retains sample-continuous
 source gain/activation. IMAX TFC uses a separate native gain state before the
 dynamic fit. Speaker anchors determine spherical coordinates; distance is
 retained independently, and gains are fitted to quantized transport positions.
-Compatibility folds use the actual Q15 table and the selected height profile.
+Dynamic compatibility folds use constant programme carriers, selected by PCM
+energy over the actual Q15 table. Position metadata continues to move the
+objects. This keeps bed recovery continuous through decoder fold smoothing;
+legacy 7.1 playback receives the programme's average compatible object image.
+Fixed height and reserved IMAX folds retain their established profiles.
 Both private groups participate in shared NAVI and ExSS chunk-size finalization.
 
 The encode report states spatial fit error, coordinate quantization error,

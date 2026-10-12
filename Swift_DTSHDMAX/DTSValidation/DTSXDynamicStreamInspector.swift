@@ -17,6 +17,8 @@ public struct DTSXDynamicInspectionReport: Sendable, Codable {
     public let reservedIMAXObjectCount: Int
     public let accessUnitCount: Int
     public let positionChangeCounts: [Int]
+    public let dynamicFoldChangeCounts: [Int]
+    public let dynamicFoldCodes: [[Int]]
     public let navigationWidths: [String: Int]
     public let channels: [DTSXDynamicChannelMetrics]
     public let allMetadataAndAudioCRCsValid: Bool
@@ -34,6 +36,7 @@ public enum DTSXDynamicStreamInspector {
         defer { try? handle.close() }
         var layout: DTSXDynamicLayout?, previousPositions: [DTSXObjectPosition] = []
         var changes: [Int] = [], widths: [String: Int] = [:]
+        var firstFolds: [[Int]] = [], previousFolds: [[Int]] = [], foldChanges: [Int] = []
         var peaks: [Int64] = [], jumps: [Int64] = [], last: [Int32] = []
         var powers: [Double] = [], nonzero: [Int] = [], clips: [Int] = []
         var sampleCount = 0
@@ -59,15 +62,19 @@ public enum DTSXDynamicStreamInspector {
             if let layout, layout != found { throw DTSError.malformed("Object roles changed within a programme") }
             let planes = try objects.decode()
             let positions = Array(objects.metadata.positions.suffix(found.dynamicObjectCount))
+            let folds = Array(objects.metadata.foldCodes.suffix(found.dynamicObjectCount))
             if layout == nil {
                 layout = found; changes = Array(repeating: 0, count: positions.count)
+                firstFolds = folds; foldChanges = Array(repeating: 0,count: folds.count)
                 peaks = Array(repeating: 0, count: planes.count); jumps = peaks
                 powers = Array(repeating: 0, count: planes.count); nonzero = Array(repeating: 0, count: planes.count)
                 clips = nonzero; last = Array(repeating: 0, count: planes.count)
             } else {
                 for index in positions.indices where positions[index] != previousPositions[index] { changes[index] += 1 }
+                for index in folds.indices where folds[index] != previousFolds[index] { foldChanges[index] += 1 }
             }
             previousPositions = positions
+            previousFolds = folds
             widths[String(objects.navigationWidth), default: 0] += 1
             for channel in planes.indices {
                 for value in planes[channel] {
@@ -88,7 +95,8 @@ public enum DTSXDynamicStreamInspector {
         guard navigation else { throw DTSError.malformed("Object file NAVI does not match AU boundaries") }
         return DTSXDynamicInspectionReport(layout: selected, dynamicObjectCount: selected.dynamicObjectCount,
             reservedIMAXObjectCount: selected.reservedIMAXObjectCount, accessUnitCount: infos.count,
-            positionChangeCounts: changes, navigationWidths: widths,
+            positionChangeCounts: changes, dynamicFoldChangeCounts: foldChanges, dynamicFoldCodes: firstFolds,
+            navigationWidths: widths,
             channels: names.indices.map {
                 DTSXDynamicChannelMetrics(role: names[$0], sampleCount: sampleCount, nonzeroSamples: nonzero[$0],
                     peakAbsolute: peaks[$0], rms: sqrt(powers[$0]/Double(sampleCount)),

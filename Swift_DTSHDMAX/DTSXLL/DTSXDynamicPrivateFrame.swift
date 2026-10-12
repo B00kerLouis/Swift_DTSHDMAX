@@ -71,9 +71,8 @@ public struct DTSXObjectPosition: Sendable, Equatable, Codable {
     var elevation: Double { Double(elevationCode - 60) * 1.5 }
     var distance: Double { distanceCode == 0 ? 0 : Double(distanceCode+1)/64 }
 
-    /// Fold the calibrated speaker image into the compatible bed. Quantize
-    /// against the actual Q15 table: its low codes do not have one uniform
-    /// half-dB step. The same stated gains build and recover the public bed.
+    /// Candidate compatibility image used by the programme carrier planner.
+    /// Moving positions must not directly change the transmitted fold rows.
     func foldCodes(for layout: DTSXDynamicLayout) -> [Int] {
         let field = DTS714VBAPPanner.transportGains(azimuth: azimuth,elevation: elevation,distance: distance)
         var gains = Array(field.prefix(8))
@@ -105,12 +104,15 @@ struct DTSXDynamicMetadata: Sendable {
         code == 0 ? 0 : Int64(XLLSyntax.downmixCoefficientsQ15[4 * code - 3])
     }
 
-    static func encode(layout: DTSXDynamicLayout, positions moving: [DTSXObjectPosition]) throws -> Data {
-        guard moving.count == layout.dynamicObjectCount else { throw DTSError.invalidArgument("Dynamic position count does not match layout") }
-        let positions = (layout.reservedIMAXObjectCount == 1 ? [.reservedTFC] : []) + moving
-        let folds = positions.enumerated().map { index, position in
-            index == 0 && layout.reservedIMAXObjectCount == 1 ? [46,46,58,0,0,0,0,0] : position.foldCodes(for: layout)
+    static func encode(layout: DTSXDynamicLayout, positions moving: [DTSXObjectPosition],
+                       dynamicFoldCodes: [[Int]]) throws -> Data {
+        guard moving.count == layout.dynamicObjectCount,
+              dynamicFoldCodes.count == layout.dynamicObjectCount,
+              dynamicFoldCodes.allSatisfy({ $0.count == 8 && $0.allSatisfy({ (0...61).contains($0) }) }) else {
+            throw DTSError.invalidArgument("Dynamic position/fold dimensions or gain codes are invalid")
         }
+        let positions = (layout.reservedIMAXObjectCount == 1 ? [.reservedTFC] : []) + moving
+        let folds = (layout.reservedIMAXObjectCount == 1 ? [[46,46,58,0,0,0,0,0]] : []) + dynamicFoldCodes
         var w = BitWriter()
         func put(_ value: Int, _ bits: Int) throws { try w.write(UInt64(value), bitCount: bits, field: "Object metadata") }
         try put(0xf1, 8); try put(0x40, 8); try put(0, 5); try put(1, 4)
@@ -239,7 +241,7 @@ struct DTSXDynamicPrivateFrame: Sendable {
         bytes.count >= 4 && bytes[0] == 0xf1 && bytes[1] == 0x40 && bytes[2] == 0 && [0xd3,0xd4].contains(bytes[3])
     }
 
-    static func encode(layout: DTSXDynamicLayout, positions: [DTSXObjectPosition], planes: [[Int32]],
+    static func encode(layout: DTSXDynamicLayout, positions: [DTSXObjectPosition], dynamicFoldCodes: [[Int]], planes: [[Int32]],
                        plan: XLLSegmentationPlan, mode: DTSEncodeMode) throws -> DTSXDynamicPrivateFrame {
         guard let publicWidth = plan.segmentSizeBitCount,
               planes.count == layout.recordCount + 4 else {
@@ -250,7 +252,7 @@ struct DTSXDynamicPrivateFrame: Sendable {
         var sets = [try codec.encodeObjectChannelSet(planes: Array(planes.prefix(layout.recordCount)), segmentCount: plan.segmentCount)]
         sets.append(try codec.encodeObjectChannelSet(planes: Array(planes.suffix(4)), segmentCount: plan.segmentCount))
         let width = max(8, publicWidth, sets.map(\.requiredNavigationWidth).max() ?? 0)
-        var data = try DTSXDynamicMetadata.encode(layout: layout, positions: positions)
+        var data = try DTSXDynamicMetadata.encode(layout: layout, positions: positions, dynamicFoldCodes: dynamicFoldCodes)
         for (index, set) in sets.enumerated() {
             data.append(index == 0 ? 3 : 2)
             data.append(contentsOf: [0x34,0x38,0x8c,0x4f])

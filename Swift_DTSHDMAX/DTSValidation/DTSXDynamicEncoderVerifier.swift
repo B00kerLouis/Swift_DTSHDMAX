@@ -37,7 +37,8 @@ public enum DTSXDynamicEncoderVerifier {
                         }
                         let plan = try XLLSegmentationPlan(segmentCount: segments, segmentSampleCount: 512/segments,
                             segmentSizeBitCount: width, navigationByteCount: 2, segmentEntropyByteCounts: Array(repeating: [1], count: segments))
-                        let frame = try DTSXDynamicPrivateFrame.encode(layout: layout, positions: positions, planes: planes, plan: plan, mode: mode)
+                        let frame = try DTSXDynamicPrivateFrame.encode(layout: layout, positions: positions,
+                            dynamicFoldCodes: positions.map { $0.foldCodes(for: layout) }, planes: planes, plan: plan, mode: mode)
                         guard try frame.decode() == planes,
                               Array(frame.metadata.positions.suffix(layout.dynamicObjectCount)) == positions,
                               frame.metadata.reservedTFC == (layout == .sevenOneFive),
@@ -91,7 +92,8 @@ public enum DTSXDynamicEncoderVerifier {
             throw DTSError.malformed("Four-object nonnegative image fit does not reconstruct its spanned field")
         }
         let moving = try (0..<4).map { try DTSXObjectPosition(azimuthCode: 40+$0*40,elevationCode: 75) }
-        var meta = try DTSXDynamicMetadata.encode(layout: .sevenOneFive,positions: moving)
+        var meta = try DTSXDynamicMetadata.encode(layout: .sevenOneFive,positions: moving,
+                                                dynamicFoldCodes: moving.map { $0.foldCodes(for: .sevenOneFive) })
         // Five 18-bit declarations follow the 64-bit layout header. Mutate
         // reserved record zero's azimuth while closing a valid outer CRC.
         let bit = 64+5*18+3+7+1+1+2+6+6
@@ -99,8 +101,56 @@ public enum DTSXDynamicEncoderVerifier {
         var writer = BitWriter(); try writer.write(bytes: meta.dropLast(2),field: "Reserved role mutation")
         try DTSCRC16.appendChecksum(to: &writer,protectedByteOffset: 0,component: "Reserved role mutation")
         guard (try? DTSXDynamicMetadata.parse(writer.data())) == nil else { throw DTSError.malformed("Moving IMAX reserved record was accepted") }
+        var carrierCases = 0
+        for layout in DTSXDynamicLayout.allCases {
+            // A sustained waveform traverses opposite anchors while the
+            // carrier remains fixed, including silent priming and a short tail.
+            let count = 1025
+            var fixed = Array(repeating: Array(repeating: Int32(0),count: count),count: layout.fixedPlaneCount)
+            if layout == .sevenOneFive { fixed[12] = Array(repeating: 1234,count: count) }
+            let audio = [Array(repeating: Int32(100_000),count: count)]
+                + Array(repeating: Array(repeating: Int32(0),count: count),count: 3)
+            let right = try DTSXObjectPosition(azimuthCode: 140,elevationCode: 60)
+            let poses = [left,right,left].map { Array(repeating: $0,count: 4) }
+            let source = try DTSXDynamicPCMBuffer(layout: layout,fixedPlanes: fixed,dynamicPlanes: audio,positions: poses)
+            let folds = DTSXDynamicFoldPlan(source: source)
+            let session = DTSXDynamicStreamSession(source: source,mode: .auto,folds: folds)
+            let plan = try XLLSegmentationPlan(segmentCount: 2,segmentSampleCount: 256,segmentSizeBitCount: 14,
+                navigationByteCount: 2,segmentEntropyByteCounts: [[1],[1]])
+            for frame in 0..<session.frameCount {
+                let encoded = try DTSXDynamicPrivateFrame.parse(session.encodeFrame(at: frame,plan: plan))
+                guard Array(encoded.metadata.foldCodes.suffix(4)) == folds.codes,
+                      Array(encoded.metadata.positions.suffix(4)) == poses[max(0,frame-2)],
+                      encoded.metadata.reservedTFC == (layout == .sevenOneFive) else {
+                    throw DTSError.malformed("Moving pose changed programme carriers or reserved IMAX identity")
+                }
+                let decoded = try encoded.decode()
+                if frame < 2 {
+                    guard decoded.allSatisfy({ $0.allSatisfy({ $0 == 0 }) }) else { throw DTSError.malformed("Carrier priming is audible") }
+                } else {
+                    let offset = layout.reservedIMAXObjectCount
+                    let expected = frame == 4 ? [Int32(100_000)]+Array(repeating: Int32(0),count: 511)
+                        : Array(repeating: Int32(100_000),count: 512)
+                    guard decoded[offset] == expected else { throw DTSError.malformed("Carrier change altered object PCM or tail") }
+                    if layout == .sevenOneFive {
+                        let tfc = frame == 4 ? [Int32(1234)]+Array(repeating: Int32(0),count: 511)
+                            : Array(repeating: Int32(1234),count: 512)
+                        guard decoded[0] == tfc else { throw DTSError.malformed("Carrier change altered reserved TFC PCM") }
+                    }
+                }
+            }
+            _ = try session.finish()
+            // This input has almost equal power at L/R. The nearest Q15
+            // carrier must retain both, rather than following the final pose.
+            guard folds.codes[0][0] > 0,folds.codes[0][1] > 0,
+                  abs(folds.gains[0][0]-folds.gains[0][1]) < 1024 else {
+                throw DTSError.malformed("Programme carrier ignored source energy")
+            }
+            carrierCases += 1
+        }
         return ["cases":cases,"comparedSamples":compared,"metadataCorruptionsRejected":corruptions,
                 "spatialAnchorCases":anchors.count,"interiorDistanceCases":2,"imageFitCases":1,
+                "continuousCarrierCases":carrierCases,
                 "reservedRoleCorruptionsRejected":1,"officialPlaybackQualified":0]
     }
 
