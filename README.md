@@ -21,7 +21,7 @@ achieved **ALL PASS** with both the **official DTS:X decoder** and the
 | DTS:X Bitstream Tools validator | **ALL PASS** |
 
 Recorded official decoder playback uses DTS:X MediaPlayer **1.1.0.73**.
-The complete TBH (229.9167 s), Nature's Fury (108.3333 s), and Water
+The complete TEST1 with 1 LFE bed + 7.0.4 object bed (229.9167 s), TEST2 with 7.1.2 bed + 128 Objects (108.3333 s), and TEST3 7.1.2 bed + 64 Objects
 (93.0833 s) programmes passed in both `auto` and `standard` modes. Each file
 played from the beginning to EOF with Downmix Monitor and Legacy Monitor Off;
 all twelve native 7.1.4 channels reported **zero clipped samples**. Pause/resume,
