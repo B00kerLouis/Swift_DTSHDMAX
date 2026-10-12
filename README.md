@@ -117,8 +117,8 @@ Input routing is automatic:
 | DAMF / ADM BWF / IMF IAB, default options | DTS:X 7.1.4 + four dynamic aggregates |
 | Atmos input with `--dtsx-vision 2` | DTS:X 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
 | Atmos input with `--object-mode channelbase` | Established fixed 7.1.4 DTS:X |
-| Atmos input with `--object-mode channelbase --dtsx-vision 2` | Established fixed IMAX 12.1 DTS:X |
-| 13-channel PCM WAVE with `--dtsx-vision 2` | DTS:X IMAX HDMA |
+| Atmos input with `--object-mode channelbase --dtsx-vision 2` | Established fixed IMAX DTS:X |
+| THE IMAX Master input with `--dtsx-vision 2` | Established fixed IMAX DTS:X  |
 
 The output file must use the `.dtshd` extension. Delivery also writes:
 
