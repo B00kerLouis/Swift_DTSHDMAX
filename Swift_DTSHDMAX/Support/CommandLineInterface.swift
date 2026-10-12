@@ -20,9 +20,13 @@ public enum DTSHDMACommandLine {
         }
         if command == "dtsx-dynamic-profiles" {
             guard arguments.count == 1 else { throw DTSError.invalidArgument("dtsx-dynamic-profiles does not accept arguments") }
-            print(try jsonString(DTSXDynamicLayout.allCases.map {
-                ["layout": $0.rawValue, "dynamicObjects": String($0.dynamicObjectCount),
-                 "reservedIMAXObjects": String($0.reservedIMAXObjectCount), "status": "experimental"]
+            print(try jsonString(DTSXDynamicLayout.allCases.map { layout in
+                var profile = ["layout": layout.rawValue, "dynamicObjects": String(layout.dynamicObjectCount),
+                               "reservedIMAXObjects": String(layout.reservedIMAXObjectCount), "status": "experimental"]
+                if layout.reservedIMAXObjectCount > 0 {
+                    profile["recommendation"] = "not recommended to enable"
+                }
+                return profile
             }))
             return
         }
@@ -2457,6 +2461,9 @@ public enum DTSHDMACommandLine {
           hdmax inspect-dtsx-dynamic-metadata INPUT.dtshd
           7.1.4+4 and 7.1.5+4 are experimental interoperability profiles.
           7.1.5 reserves one fixed IMAX TFC record separately from four dynamic objects.
+          IMAX Dynamic (--object-mode dynamic --dtsx-vision 2) is experimental
+          and not recommended to enable.
+          Vision 2 defaults to the established fixed IMAX channelbase profile.
           Official player playback and Bitstream Tools validation are required for acceptance.
 
         Automatic mapping:

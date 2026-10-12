@@ -35,6 +35,20 @@
                ReferencedContainer = "container:Swift_DTSHDMAX.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1637B6A8F2BD45DD62F72903"
+               BuildableName = "hdmaxdec"
+               BlueprintName = "decoder cli"
+               ReferencedContainer = "container:Swift_DTSHDMAX.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

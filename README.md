@@ -113,12 +113,16 @@ Ordinary WAVE still requires `--frame-rate`.
 
 Input routing is automatic:
 
+> **Experimental:** IMAX Dynamic (`--object-mode dynamic --dtsx-vision 2`) is
+> not recommended to enable. Vision 2 defaults to the established fixed IMAX
+> channelbase profile.
+
 | Input | Output |
 | --- | --- |
 | 48 kHz, 24-bit 5.1 or 7.1 PCM WAVE | DTS HDMA |
 | DAMF / ADM BWF / IMF IAB, default options | DTS:X 7.1.4 + four dynamic aggregates |
 | Atmos input with `--dtsx-vision 2` | Established fixed IMAX DTS:X |
-| Atmos input with `--object-mode dynamic --dtsx-vision 2` | Experimental 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
+| Atmos input with `--object-mode dynamic --dtsx-vision 2` | IMAX Dynamic (experimental; not recommended to enable): 7.1.5 + four dynamic aggregates + reserved IMAX TFC |
 | Atmos input with `--object-mode channelbase` | Established fixed 7.1.4 DTS:X |
 | Atmos input with `--object-mode channelbase --dtsx-vision 2` | Established fixed IMAX DTS:X |
 | THE IMAX Master input with `--dtsx-vision 2` | Established fixed IMAX DTS:X  |
@@ -229,7 +233,8 @@ use `DTSXDynamicRenderer`, `DTSXDynamicPCMBuffer` and `DTSXDynamicHDMAEncoder`.
 the actual conditioned fixed/object PCM, compatible bed, AU positions and
 reference rows per AU and object gain code for independent comparison. Prediction still defaults to
 auto and vision to 1; object mode defaults to dynamic for vision 1 and
-channelbase for vision 2. Explicit IMAX dynamic selection remains experimental.
+channelbase for vision 2. Explicit IMAX Dynamic selection remains experimental
+and is not recommended to enable.
 
 `inspect-dtsx-dynamic-metadata` checks presentation records, reserved TFC,
 fixed-height folds, ExSS metadata/audio extents and file navigation over the
