@@ -11,13 +11,13 @@ decoder, certification result, or trademark license.
 
 ## Validation status
 
-B00kerLouis confirms that the project's tested DTS:X output bitstreams have
+The project confirms that the project's tested DTS:X output bitstreams have
 achieved **ALL PASS** with both the **official DTS:X decoder** and the
 **DTS:X Bitstream Tools validator**.
 
 | Validation | Result for tested output bitstreams |
 | --- | --- |
-| Official DTS:X decoder / DTS:X MediaPlayer | **ALL PASS** |
+| DTS:X decoder / DTS:X MediaPlayer | **ALL PASS** |
 | DTS:X Bitstream Tools validator | **ALL PASS** |
 
 Recorded official decoder playback uses DTS:X MediaPlayer **1.1.0.73**.
