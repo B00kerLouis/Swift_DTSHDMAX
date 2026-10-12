@@ -184,9 +184,47 @@ large moves to at most `1/480` full-scale gain per sample. A target that arrives
 mid-ramp starts from the exact current gain, preventing zipper steps across the
 four height feeds without inserting a limiter into the lossless PCM path.
 
-The DTS:X private profile preserves rendered height PCM but does not yet retain
-independent object identifiers or object trajectories. Hardware playback and
-formal DTS certification remain external acceptance requirements.
+The default DTS:X private profile preserves rendered height PCM. Its fixed
+rendering path does not retain independent object identifiers or trajectories.
+Hardware playback and formal DTS certification remain external acceptance
+requirements.
+
+Experimental dynamic authoring has two explicit profiles: **7.1.4 + four
+moving aggregates**, and **7.1.5 + four moving aggregates**. The latter carries
+an additional fixed IMAX TFC waveform at record zero, with its established
+25.5-degree position and C/L/R fold; it is never a dynamic clustering slot.
+Official tools show five Near-field Objects for that stream: one reserved TFC
+plus four dynamic aggregates. The other four private feeds are fixed heights.
+
+```sh
+hdmax dtsx-dynamic-profiles
+hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.4 --dynamic-objects 4
+hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.5 --dynamic-objects 4
+hdmax inspect-dtsx-dynamic OUTPUT.dtshd
+```
+
+These commands are shared by the CLI and `HDMAX.run(arguments:)`; typed callers
+use `DTSXDynamicRenderer`, `DTSXDynamicPCMBuffer` and `DTSXDynamicHDMAEncoder`.
+`--encode-mode auto|standard` defaults to auto. `--stems-directory PATH` writes
+the actual conditioned fixed/object PCM, compatible bed and AU positions for
+independent comparison. The existing automatic encoder and vision defaults
+remain unchanged.
+
+The four-slot reduction fits source speaker images with nonnegative weights,
+uses stable identity matching at crossings, and retains sample-continuous
+source gain/activation. IMAX TFC uses a separate native gain state before the
+dynamic fit. Speaker anchors determine spherical coordinates; distance is
+retained independently, and gains are fitted to quantized transport positions.
+Compatibility folds use the actual Q15 table and the selected height profile.
+Both private groups participate in shared NAVI and ExSS chunk-size finalization.
+
+The encode report states spatial fit error, coordinate quantization error,
+TFC separation and the linked programme headroom gain. Spatial reduction is
+not lossless reconstruction of the original IAB tracks; sample-exact coding
+refers to the resulting fixed/object PCM. The panner fit is a qualified 7.1.4
+display model; software PCM and meter checks do not establish hardware IMAX
+presentation acceptance. Debug adds `verify-dtsx-dynamic-encoder`,
+`generate-dtsx-dynamic-vectors` and `debug-dtsx-dynamic-position`.
 
 The IMAX profile encodes independent TFC and four-height audio groups behind
 the `F14000D0` fixed presentation. Both groups contribute to the shared NAVI

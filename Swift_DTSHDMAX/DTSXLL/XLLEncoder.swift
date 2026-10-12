@@ -354,6 +354,23 @@ struct XLLEncoder: Sendable {
                     )
                 }
                 try imax.validate(plan: segmentationPlan)
+            } else if DTSXDynamicPrivateFrame.isDynamic(resolvedPrivateExtension) {
+                let objects = try DTSXDynamicPrivateFrame.parse(resolvedPrivateExtension)
+                try objects.validate(plan: segmentationPlan, allowWiderWidth: true)
+                if objects.navigationWidth > max(8, segmentSizeBitCount) {
+                    segmentSizeBitCount = objects.navigationWidth
+                    guard segmentSizeBitCount <= XLLSyntax.segmentSizeBitCount else {
+                        throw DTSError.malformed("Object shared NAVI exceeds public XLL capacity")
+                    }
+                    navigation = try encodeNavigation(segmentByteCounts: segments.map { $0.map(\.count) },
+                                                      segmentSizeBitCount: segmentSizeBitCount)
+                    segmentationPlan = try XLLSegmentationPlan(
+                        segmentCount: segmentCount, segmentSampleCount: segmentSampleCount,
+                        segmentSizeBitCount: segmentSizeBitCount, navigationByteCount: navigation.count,
+                        segmentEntropyByteCounts: segments.map { $0.map(\.count) }
+                    )
+                }
+                try objects.validate(plan: segmentationPlan)
             } else {
             let privateAST = try DTSXPrivateFrameAST.parse(resolvedPrivateExtension[...])
             var privateNavigation = try? privateAST.parseNavigation(segmentCount: segmentCount)
@@ -501,6 +518,10 @@ struct XLLEncoder: Sendable {
 
     private func validatePrivateExtension(_ privateExtension: Data) throws {
         guard !privateExtension.isEmpty else { return }
+        if DTSXDynamicPrivateFrame.isDynamic(privateExtension) {
+            _ = try DTSXDynamicPrivateFrame.parse(privateExtension)
+            return
+        }
         if DTSIMAXPrivateFrame.isIMAX(privateExtension) {
             _ = try DTSIMAXPrivateFrame.parse(privateExtension)
             return
@@ -524,9 +545,18 @@ struct XLLEncoder: Sendable {
     func encodeIMAXChannelSet(
         planes: [[Int32]], segmentCount: Int
     ) throws -> DTSIMAXBareChannelSet {
-        guard [1, 4].contains(planes.count), [2, 4, 8].contains(segmentCount),
+        try encodeObjectChannelSet(planes: planes, segmentCount: segmentCount)
+    }
+
+    /// Full-coded object groups use the same predictor, mapping and entropy
+    /// grammar as the mono/quartet groups. The five-component form reserves
+    /// TFC separately from the four moving objects.
+    func encodeObjectChannelSet(
+        planes: [[Int32]], segmentCount: Int
+    ) throws -> DTSIMAXBareChannelSet {
+        guard [1,4,5].contains(planes.count), [2, 4, 8].contains(segmentCount),
               planes.allSatisfy({ $0.count == 512 && $0.allSatisfy { (-8_388_608...8_388_607).contains(Int($0)) } }) else {
-            throw DTSError.invalidArgument("IMAX audio group requires 1 or 4 signed-24 planes and 2/4/8 segments")
+            throw DTSError.invalidArgument("Object audio group requires 1, 4 or 5 signed-24 planes and 2/4/8 segments")
         }
         let channels = planes.count
         let samples = 512 / segmentCount

@@ -18,6 +18,67 @@ public enum DTSHDMACommandLine {
             printUsage()
             return
         }
+        if command == "dtsx-dynamic-profiles" {
+            guard arguments.count == 1 else { throw DTSError.invalidArgument("dtsx-dynamic-profiles does not accept arguments") }
+            print(try jsonString(DTSXDynamicLayout.allCases.map {
+                ["layout": $0.rawValue, "dynamicObjects": String($0.dynamicObjectCount),
+                 "reservedIMAXObjects": String($0.reservedIMAXObjectCount), "status": "experimental"]
+            }))
+            return
+        }
+        if command == "inspect-dtsx-dynamic" {
+            guard arguments.count == 2 else { throw DTSError.invalidArgument("inspect-dtsx-dynamic requires INPUT.dtshd") }
+            print(try jsonString(DTSXDynamicStreamInspector.inspect(input: URL(fileURLWithPath: arguments[1]))))
+            return
+        }
+        if command == "encode-dtsx-dynamic" {
+            let values = Array(arguments.dropFirst())
+            guard values.count >= 4 else {
+                throw DTSError.invalidArgument("encode-dtsx-dynamic requires INPUT.mxf OUTPUT.dtshd --layout 7.1.4|7.1.5 [--dynamic-objects 4] [--encode-mode auto|standard] [--stems-directory PATH]")
+            }
+            var layout: DTSXDynamicLayout?, mode = DTSEncodeMode.auto
+            var rate: DTSFrameRate?, objectCount: Int?, stems: URL?
+            var seen: Set<String> = []
+            var index = 2
+            while index < values.count {
+                let option = values[index]
+                guard index + 1 < values.count, seen.insert(option).inserted else { throw DTSError.invalidArgument("Missing or repeated dynamic option \(option)") }
+                let value = values[index+1]
+                switch option {
+                case "--layout":
+                    guard let parsed = DTSXDynamicLayout(rawValue: value) else { throw DTSError.invalidArgument("Dynamic layout must be 7.1.4 or 7.1.5") }
+                    layout = parsed
+                case "--dynamic-objects":
+                    guard let count = Int(value), count == 4 else { throw DTSError.invalidArgument("Dynamic object count must be four, excluding reserved IMAX TFC") }
+                    objectCount = count
+                case "--encode-mode":
+                    guard let parsed = DTSEncodeMode(rawValue: value) else { throw DTSError.invalidArgument("Encode mode must be auto or standard") }
+                    mode = parsed
+                case "--frame-rate": rate = try DTSFrameRate(argument: value)
+                case "--stems-directory": stems = URL(fileURLWithPath: value)
+                default: throw DTSError.invalidArgument("Unknown dynamic option \(option)")
+                }
+                index += 2
+            }
+            guard let layout, objectCount == nil || objectCount == layout.dynamicObjectCount else {
+                throw DTSError.invalidArgument("Select 7.1.4 or 7.1.5 with four dynamic objects, excluding reserved IMAX TFC")
+            }
+            let input = URL(fileURLWithPath: values[0]).standardizedFileURL
+            let output = URL(fileURLWithPath: values[1]).standardizedFileURL
+            guard input.pathExtension.lowercased() == "mxf", input != output else { throw DTSError.invalidArgument("Dynamic input must be IMF IAB MXF and differ from output") }
+            let iab = try IMFIABReader.read(url: input)
+            let progress = makeEncodingProgressReporter()
+            let source = try DTSXDynamicRenderer.render(iab: iab, layout: layout, progress: { completed, total in
+                progress(250 * completed / max(1,total), 1000)
+            })
+            let report = try DTSXDynamicHDMAEncoder(encodeMode: mode).encode(source: source, to: output,
+                frameRate: rate ?? DTSFrameRate(framesPerSecond: iab.master.framesPerSecond ?? 24),
+                stemsDirectory: stems, progress: { completed, total in
+                    progress(250 + 750 * completed / max(1,total), 1000)
+                })
+            print(try jsonString(report))
+            return
+        }
         if command.hasPrefix("-") {
             if command == "-h" || command == "--help" {
                 printUsage()
@@ -40,6 +101,20 @@ public enum DTSHDMACommandLine {
 #if DEBUG
         let values = Array(arguments.dropFirst())
         switch command {
+        case "verify-dtsx-dynamic-encoder":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-dtsx-dynamic-encoder does not accept arguments") }
+            print(try jsonString(DTSXDynamicEncoderVerifier.verify()))
+
+        case "debug-dtsx-dynamic-position":
+            guard values.count == 3,let a = Int(values[0]),let e = Int(values[1]),let d = Int(values[2]) else {
+                throw DTSError.invalidArgument("debug-dtsx-dynamic-position requires AZIMUTH_CODE ELEVATION_CODE DISTANCE_CODE")
+            }
+            let position = try DTSXObjectPosition(azimuthCode: a,elevationCode: e,distanceCode: d)
+            print(try jsonString(DTSXDynamicEncoderVerifier.previewGains(position: position)))
+
+        case "generate-dtsx-dynamic-vectors":
+            guard values.count == 1 else { throw DTSError.invalidArgument("generate-dtsx-dynamic-vectors requires OUTPUT_DIRECTORY") }
+            print(try jsonString(DTSXDynamicEncoderVerifier.generate(directory: URL(fileURLWithPath: values[0]))))
         case "encode-xll":
             guard values.count == 2 else {
                 throw DTSError.invalidArgument("encode-xll requires INPUT.wav OUTPUT.dts")
@@ -2390,6 +2465,14 @@ public enum DTSHDMACommandLine {
           --dtsx-vision 1 -> existing 7.1.4 DTS:X
           --dtsx-vision 2 -> fixed 12.1 DTS:X IMAX, including Top Front C
           IMAX accepts Atmos masters or 13-channel 48 kHz/24-bit WAVE.
+
+        Experimental dynamic objects (CLI and Framework):
+          hdmax dtsx-dynamic-profiles
+          hdmax inspect-dtsx-dynamic INPUT.dtshd
+          hdmax encode-dtsx-dynamic INPUT.mxf OUTPUT.dtshd --layout 7.1.4|7.1.5 [--dynamic-objects 4] [--encode-mode auto|standard] [--stems-directory PATH]
+          7.1.4+4 and 7.1.5+4 are experimental interoperability profiles.
+          7.1.5 reserves one fixed IMAX TFC record separately from four dynamic objects.
+          Official player playback and Bitstream Tools validation are required for acceptance.
 
         Automatic mapping:
           5.1 WAVE                    -> DTS HDMA

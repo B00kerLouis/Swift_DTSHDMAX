@@ -427,7 +427,7 @@ private struct XLLFrameDecoderParser {
             var downmixCoefficientCodes: [Int] = []
             var speakerMask = UInt64.lowBitMask(width: channelCount)
             if alternateMapping {
-                guard [1, 4].contains(channelCount), residualMask == UInt64.lowBitMask(width: channelCount),
+                guard [1,4,5].contains(channelCount), residualMask == UInt64.lowBitMask(width: channelCount),
                       try reader.read(2, field: "IMAX mapping prefix") == 0 else {
                     throw DTSError.malformed("IMAX audio-group mapping is invalid")
                 }

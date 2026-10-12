@@ -111,12 +111,14 @@ public struct DTSHDMAEncoder: Sendable {
         case frames([Data])
         case session(DTSXPrivateStreamEncodingSession)
         case imax(DTSIMAXStreamEncodingSession)
+        case dynamic(DTSXDynamicStreamSession)
 
         var frameCount: Int {
             switch self {
             case .frames(let frames): frames.count
             case .session(let session): session.frameCount
             case .imax(let session): session.frameCount
+            case .dynamic(let session): session.frameCount
             }
         }
     }
@@ -245,6 +247,16 @@ public struct DTSHDMAEncoder: Sendable {
                                accessUnitOutput: output, progress: progress)
     }
 
+    func encodeDynamic(
+        _ pcm: PCMBuffer, session: DTSXDynamicStreamSession,
+        writingAccessUnitsTo output: @escaping (Data) throws -> Void,
+        progress: ((Int, Int) -> Void)? = nil
+    ) throws {
+        _ = try encodeInternal(pcm, privateXLLXSource: .dynamic(session),
+                               privateCoreAssociationPolicy: .coreResidual,
+                               accessUnitOutput: output, progress: progress)
+    }
+
     private func encodeInternal(
         _ pcm: PCMBuffer,
         privateXLLXSource: PrivateXLLXSource?,
@@ -309,7 +321,8 @@ public struct DTSHDMAEncoder: Sendable {
         )
         let exssWriter = ExSSWriter()
         let exssAssetDescriptorProfile: ExSSAssetDescriptorProfile
-        if case .imax = privateXLLXSource { exssAssetDescriptorProfile = .dtsxIMAX }
+        if case .dynamic = privateXLLXSource { exssAssetDescriptorProfile = .dtsxDynamic }
+        else if case .imax = privateXLLXSource { exssAssetDescriptorProfile = .dtsxIMAX }
         else { exssAssetDescriptorProfile = privateXLLXSource == nil ? .standardHDMA : .dtsxXLLX }
         progress?(150, progressTotal)
         if let privateXLLXSource {
@@ -450,6 +463,9 @@ public struct DTSHDMAEncoder: Sendable {
                 if case .imax(let session) = privateXLLXSource {
                     privatePreferredSegmentCount = session.preferredPublicSegmentCount(at: item.frameIndex)
                 }
+                if case .dynamic(let session) = privateXLLXSource {
+                    privatePreferredSegmentCount = session.preferredPublicSegmentCount(at: item.frameIndex)
+                }
                 // The 4x128 form is the observed Nature's Fury silent-start
                 // grammar, and the references pair it only with fully silent
                 // access units. The native session now gates its own startup
@@ -506,6 +522,8 @@ public struct DTSHDMAEncoder: Sendable {
                                     segmentationPlan: segmentationPlan
                                 )
                             case .imax(let session):
+                                return try session.encodeFrame(at: item.frameIndex, plan: segmentationPlan)
+                            case .dynamic(let session):
                                 return try session.encodeFrame(at: item.frameIndex, plan: segmentationPlan)
                             }
                         }

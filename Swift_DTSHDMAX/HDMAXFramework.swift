@@ -39,4 +39,9 @@ public final class HDMAX: NSObject {
     public class func supportedDTSXVisions() -> [String] {
         DTSXVision.allCases.map(\.rawValue)
     }
+
+    @objc(experimentalDynamicLayouts)
+    public class func experimentalDynamicLayouts() -> [String] {
+        DTSXDynamicLayout.allCases.map(\.rawValue)
+    }
 }

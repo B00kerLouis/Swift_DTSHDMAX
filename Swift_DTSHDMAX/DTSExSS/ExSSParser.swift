@@ -194,12 +194,19 @@ struct ExSSParser: Sendable {
         if remainingDescriptorBitCount == ExSSDTSXAssetDescriptorSignal.imaxEncodedBitCount, hasAssetType {
             guard try reader.read(5, field: "IMAX profile code") == 3 else { throw DTSError.malformed("IMAX profile code") }
             let offset = Int(try reader.read(16, field: "IMAX XLL-X offset"))
-            guard try reader.read(40, field: "IMAX metadata declarations") == ExSSDTSXAssetDescriptorSignal.imaxSignature else {
-                throw DTSError.malformed("IMAX metadata declarations")
+            let count = Int(try reader.read(4, field: "Object metadata chunk count")) + 1
+            guard count == 2, try reader.read(4, field: "Object metadata size coding") == 1 else {
+                throw DTSError.malformed("Object metadata navigation shape")
             }
-            let counts = try (0..<2).map { _ in Int(try reader.read(15, field: "IMAX chunk size")) + 1 }
-            guard try reader.read(4, field: "IMAX descriptor padding") == 0 else { throw DTSError.malformed("IMAX descriptor padding") }
-            dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(imaxOffset: offset, groupByteCounts: counts)
+            let metadata = try (0..<count).map { _ in Int(try reader.read(8, field: "Object metadata chunk size")) + 2 }
+            for _ in 0..<count {
+                guard try reader.read(8, field: "Object audio chunk type/width") == 0x44 else { throw DTSError.unsupported("Object audio navigation type") }
+            }
+            let counts = try (0..<count).map { _ in Int(try reader.read(15, field: "Object chunk size")) + 1 }
+            let padding = descriptorEnd - reader.bitOffset
+            guard (0...7).contains(padding), try reader.read(padding, field: "Object descriptor padding") == 0 else { throw DTSError.malformed("Object descriptor padding") }
+            dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(imaxOffset: offset, groupByteCounts: counts,
+                                                                       metadataByteCounts: metadata)
         } else if remainingDescriptorBitCount == ExSSDTSXAssetDescriptorSignal.encodedBitCount {
             let profileCode = Int(try reader.read(5, field: "nuDTSXProfileCode"))
             let xllXByteOffset = Int(try reader.read(16, field: "nuDTSXXLLXByteOffset"))
@@ -263,10 +270,19 @@ struct ExSSParser: Sendable {
                     "ExSS DTS:X descriptor does not match the parsed XLL private-data range"
                 )
             }
-            if signal.isIMAX {
-                let imax = try DTSIMAXPrivateFrame.parse(xll.privateData)
-                guard imax.groups.map(\.chunkByteCount) == signal.imaxGroupByteCounts else {
-                    throw DTSError.malformed("IMAX descriptor chunk sizes disagree with payload")
+            if signal.hasAlternateAudioGroups {
+                if DTSXDynamicPrivateFrame.isDynamic(xll.privateData) {
+                    let objects = try DTSXDynamicPrivateFrame.parse(xll.privateData)
+                    guard objects.groups.map(\.chunkByteCount) == signal.alternateGroupByteCounts,
+                          objects.metadata.chunkByteCounts == signal.alternateMetadataByteCounts else {
+                        throw DTSError.malformed("Object descriptor metadata/audio chunk sizes disagree with payload")
+                    }
+                } else {
+                    let imax = try DTSIMAXPrivateFrame.parse(xll.privateData)
+                    guard imax.groups.map(\.chunkByteCount) == signal.alternateGroupByteCounts,
+                          signal.alternateMetadataByteCounts == [20,23] else {
+                        throw DTSError.malformed("IMAX descriptor chunk sizes disagree with payload")
+                    }
                 }
             } else { _ = try DTSXPrivateFrameAST.parse(xll.privateData[...]) }
         }

@@ -85,7 +85,7 @@ struct DTSIMAXPrivateFrame: Sendable {
     /// These controls are XLL common headers with the four-byte sync omitted.
     /// Keep the virtual size (including that sync) and its CRC, so offsets can
     /// be derived without scanning entropy for candidate channel headers.
-    private static func commonFrame(body: Data, segmentCount: Int, navigationWidth: Int) throws -> Data {
+    static func commonFrame(body: Data, segmentCount: Int, navigationWidth: Int) throws -> Data {
         var sizeBits = 7
         var common = Data()
         var size = 0

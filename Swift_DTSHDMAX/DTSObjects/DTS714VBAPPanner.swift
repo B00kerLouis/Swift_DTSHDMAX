@@ -264,6 +264,16 @@ enum DTS714VBAPPanner {
         return result
     }
 
+    /// Spherical transport rendering is independent of the established room
+    /// renderer. Official 7.1.4 position vectors show the same speaker gains
+    /// at distances 0, 0.5 and 1; retain distance in metadata without assuming
+    /// an unmeasured radial spreading law in this display-layout model.
+    static func transportGains(azimuth: Double, elevation: Double, distance _: Double) -> [Double] {
+        let point = renderPoint(speaker(theta: Float(azimuth),elevation: Float(elevation)))
+        let norm = sqrt(point.reduce(Float(0)) { $0+$1*$1 })
+        return norm > 1e-12 ? point.map { Double($0/norm) } : Array(repeating: 0,count: 12)
+    }
+
     private static func speaker(theta: Float, elevation: Float) -> Vector {
         let t = theta * .pi / 180
         let e = elevation * .pi / 180

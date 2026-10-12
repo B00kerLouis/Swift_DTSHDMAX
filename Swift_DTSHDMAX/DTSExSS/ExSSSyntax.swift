@@ -31,11 +31,14 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
 
     let xllXByteOffset: Int
     let xllXPayloadNibbleCount: Int
-    let imaxGroupByteCounts: [Int]?
-    var isIMAX: Bool { imaxGroupByteCounts != nil }
+    let alternateGroupByteCounts: [Int]?
+    let alternateMetadataByteCounts: [Int]?
+    var hasAlternateAudioGroups: Bool { alternateGroupByteCounts != nil }
 
     var xllXFrameByteCount: Int {
-        if let counts = imaxGroupByteCounts { return (45 + counts.reduce(0, +) + 3) & ~3 }
+        if let counts = alternateGroupByteCounts {
+            return ((alternateMetadataByteCounts?.reduce(0,+) ?? 43) + 2 + counts.reduce(0, +) + 3) & ~3
+        }
         return Self.fixedPrivatePrefixByteCount + xllXPayloadNibbleCount / 2
     }
 
@@ -61,7 +64,8 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         }
         self.xllXByteOffset = xllXByteOffset
         self.xllXPayloadNibbleCount = nibbleCount
-        imaxGroupByteCounts = nil
+        alternateGroupByteCounts = nil
+        alternateMetadataByteCounts = nil
     }
 
     init(xllXByteOffset: Int, xllXPayloadNibbleCount: Int) throws {
@@ -75,17 +79,21 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         }
         self.xllXByteOffset = xllXByteOffset
         self.xllXPayloadNibbleCount = xllXPayloadNibbleCount
-        imaxGroupByteCounts = nil
+        alternateGroupByteCounts = nil
+        alternateMetadataByteCounts = nil
     }
 
-    init(imaxOffset: Int, groupByteCounts: [Int]) throws {
+    init(imaxOffset: Int, groupByteCounts: [Int], metadataByteCounts: [Int] = [20,23]) throws {
         guard (0...0xffff).contains(imaxOffset), groupByteCounts.count == 2,
+              metadataByteCounts.count == groupByteCounts.count,
+              metadataByteCounts.allSatisfy({ (2...257).contains($0) }),
               groupByteCounts.allSatisfy({ (1...0x8000).contains($0) }) else {
             throw DTSError.invalidArgument("IMAX descriptor navigation is out of range")
         }
         xllXByteOffset = imaxOffset
         xllXPayloadNibbleCount = 0
-        imaxGroupByteCounts = groupByteCounts
+        alternateGroupByteCounts = groupByteCounts
+        alternateMetadataByteCounts = metadataByteCounts
     }
 }
 
@@ -93,6 +101,7 @@ enum ExSSAssetDescriptorProfile: Sendable, Equatable {
     case standardHDMA
     case dtsxXLLX
     case dtsxIMAX
+    case dtsxDynamic
 }
 
 struct ExSSFrameInfo: Sendable, Equatable, Codable {
