@@ -125,23 +125,8 @@ public enum WaveFile {
             speakerMask: format.speakerMask
         )
         let pcmFormat = try PCMFormat(sampleRate: 48_000, bitDepth: 24, layout: layout)
-        let frameCount = dataRange.count / format.blockAlign
-        var planes = Array(repeating: [Int32](), count: format.channelCount)
-        for channel in planes.indices { planes[channel].reserveCapacity(frameCount) }
-
-        var sampleOffset = dataRange.lowerBound
-        for _ in 0..<frameCount {
-            for channel in 0..<format.channelCount {
-                let raw = UInt32(data[sampleOffset])
-                    | (UInt32(data[sampleOffset + 1]) << 8)
-                    | (UInt32(data[sampleOffset + 2]) << 16)
-                let signed = (raw & 0x0080_0000) == 0
-                    ? Int32(raw)
-                    : Int32(Int64(raw) - 0x0100_0000)
-                planes[channel].append(signed)
-                sampleOffset += 3
-            }
-        }
+        let planes = try unpack24(data: data, range: dataRange, stride: format.blockAlign,
+                                  destinationBySource: Array(0..<format.channelCount))
         return try PCMBuffer(format: pcmFormat, planes: planes)
     }
 
@@ -178,30 +163,11 @@ public enum WaveFile {
             throw DTSError.malformed("DTS:X 7.1.4 WAVE PCM frames are not packed 24-bit interleaved")
         }
 
-        let frameCount = dataRange.count / format.blockAlign
-        var planes = Array(
-            repeating: [Int32](),
-            count: DTS714Channel.allCases.count
-        )
-        for index in planes.indices {
-            planes[index].reserveCapacity(frameCount)
-        }
         // WAVE: L R C LFE Lsr Rsr Lss Rss Lfh Rfh Lrh Rrh.
         // DTS:X: L R C LFE Lss Rss Lsr Rsr Lfh Rfh Lrh Rrh.
         let waveToDTS714 = [0, 1, 2, 3, 6, 7, 4, 5, 8, 9, 10, 11]
-        var sampleOffset = dataRange.lowerBound
-        for _ in 0..<frameCount {
-            for waveChannel in 0..<format.channelCount {
-                let raw = UInt32(data[sampleOffset])
-                    | (UInt32(data[sampleOffset + 1]) << 8)
-                    | (UInt32(data[sampleOffset + 2]) << 16)
-                let sample = (raw & 0x0080_0000) == 0
-                    ? Int32(raw)
-                    : Int32(Int64(raw) - 0x0100_0000)
-                planes[waveToDTS714[waveChannel]].append(sample)
-                sampleOffset += 3
-            }
-        }
+        let planes = try unpack24(data: data, range: dataRange, stride: format.blockAlign,
+                                  destinationBySource: waveToDTS714)
         return try DTS714PCMBuffer(planes: planes)
     }
 
@@ -216,19 +182,36 @@ public enum WaveFile {
               format.blockAlign == 39, parsed.dataRange.count.isMultiple(of: 39) else {
             throw DTSError.unsupported("IMAX WAVE requires 13 channels, 48 kHz packed 24-bit PCM and mask 0 or 0x2f63f")
         }
-        let count = parsed.dataRange.count / 39
-        var planes = Array(repeating: [Int32](), count: 13)
-        for channel in planes.indices { planes[channel].reserveCapacity(count) }
         let order = format.speakerMask == 0 ? Array(0..<13) : [0,1,2,3,6,7,4,5,8,12,9,10,11]
-        var cursor = parsed.dataRange.lowerBound
-        for _ in 0..<count {
-            for channel in 0..<13 {
-                let value = UInt32(parsed.data[cursor]) | UInt32(parsed.data[cursor+1]) << 8 | UInt32(parsed.data[cursor+2]) << 16
-                planes[order[channel]].append(value & 0x800000 == 0 ? Int32(value) : Int32(Int64(value)-0x1000000))
-                cursor += 3
-            }
-        }
+        let planes = try unpack24(data: parsed.data, range: parsed.dataRange, stride: 39,
+                                  destinationBySource: order)
         return try DTSIMAXPCMBuffer(planes: planes)
+    }
+
+    /// Borrow immutable file bytes for each lane. No interleaved payload copy
+    /// is made; Foundation retains its safe-mapping policy for the file itself.
+    private static func unpack24(data: Data, range: Range<Int>, stride: Int,
+                                 destinationBySource: [Int]) throws -> [[Int32]] {
+        let frames = range.count / stride
+        let decoded = try DTSParallel.map(count: destinationBySource.count,
+            workerCount: frames >= 65_536 ? DTSParallel.workerCount(for: destinationBySource.count) : 1) { channel in
+            var plane = [Int32](repeating: 0, count: frames)
+            data.withUnsafeBytes { raw in
+                let source = raw.bindMemory(to: UInt8.self)
+                plane.withUnsafeMutableBufferPointer { output in
+                    var offset = range.lowerBound + channel * 3
+                    for sample in 0..<frames {
+                        let value = UInt32(source[offset]) | UInt32(source[offset + 1]) << 8 | UInt32(source[offset + 2]) << 16
+                        output[sample] = value & 0x800000 == 0 ? Int32(value) : Int32(Int64(value) - 0x1000000)
+                        offset += stride
+                    }
+                }
+            }
+            return plane
+        }
+        var planes = Array(repeating: [Int32](), count: decoded.count)
+        for source in decoded.indices { planes[destinationBySource[source]] = decoded[source] }
+        return planes
     }
 
     /// Reads little-endian signed PCM in 32-bit containers without applying a

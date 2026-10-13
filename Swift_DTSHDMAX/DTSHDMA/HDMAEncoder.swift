@@ -393,9 +393,9 @@ public struct DTSHDMAEncoder: Sendable {
         segmentationPlans.reserveCapacity(totalFrameCount)
         var completedAccessUnitCount = 0
 
-        func encodeBatch(_ workItems: [FrameWorkItem]) throws -> [EncodedAccessUnit] {
+        func encodeBatch(_ workItems: [FrameWorkItem]) throws -> DTSParallelBatch<EncodedAccessUnit> {
             let completedBeforeBatch = completedAccessUnitCount
-            return try DTSParallel.map(
+            return try DTSParallel.start(
                 count: workItems.count,
                 workerCount: parallelWorkerCount,
                 progress: { completed, _ in
@@ -553,6 +553,20 @@ public struct DTSHDMAEncoder: Sendable {
             }
         }
 
+        var inFlight: DTSParallelBatch<EncodedAccessUnit>?
+        defer { inFlight?.waitForCompletion() }
+        func drainBatch() throws {
+            guard let batch = inFlight else { return }
+            let accessUnits = try batch.wait()
+            inFlight = nil
+            for accessUnit in accessUnits {
+                if let accessUnitOutput { try accessUnitOutput(accessUnit.data) }
+                else { stream!.append(accessUnit.data) }
+                segmentationPlans.append(accessUnit.segmentationPlan)
+            }
+            completedAccessUnitCount += accessUnits.count
+        }
+
         for frameIndex in 0..<totalFrameCount {
             let isPriming = frameIndex < primingFrameCount
             let frame = isPriming
@@ -583,19 +597,12 @@ public struct DTSHDMAEncoder: Sendable {
             ))
 
             if pendingWorkItems.count == batchCapacity || frameIndex + 1 == totalFrameCount {
-                let accessUnits = try encodeBatch(pendingWorkItems)
-                for accessUnit in accessUnits {
-                    if let accessUnitOutput {
-                        try accessUnitOutput(accessUnit.data)
-                    } else {
-                        stream!.append(accessUnit.data)
-                    }
-                    segmentationPlans.append(accessUnit.segmentationPlan)
-                }
-                completedAccessUnitCount += accessUnits.count
+                try drainBatch()
+                inFlight = try encodeBatch(pendingWorkItems)
                 pendingWorkItems.removeAll(keepingCapacity: true)
             }
         }
+        try drainBatch()
         let privateStream: DTSXPrivateEncodedStream?
         if case .session(let session) = privateXLLXSource {
             privateStream = try session.finalize(parallelWorkerCount: parallelWorkerCount)

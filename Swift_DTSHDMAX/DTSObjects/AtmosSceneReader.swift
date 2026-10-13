@@ -185,7 +185,17 @@ public enum AtmosSceneReader {
             }
         }
         var bedPlanes: [DTSSpeakerPosition: [Int32]] = [:]
-        for bed in master.bedChannels { bedPlanes[bed.dtsSpeaker] = allPlanes[bed.audioChannelIndex] }
+        for bed in master.bedChannels {
+            let input = allPlanes[bed.audioChannelIndex]
+            if let previous = bedPlanes[bed.dtsSpeaker] {
+                bedPlanes[bed.dtsSpeaker] = try zip(previous, input).map { a, b in
+                    guard let value = Int32(exactly: Int64(a) + Int64(b)) else {
+                        throw DTSError.malformed("Summed bed channels exceed the working PCM range")
+                    }
+                    return value
+                }
+            } else { bedPlanes[bed.dtsSpeaker] = input }
+        }
         var objectPlanes: [Int: [Int32]] = [:]
         for object in master.objects { objectPlanes[object.elementID] = allPlanes[object.audioChannelIndex] }
 

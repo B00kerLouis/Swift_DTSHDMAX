@@ -87,7 +87,7 @@ public enum IMFIABReader {
                     let body = try readExactly(Int(length), from: handle, offset: bodyOffset, field: "IAFrame")
                     let frameIndex = frames.count
                     let parsed = try parseFrame(
-                        body: Array(body),
+                        body: body,
                         frameIndex: frameIndex,
                         layout: &layout,
                         header: &header,
@@ -182,31 +182,36 @@ public enum IMFIABReader {
             offset: frame.bodyOffset,
             field: "IAFrame audio body"
         )
-        let bytes = Array(body)
         let planeCount = frame.planeAudio.count
         let sampleCount = iab.samplesPerFrame
-        var interleaved = [UInt8](repeating: 0, count: sampleCount * planeCount * 3)
-
-        for plane in 0..<planeCount {
+        let planes: [[Int32]?] = try DTSParallel.map(count: planeCount,
+            workerCount: planeCount >= 8 ? DTSParallel.workerCount(for: planeCount) : 1) { plane in
             let reference = frame.planeAudio[plane]
-            if reference.elementOffset < 0 { continue }
-            let samples = try decodeAudioElement(
-                bytes: bytes,
+            guard reference.elementOffset >= 0 else { return nil }
+            return try decodeAudioElement(
+                bytes: body,
                 elementOffset: Int(reference.elementOffset),
                 isDLC: reference.isDLC,
                 sampleCount: sampleCount,
                 bitDepthCode: iab.bitDepthCode,
                 frameRateCode: iab.frameRateCode
             )
-            for sample in 0..<sampleCount {
-                let value = UInt32(bitPattern: samples[sample]) & 0x00ff_ffff
-                let destination = (sample * planeCount + plane) * 3
-                interleaved[destination] = UInt8(value & 0xff)
-                interleaved[destination + 1] = UInt8((value >> 8) & 0xff)
-                interleaved[destination + 2] = UInt8((value >> 16) & 0xff)
+        }
+        var interleaved = Data(count: sampleCount * planeCount * 3)
+        interleaved.withUnsafeMutableBytes { raw in
+            let output = raw.bindMemory(to: UInt8.self)
+            for plane in planes.indices {
+                guard let samples = planes[plane] else { continue }
+                for sample in 0..<sampleCount {
+                    let value = UInt32(bitPattern: samples[sample]) & 0x00ff_ffff
+                    let destination = (sample * planeCount + plane) * 3
+                    output[destination] = UInt8(value & 0xff)
+                    output[destination + 1] = UInt8((value >> 8) & 0xff)
+                    output[destination + 2] = UInt8((value >> 16) & 0xff)
+                }
             }
         }
-        return Data(interleaved)
+        return interleaved
     }
 
     // MARK: - MXF KLV layer
@@ -271,6 +276,7 @@ public enum IMFIABReader {
 
     private struct Layout {
         let bedChannelIDs: [Int]
+        let bedIdentities: [String]
         let objectMetaIDs: [Int]
         let objectIndexByMetaID: [Int: Int]
         let bedChannels: [AtmosBedChannel]
@@ -280,6 +286,7 @@ public enum IMFIABReader {
     private struct ParsedBedChannel {
         let channelID: Int
         let audioDataID: Int
+        let bedID: String
     }
 
     private struct ParsedObjectSubBlock {
@@ -298,13 +305,13 @@ public enum IMFIABReader {
     }
 
     private static func parseFrame(
-        body: [UInt8],
+        body: Data,
         frameIndex: Int,
         layout: inout Layout?,
         header: inout FrameHeader?,
         events: inout [AtmosMetadataEvent]
     ) throws -> [IABMaster.PlaneAudio] {
-        var reader = try BitReader(bytes: body)
+        var reader = try BitReader(data: body)
         let frameElementID = try plex(&reader, startWidth: 8, field: "IAFrame ElementID")
         guard frameElementID == 0x08 else {
             throw DTSError.malformed("IABitstream frame does not start with IA_FRAME (0x08)")
@@ -361,6 +368,7 @@ public enum IMFIABReader {
         // Establish or verify the constant program layout.
         if let layout {
             guard bedChannels.map(\.channelID) == layout.bedChannelIDs,
+                  bedChannels.map(\.bedID) == layout.bedIdentities,
                   objects.map(\.metaID) == layout.objectMetaIDs else {
                 throw DTSError.unsupported(
                     "IAFrame \(frameIndex) changes the bed/object layout; dynamic IAB layouts are not supported"
@@ -471,7 +479,9 @@ public enum IMFIABReader {
         endBit: Int,
         bedChannels: inout [ParsedBedChannel]
     ) throws {
-        _ = try plex(&reader, startWidth: 8, field: "BedDefinition MetaID")
+        let metaID = try plex(&reader, startWidth: 8, field: "BedDefinition MetaID")
+        let ordinal = Set(bedChannels.map(\.bedID)).count
+        let bedID = "IAB-bed-\(metaID)-\(ordinal)"
         let conditional = try reader.read(1, field: "ConditionalBed")
         var useCase = 0xff
         if conditional == 1 {
@@ -483,8 +493,12 @@ public enum IMFIABReader {
         let activated = conditional == 0 || useCase == 0xff
         let channelCount = try plex(&reader, startWidth: 4, field: "BedDefinition ChannelCount")
         var parsed: [ParsedBedChannel] = []
+        var seen = Set<Int>()
         for _ in 0..<channelCount {
             let channelID = try plex(&reader, startWidth: 4, field: "ChannelID")
+            guard seen.insert(channelID).inserted else {
+                throw DTSError.malformed("IAB bed repeats ChannelID \(channelID)")
+            }
             let audioDataID = try plex(&reader, startWidth: 8, field: "bed AudioDataID")
             let gainPrefix = try reader.read(2, field: "ChannelGainPrefix")
             switch gainPrefix {
@@ -506,7 +520,7 @@ public enum IMFIABReader {
                 let decorPrefix = try reader.read(2, field: "ChannelDecorCoefPrefix")
                 if decorPrefix > 1 { _ = try reader.read(8, field: "ChannelDecorCoef") }
             }
-            parsed.append(ParsedBedChannel(channelID: channelID, audioDataID: audioDataID))
+            parsed.append(ParsedBedChannel(channelID: channelID, audioDataID: audioDataID, bedID: bedID))
         }
         let reserved = try reader.read(10, field: "BedDefinition reserved")
         guard reserved == 0x180 else {
@@ -523,10 +537,7 @@ public enum IMFIABReader {
         _ = try plex(&reader, startWidth: 8, field: "BedDefinition SubElementCount")
         _ = endBit
         if activated {
-            guard bedChannels.isEmpty else {
-                throw DTSError.unsupported("multiple simultaneous IAB beds are not implemented")
-            }
-            bedChannels = parsed
+            bedChannels.append(contentsOf: parsed)
         }
     }
 
@@ -640,9 +651,9 @@ public enum IMFIABReader {
             throw DTSError.malformed("IAB program has no activated bed")
         }
         var atmosBed: [AtmosBedChannel] = []
-        var seenChannelIDs = Set<Int>()
+        var seenChannelIDs = Set<String>()
         for (index, channel) in bedChannels.enumerated() {
-            guard seenChannelIDs.insert(channel.channelID).inserted else {
+            guard seenChannelIDs.insert("\(channel.bedID):\(channel.channelID)").inserted else {
                 throw DTSError.malformed("IAB bed repeats ChannelID \(channel.channelID)")
             }
             guard let mapping = speakerMapping(forChannelID: channel.channelID) else {
@@ -652,7 +663,8 @@ public enum IMFIABReader {
                 dolbyName: mapping.label,
                 elementID: index,
                 audioChannelIndex: index,
-                dtsSpeaker: mapping.speaker
+                dtsSpeaker: mapping.speaker,
+                bedID: channel.bedID
             ))
         }
         var objectIndexByMetaID: [Int: Int] = [:]
@@ -668,6 +680,7 @@ public enum IMFIABReader {
         }
         return Layout(
             bedChannelIDs: bedChannels.map(\.channelID),
+            bedIdentities: bedChannels.map(\.bedID),
             objectMetaIDs: objects.map(\.metaID),
             objectIndexByMetaID: objectIndexByMetaID,
             bedChannels: atmosBed,
@@ -678,7 +691,7 @@ public enum IMFIABReader {
     // MARK: - AudioData decoding
 
     private static func decodeAudioElement(
-        bytes: [UInt8],
+        bytes: Data,
         elementOffset: Int,
         isDLC: Bool,
         sampleCount: Int,
@@ -699,7 +712,7 @@ public enum IMFIABReader {
 
         if isDLC {
             return try IABDLCDecoder.decode(
-                bytes: bytes,
+                data: bytes,
                 byteOffset: cursor.offset,
                 byteLimit: contentStart + elementSize,
                 sampleCount: sampleCount,
@@ -712,23 +725,22 @@ public enum IMFIABReader {
             throw DTSError.truncated(field: "AudioDataPCM samples", bitOffset: cursor.offset * 8)
         }
         var samples = [Int32](repeating: 0, count: sampleCount)
-        var offset = cursor.offset
-        if bytesPerSample == 3 {
-            for index in 0..<sampleCount {
-                let raw = UInt32(bytes[offset])
-                    | (UInt32(bytes[offset + 1]) << 8)
-                    | (UInt32(bytes[offset + 2]) << 16)
-                samples[index] = (raw & 0x0080_0000) == 0
-                    ? Int32(raw)
-                    : Int32(Int64(raw) - 0x0100_0000)
-                offset += 3
-            }
-        } else {
-            // 16-bit masters are promoted to left-justified 24-bit samples.
-            for index in 0..<sampleCount {
-                let raw = UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-                samples[index] = Int32(Int16(bitPattern: raw)) << 8
-                offset += 2
+        bytes.withUnsafeBytes { raw in
+            let source = raw.bindMemory(to: UInt8.self)
+            var offset = cursor.offset
+            if bytesPerSample == 3 {
+                for index in 0..<sampleCount {
+                    let value = UInt32(source[offset]) | UInt32(source[offset + 1]) << 8 | UInt32(source[offset + 2]) << 16
+                    samples[index] = value & 0x800000 == 0 ? Int32(value) : Int32(Int64(value) - 0x1000000)
+                    offset += 3
+                }
+            } else {
+                // 16-bit masters are promoted to left-justified 24-bit samples.
+                for index in 0..<sampleCount {
+                    let value = UInt16(source[offset]) | UInt16(source[offset + 1]) << 8
+                    samples[index] = Int32(Int16(bitPattern: value)) << 8
+                    offset += 2
+                }
             }
         }
         return samples
@@ -868,7 +880,7 @@ public enum IMFIABReader {
 /// Byte-aligned Plex(8) cursor used on the audio decode path where every
 /// field before the sample data occupies whole bytes.
 struct ByteCursor {
-    let bytes: [UInt8]
+    let bytes: Data
     var offset: Int
 
     mutating func plex8() throws -> Int {

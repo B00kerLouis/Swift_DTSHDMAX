@@ -40,6 +40,14 @@ public struct AtmosBedChannel: Codable, Equatable, Sendable {
     public let elementID: Int
     public let audioChannelIndex: Int
     public let dtsSpeaker: DTSSpeakerPosition
+    public let bedID: String?
+
+    public init(dolbyName: String, elementID: Int, audioChannelIndex: Int,
+                dtsSpeaker: DTSSpeakerPosition, bedID: String? = nil) {
+        self.dolbyName = dolbyName; self.elementID = elementID
+        self.audioChannelIndex = audioChannelIndex; self.dtsSpeaker = dtsSpeaker
+        self.bedID = bedID
+    }
 }
 
 public struct AtmosObjectChannel: Codable, Equatable, Sendable {
@@ -208,10 +216,11 @@ public enum AtmosMasterReader {
         var offset: Int64?
         var ffoa: Int64?
         var fps: Double?
-        var bedEntries: [(String, Int)] = []
+        var bedEntries: [(String, Int, String)] = []
         var objectIDs: [Int] = []
         var pendingBedName: String?
         var inObjects = false
+        var bedInstance = 0
 
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -222,6 +231,7 @@ public enum AtmosMasterReader {
             else if line.hasPrefix("ffoa:") { ffoa = Int64(scalar(afterColon: line)) }
             else if line.hasPrefix("fps:") { fps = Double(scalar(afterColon: line)) }
             else if line == "objects:" { inObjects = true; pendingBedName = nil }
+            else if !inObjects, line == "- channels:" { bedInstance += 1 }
             else if !inObjects, line.hasPrefix("- channel:") {
                 pendingBedName = scalar(afterColon: line)
             } else if line.hasPrefix("ID:") || line.hasPrefix("- ID:") {
@@ -231,7 +241,7 @@ public enum AtmosMasterReader {
                 if inObjects {
                     objectIDs.append(id)
                 } else if let name = pendingBedName {
-                    bedEntries.append((name, id))
+                    bedEntries.append((name, id, "DAMF-bed-\(max(1, bedInstance))"))
                     pendingBedName = nil
                 }
             }
@@ -251,7 +261,8 @@ public enum AtmosMasterReader {
                 dolbyName: entry.0,
                 elementID: entry.1,
                 audioChannelIndex: index,
-                dtsSpeaker: speaker
+                dtsSpeaker: speaker,
+                bedID: entry.2
             )
         }
         let objects = objectIDs.enumerated().map { index, id in

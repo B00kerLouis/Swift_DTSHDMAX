@@ -202,70 +202,73 @@ public enum DTSXDynamicRenderer {
             var energy = Array(repeating: 0.0, count: sourceCount)
             var radiusMass = energy
             var targets = Array(repeating: Array(repeating: 0.0,count: layout.fixedPlaneCount),count: sourceCount)
-            for sample in 0..<samples {
-                while event < master.metadataEvents.count && master.metadataEvents[event].samplePosition <= Int64(start + sample) {
-                    let update = master.metadataEvents[event]
-                    if let index = ids[update.elementID] {
-                        states[index].apply(update)
-                        if start+sample > 0 {
-                            let ordinary = update.rampLength.map { max(1,Int(clamping: $0)) }
-                                ?? max(1,Int((48_000/((master.framesPerSecond ?? 24)*8)).rounded()))
-                            pan[index].retarget(nativeGains(states[index]),over: ordinary)
+            try bytes.withUnsafeBytes { raw in
+                let input = raw.bindMemory(to: UInt8.self)
+                for sample in 0..<samples {
+                    while event < master.metadataEvents.count && master.metadataEvents[event].samplePosition <= Int64(start + sample) {
+                        let update = master.metadataEvents[event]
+                        if let index = ids[update.elementID] {
+                            states[index].apply(update)
+                            if start+sample > 0 {
+                                let ordinary = update.rampLength.map { max(1,Int(clamping: $0)) }
+                                    ?? max(1,Int((48_000/((master.framesPerSecond ?? 24)*8)).rounded()))
+                                pan[index].retarget(nativeGains(states[index]),over: ordinary)
+                            }
                         }
+                        event += 1
                     }
-                    event += 1
-                }
-                func pcm(_ channel: Int) -> Int32 {
-                    let offset = (sample * channels + channel) * 3
-                    let raw = Int32(bytes[offset]) | Int32(bytes[offset+1]) << 8 | Int32(bytes[offset+2]) << 16
-                    return raw & 0x800000 != 0 ? raw | ~0xffffff : raw
-                }
-                var fixedAccumulator = Array(repeating: Int64(0),count: layout.fixedPlaneCount)
-                for (channel,routes) in bedRoutes {
-                    let value = Int64(pcm(channel))
-                    for (destination,gain) in routes { fixedAccumulator[destination] += value*gain }
-                }
-                for source in 0..<sourceCount {
-                    if start+sample == 0 { pan[source].setImmediately(nativeGains(states[source])) }
-                    else { pan[source].advance() }
-                    let value = pcm(master.objects[source].audioChannelIndex)
-                    guard value != 0 else { continue }
-                    let weight = Double(value)*Double(value)
-                    var power = 0.0
-                    for channel in pan[source].activeIndices {
-                        let gain = pan[source].currentGains[channel]
-                        if channel == 12 {
-                            if layout == .sevenOneFive { fixedAccumulator[12] += Int64(value)*gain }
-                            continue
+                    func pcm(_ channel: Int) -> Int32 {
+                        let offset = (sample * channels + channel) * 3
+                        let raw = Int32(input[offset]) | Int32(input[offset+1]) << 8 | Int32(input[offset+2]) << 16
+                        return raw & 0x800000 != 0 ? raw | ~0xffffff : raw
+                    }
+                    var fixedAccumulator = Array(repeating: Int64(0),count: layout.fixedPlaneCount)
+                    for (channel,routes) in bedRoutes {
+                        let value = Int64(pcm(channel))
+                        for (destination,gain) in routes { fixedAccumulator[destination] += value*gain }
+                    }
+                    for source in 0..<sourceCount {
+                        if start+sample == 0 { pan[source].setImmediately(nativeGains(states[source])) }
+                        else { pan[source].advance() }
+                        let value = pcm(master.objects[source].audioChannelIndex)
+                        guard value != 0 else { continue }
+                        let weight = Double(value)*Double(value)
+                        var power = 0.0
+                        for channel in pan[source].activeIndices {
+                            let gain = pan[source].currentGains[channel]
+                            if channel == 12 {
+                                if layout == .sevenOneFive { fixedAccumulator[12] += Int64(value)*gain }
+                                continue
+                            }
+                            // Preserve the complete authored speaker image first.
+                            // The bounded aggregate render is removed below; its
+                            // unrepresented image remains on the fixed bed.
+                            fixedAccumulator[channel] += Int64(value)*gain
+                            let linear = Double(gain)/Double(1 << 30)
+                            power += linear*linear
                         }
-                        // Preserve the complete authored speaker image first.
-                        // The bounded aggregate render is removed below; its
-                        // unrepresented image remains on the fixed bed.
-                        fixedAccumulator[channel] += Int64(value)*gain
-                        let linear = Double(gain)/Double(1 << 30)
-                        power += linear*linear
-                    }
-                    let activePower = weight*power
-                    let norm = sqrt(power)
-                    if norm > 1e-12 {
-                        let q30 = Int64((norm*Double(1 << 30)).rounded())
-                        let scaled = roundQ30(Int64(value)*q30)
-                        guard scaled >= Int64(Int32.min),scaled <= Int64(Int32.max) else { throw DTSError.malformed("Object gain exceeds working PCM range") }
-                        audio[source][sample] = Int32(scaled)
-                        for channel in pan[source].activeIndices where channel != 12 {
-                            let linear = Double(pan[source].currentGains[channel])/Double(1 << 30)
-                            targets[source][channel] += activePower*linear/norm
+                        let activePower = weight*power
+                        let norm = sqrt(power)
+                        if norm > 1e-12 {
+                            let q30 = Int64((norm*Double(1 << 30)).rounded())
+                            let scaled = roundQ30(Int64(value)*q30)
+                            guard scaled >= Int64(Int32.min),scaled <= Int64(Int32.max) else { throw DTSError.malformed("Object gain exceeds working PCM range") }
+                            audio[source][sample] = Int32(scaled)
+                            for channel in pan[source].activeIndices where channel != 12 {
+                                let linear = Double(pan[source].currentGains[channel])/Double(1 << 30)
+                                targets[source][channel] += activePower*linear/norm
+                            }
                         }
+                        energy[source] += activePower
+                        let point = states[source].position ?? AtmosPosition(x: 0,y: 0,z: 0)
+                        let radius = min(1,max(abs(point.x),abs(point.y),states[source].elevation ? point.z : 0))
+                        radiusMass[source] += activePower*radius
                     }
-                    energy[source] += activePower
-                    let point = states[source].position ?? AtmosPosition(x: 0,y: 0,z: 0)
-                    let radius = min(1,max(abs(point.x),abs(point.y),states[source].elevation ? point.z : 0))
-                    radiusMass[source] += activePower*radius
-                }
-                for channel in fixed.indices {
-                    let value = roundQ30(fixedAccumulator[channel])
-                    guard value >= Int64(Int32.min), value <= Int64(Int32.max) else { throw DTSError.malformed("Fixed bed exceeds working PCM range") }
-                    fixed[channel][start+sample] = Int32(value)
+                    for channel in fixed.indices {
+                        let value = roundQ30(fixedAccumulator[channel])
+                        guard value >= Int64(Int32.min), value <= Int64(Int32.max) else { throw DTSError.malformed("Fixed bed exceeds working PCM range") }
+                        fixed[channel][start+sample] = Int32(value)
+                    }
                 }
             }
             let points = (0..<sourceCount).map { source in

@@ -78,7 +78,11 @@ public enum AtmosMasterComparator {
             variantPath: variant.manifestURL.standardizedFileURL.path,
             sampleRateMatches: baseline.audioFormat.sampleRate == variant.audioFormat.sampleRate,
             sampleCountMatches: baseline.audioFormat.sampleCount == variant.audioFormat.sampleCount,
-            channelAssignmentsMatch: baseline.bedChannels == variant.bedChannels
+            channelAssignmentsMatch: baseline.bedChannels.count == variant.bedChannels.count
+                && zip(baseline.bedChannels, variant.bedChannels).allSatisfy {
+                    $0.dolbyName == $1.dolbyName && $0.elementID == $1.elementID
+                        && $0.audioChannelIndex == $1.audioChannelIndex && $0.dtsSpeaker == $1.dtsSpeaker
+                }
                 && baseline.objects == variant.objects,
             baselineMetadataEventCount: baseline.metadataEvents.count,
             variantMetadataEventCount: variant.metadataEvents.count,

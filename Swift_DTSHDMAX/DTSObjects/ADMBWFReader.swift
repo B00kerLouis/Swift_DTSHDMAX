@@ -15,6 +15,7 @@ public enum ADMBWFReader {
     private struct CHNAEntry {
         let trackIndex: Int
         let uid: String
+        let packFormatID: String
     }
 
     public static func read(url: URL) throws -> AtmosMaster {
@@ -60,6 +61,9 @@ public enum ADMBWFReader {
             let channelIndex = assignment.trackIndex - 1
             switch channel.typeDefinition {
             case "DirectSpeakers":
+                guard !metadata.ambiguousBedTrackUIDs.contains(assignment.uid) else {
+                    throw DTSError.unsupported("ADM bed TrackUID reuse requires an explicit programme selection")
+                }
                 guard let mapping = bedMapping(channel.name) else {
                     throw DTSError.unsupported("ADM bed channel \(channel.name)")
                 }
@@ -67,7 +71,9 @@ public enum ADMBWFReader {
                     dolbyName: mapping.label,
                     elementID: channelIndex,
                     audioChannelIndex: channelIndex,
-                    dtsSpeaker: mapping.speaker
+                    dtsSpeaker: mapping.speaker,
+                    bedID: metadata.bedOwnerByTrackUID[assignment.uid]
+                        ?? (assignment.packFormatID.isEmpty ? nil : "ADM-pack-\(assignment.packFormatID)")
                 ))
             case "Objects":
                 objects.append(AtmosObjectChannel(
@@ -263,7 +269,8 @@ public enum ADMBWFReader {
             guard (1...expectedChannelCount).contains(trackIndex), !uid.isEmpty else {
                 throw DTSError.malformed("ADM chna contains an invalid track assignment")
             }
-            entries.append(CHNAEntry(trackIndex: trackIndex, uid: uid))
+            entries.append(CHNAEntry(trackIndex: trackIndex, uid: uid,
+                packFormatID: ascii(data[(offset + 28)..<(offset + 39)])))
         }
         let sorted = entries.sorted { $0.trackIndex < $1.trackIndex }
         guard sorted.map(\.trackIndex) == Array(1...expectedChannelCount) else {
@@ -392,6 +399,8 @@ private final class ADMBWFXMLDelegate: NSObject, XMLParserDelegate {
         let trackFormatByUID: [String: String]
         let streamFormatByTrackFormat: [String: String]
         let channelFormatByStreamFormat: [String: String]
+        let bedOwnerByTrackUID: [String: String]
+        let ambiguousBedTrackUIDs: Set<String>
     }
 
     private var channelFormats: [String: ChannelFormat] = [:]
@@ -404,6 +413,9 @@ private final class ADMBWFXMLDelegate: NSObject, XMLParserDelegate {
     private var currentTrackUID: String?
     private var currentTrackFormat: String?
     private var currentStreamFormat: String?
+    private var currentAudioObject: String?
+    private var bedOwnerByTrackUID: [String: String] = [:]
+    private var ambiguousBedTrackUIDs: Set<String> = []
     private var currentText = ""
 
     func parser(
@@ -433,6 +445,8 @@ private final class ADMBWFXMLDelegate: NSObject, XMLParserDelegate {
             currentTrackFormat = attributeDict["audioTrackFormatID"]
         case "audioStreamFormat":
             currentStreamFormat = attributeDict["audioStreamFormatID"]
+        case "audioObject":
+            currentAudioObject = attributeDict["audioObjectID"]
         case "jumpPosition":
             if currentBlock != nil { currentBlock!.interpolationLength = attributeDict["interpolationLength"] }
         default:
@@ -491,6 +505,14 @@ private final class ADMBWFXMLDelegate: NSObject, XMLParserDelegate {
             if let stream = currentStreamFormat, !value.isEmpty { channelFormatByStreamFormat[stream] = value }
         case "audioStreamFormat":
             currentStreamFormat = nil
+        case "audioTrackUIDRef":
+            if let object = currentAudioObject, !value.isEmpty {
+                if let previous = bedOwnerByTrackUID[value], previous != object {
+                    ambiguousBedTrackUIDs.insert(value)
+                } else { bedOwnerByTrackUID[value] = object }
+            }
+        case "audioObject":
+            currentAudioObject = nil
         default:
             break
         }
@@ -508,7 +530,9 @@ private final class ADMBWFXMLDelegate: NSObject, XMLParserDelegate {
             channelFormats: channelFormats,
             trackFormatByUID: trackFormatByUID,
             streamFormatByTrackFormat: streamFormatByTrackFormat,
-            channelFormatByStreamFormat: channelFormatByStreamFormat
+            channelFormatByStreamFormat: channelFormatByStreamFormat,
+            bedOwnerByTrackUID: bedOwnerByTrackUID,
+            ambiguousBedTrackUIDs: ambiguousBedTrackUIDs
         )
     }
 }

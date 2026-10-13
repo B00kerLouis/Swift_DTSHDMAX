@@ -151,6 +151,39 @@ DAMF and IMF IAB inputs use embedded timing metadata. PCM WAVE and ADM BWF
 inputs require `--frame-rate` when no authoring rate is available. A supplied
 override must agree with any embedded rate. Drop-frame timecode is rejected.
 
+## Multi-bed inputs and throughput
+
+DAMF bed instances, ADM DirectSpeakers audio objects and simultaneous active
+IAB beds retain their source identities. Channels sharing a speaker add before
+the existing render protection, in all four Atmos output profiles. Scene-block
+diagnostics use the same layer sum. IAB requires stable bed/channel topology;
+duplicate speakers within one bed are rejected. Distinct beds may share the
+same speaker or audio-data reference.
+
+This supports static simultaneous layer summation. Conditional replacements,
+BedRemap, Bed automation and alternative ADM programme selection remain outside
+the qualified scope. Reused ADM bed TrackUIDs across audio objects require an
+explicit programme selection and are rejected. This does not add Dialogue
+authoring or change the four-aggregate/TFC layout contract.
+
+Packed WAVE conversion borrows immutable input bytes and distributes large
+inputs by PCM lane. IAB channel decoders share one bounded frame buffer instead
+of copying it for each DLC channel. Foundation's `mappedIfSafe` policy remains
+in force; removable input is not forced into a memory mapping. PCM conversion
+and encoded output still require their own storage.
+
+The encoder overlaps one bounded XLL batch with serial Core preparation and
+drains access units in order. Apple silicon worker budgets use reported
+performance-core counts, bounded by the active CPU budget and a limit of 16;
+other platforms retain the existing cap of 8. Scheduling remains under GCD's
+user-initiated QoS. Core history, private-provider invocation count, shared NAVI
+widths, gain state and coding decisions retain their existing contracts.
+
+Optimized Debug provides `hdmax verify-multi-bed` for DAMF/ADM/IAB PCM/DLC
+layer sums, every vision/object/coding combination, topology errors, signed PCM
+and WAVE speaker orders, and joined worker failures. Short vectors qualify
+structure and arithmetic; full-programme official playback remains separate.
+
 ## Build
 
 Build all products with Xcode:

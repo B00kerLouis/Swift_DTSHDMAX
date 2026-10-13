@@ -68,6 +68,10 @@ public enum DTSHDMACommandLine {
             guard values.isEmpty else { throw DTSError.invalidArgument("verify-object-modes takes no arguments") }
             print(try jsonString(DTSObjectModeVerifier.verify()))
 
+        case "verify-multi-bed":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-multi-bed takes no arguments") }
+            print(try jsonString(DTSMultiBedVerifier.verify()))
+
         case "verify-dtsx-dynamic-encoder":
             guard values.isEmpty else { throw DTSError.invalidArgument("verify-dtsx-dynamic-encoder does not accept arguments") }
             print(try jsonString(DTSXDynamicEncoderVerifier.verify()))

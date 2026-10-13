@@ -18,14 +18,21 @@ enum IABDLCDecoder {
         sampleCount: Int,
         frameRateCode: Int
     ) throws -> [Int32] {
+        try decode(data: Data(bytes), byteOffset: byteOffset, byteLimit: byteLimit,
+                   sampleCount: sampleCount, frameRateCode: frameRateCode)
+    }
+
+    /// Shares the enclosing immutable frame storage across channel decoders.
+    static func decode(data: Data, byteOffset: Int, byteLimit: Int,
+                       sampleCount: Int, frameRateCode: Int) throws -> [Int32] {
         let (subBlockCount, subBlockSize) = try dlcSubBlocks(frameRateCode: frameRateCode)
         guard subBlockCount * subBlockSize == sampleCount else {
             throw DTSError.malformed("DLC sub-block layout does not cover the IAFrame sample count")
         }
         var reader = try BitReader(
-            bytes: bytes,
-            bitOffset: byteOffset * 8,
-            bitLimit: byteLimit * 8
+            data: data,
+            byteOffset: byteOffset,
+            byteCount: byteLimit - byteOffset
         )
         _ = try reader.read(16, field: "DLCSize")
         let dlcSampleRate = try reader.read(2, field: "DLCSampleRate")

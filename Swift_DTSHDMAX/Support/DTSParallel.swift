@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import Darwin
+#endif
 
 /// Small synchronous parallel primitive for the encoder's existing throwing APIs.
 /// Work is split into contiguous index ranges so the result order is deterministic,
@@ -20,8 +23,19 @@ public enum DTSParallel {
             ? max(2, activeProcessors / 4)
             : activeProcessors - 1
         let encoderBudget = max(1, activeProcessors - reservedProcessors)
-        return min(itemCount, min(8, encoderBudget))
+        return min(itemCount, min(performanceWorkerLimit, encoderBudget))
     }
+
+    private static let performanceWorkerLimit: Int = {
+#if os(macOS) && arch(arm64)
+        var cores: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.perflevel0.physicalcpu", &cores, &size, nil, 0) == 0, cores > 0 {
+            return min(16, max(1, Int(cores)))
+        }
+#endif
+        return 8
+    }()
 
     public static func map<Result: Sendable>(
         count: Int,
@@ -29,12 +43,22 @@ public enum DTSParallel {
         progress: ((Int, Int) -> Void)? = nil,
         _ operation: @escaping @Sendable (Int) throws -> Result
     ) throws -> [Result] {
+        try start(count: count, workerCount: requestedWorkerCount, progress: progress, operation).wait()
+    }
+
+    /// One bounded batch may overlap serial Core preparation. Callers join it
+    /// before serial output, and also join on every error path.
+    static func start<Result: Sendable>(
+        count: Int, workerCount requestedWorkerCount: Int? = nil,
+        progress: ((Int, Int) -> Void)? = nil,
+        _ operation: @escaping @Sendable (Int) throws -> Result
+    ) throws -> DTSParallelBatch<Result> {
         guard count >= 0 else {
             throw DTSError.invalidArgument("parallel map count must not be negative")
         }
         guard count > 0 else {
             progress?(0, 0)
-            return []
+            return DTSParallelBatch(group: DispatchGroup(), box: ResultBox(count: 0, progress: nil))
         }
 
         let workers = min(
@@ -60,9 +84,20 @@ public enum DTSParallel {
                 }
             }
         }
-        group.wait()
-        return try box.results()
+        return DTSParallelBatch(group: group, box: box)
     }
+}
+
+final class DTSParallelBatch<Element: Sendable>: @unchecked Sendable {
+    private let group: DispatchGroup
+    private let box: ResultBox<Element>
+
+    fileprivate init(group: DispatchGroup, box: ResultBox<Element>) {
+        self.group = group; self.box = box
+    }
+
+    func wait() throws -> [Element] { group.wait(); return try box.results() }
+    func waitForCompletion() { group.wait() }
 }
 
 private final class ResultBox<Element: Sendable>: @unchecked Sendable {
