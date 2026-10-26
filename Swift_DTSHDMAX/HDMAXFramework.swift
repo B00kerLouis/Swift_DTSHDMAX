@@ -35,13 +35,19 @@ public final class HDMAX: NSObject {
         DTSEncodeMode.allCases.map(\.rawValue)
     }
 
+    /// Fixed standard presentations accepted by --set-channel-format.
+    @objc(supportedChannelFormats)
+    public class func supportedChannelFormats() -> [String] {
+        DTSXChannelFormat.allCases.map(\.rawValue)
+    }
+
     @objc(supportedDTSXVisions)
     public class func supportedDTSXVisions() -> [String] {
         DTSXVision.allCases.map(\.rawValue)
     }
 
-    /// CLI and Framework default to dynamic for Atmos inputs. Explicit
-    /// channelbase selects the established fixed-channel presentation.
+    /// Vision 1 defaults to dynamic for 7.1.4 Atmos input. Additional fixed
+    /// formats and IMAX default to channelbase; explicit mode is validated.
     @objc(supportedObjectModes)
     public class func supportedObjectModes() -> [String] {
         DTSObjectMode.allCases.map(\.rawValue)

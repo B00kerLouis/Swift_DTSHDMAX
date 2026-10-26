@@ -76,7 +76,8 @@ public struct DTSHDMADecoder: Sendable {
             let frameData = stream.subdata(in: exssOffset..<(exssOffset + frameByteCount))
             let exss = try exssParser.parse(frame: frameData)
             let xllPCM: PCMBuffer
-            if exss.info.format.layout == .sevenOne, let decodedCore {
+            if exss.info.format.layout == .sevenOne || exss.info.dtsxAssetDescriptorSignal?.fixedMetadataByteCount != nil,
+               let decodedCore {
                 let channelSets = try xllDecoder.decodeChannelSets(frame: exss.xllData)
                 xllPCM = try XLLCoreReconstructor.reconstruct(channelSets, core: decodedCore)
             } else {

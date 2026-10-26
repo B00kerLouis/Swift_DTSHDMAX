@@ -38,7 +38,7 @@ struct DTSXDynamicPresentationState {
 
 /// Enumerates all sixteen active subsets of four speaker-image columns,
 /// rejects negative solutions and selects the smallest residual. An audible
-/// source is retained on its nearest direction when the fit is singular.
+/// source outside that span remains on the fixed residual.
 enum DTSXDynamicSpatialModel {
     static let vectors: [(Double,Double,Double)] = {
         let angles: [(Double,Double)] = [(-30,0),(30,0),(0,0),(0,0),(-90,0),(90,0),(-150,0),(150,0),
@@ -82,7 +82,7 @@ enum DTSXDynamicSpatialModel {
         zip(target,rendered(weights,columns: columns)).reduce(0) { $0+pow($1.0-$1.1,2) }
     }
 
-    static func fit(target: [Double], columns: [[Double]], nearest: Int) -> [Double] {
+    static func fit(target: [Double], columns: [[Double]]) -> [Double] {
         let power = dot(target,target)
         guard power > 1e-20 else { return Array(repeating: 0,count: 4) }
         let gram = columns.map { a in columns.map { dot(a,$0) } }
@@ -115,13 +115,9 @@ enum DTSXDynamicSpatialModel {
                 if cost < bestError { best = candidate; bestError = cost }
             }
         }
-        let field = rendered(best,columns: columns), fieldPower = dot(field,field)
-        if fieldPower > power*1e-12 {
-            let scale = sqrt(power/fieldPower)
-            return best.map { $0*scale }
-        }
-        var fallback = Array(repeating: 0.0,count: 4)
-        fallback[max(0,nearest)] = sqrt(power/max(1e-20,gram[max(0,nearest)][max(0,nearest)]))
-        return fallback
+        // Unspanned energy belongs to the fixed residual. Normalizing a weak
+        // projection to full power (or forcing an orthogonal source onto its
+        // nearest carrier) invents an audible object at the wrong position.
+        return best
     }
 }

@@ -10,6 +10,7 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
     public let renderedFromAtmos: Bool
     public let dtsxVision: DTSXVision?
     public let objectMode: DTSObjectMode?
+    public let channelFormat: DTSXChannelFormat?
 
     public init(
         inputURL: URL,
@@ -20,7 +21,8 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
         atmosObjectCount: Int? = nil,
         renderedFromAtmos: Bool = false,
         dtsxVision: DTSXVision? = nil,
-        objectMode: DTSObjectMode? = nil
+        objectMode: DTSObjectMode? = nil,
+        channelFormat: DTSXChannelFormat? = nil
     ) {
         self.inputURL = inputURL.standardizedFileURL
         self.resolvedInputURL = resolvedInputURL.standardizedFileURL
@@ -31,6 +33,7 @@ public struct DTSHDMADeliveryInput: Sendable, Equatable {
         self.renderedFromAtmos = renderedFromAtmos
         self.dtsxVision = dtsxVision
         self.objectMode = objectMode
+        self.channelFormat = channelFormat
     }
 }
 
@@ -310,15 +313,15 @@ public enum DTSHDMADeliveryArtifactWriter {
         let inputLabel = input.dtsxVision == .imax && !input.renderedFromAtmos ? "Interleaved IMAX 12.1" : input.renderedFromAtmos
             ? "Atmos Master"
             : (pcm.format.layout == .sevenOne ? "Interleaved 7.1" : "Interleaved 5.1")
-        let layout = pcm.format.layout == .sevenOne
+        let layout = input.channelFormat.map { "\($0.rawValue) - \($0.channelNames.joined(separator: ", "))" } ?? (pcm.format.layout == .sevenOne
             ? "7.1 - L, R, C, LFE, Lss, Rss, Lsr, Rsr"
-            : "5.1 - L, R, C, LFE, Ls, Rs"
-        let streamType = input.objectMode == .dynamic
+            : "5.1 - L, R, C, LFE, Ls, Rs")
+        let streamType = input.channelFormat.map { "DTS HD Master Audio with DTS:X (\($0.rawValue))" } ?? (input.objectMode == .dynamic
             ? (input.dtsxVision == .imax ? "DTS HD Master Audio with DTS:X (7.1.5 + 4 Dynamic Objects; reserved IMAX TFC)"
                 : "DTS HD Master Audio with DTS:X (7.1.4 + 4 Dynamic Objects)")
             : input.dtsxVision == .imax ? "DTS HD Master Audio with DTS:X IMAX (12.1 including TFC)" : input.renderedFromAtmos
             ? "DTS HD Master Audio with DTS:X"
-            : "DTS HD Master Audio"
+            : "DTS HD Master Audio")
         let fullScaleSamples = pcm.planes.reduce(0) { count, plane in
             count + plane.lazy.filter { $0 == -8_388_608 || $0 == 8_388_607 }.count
         }

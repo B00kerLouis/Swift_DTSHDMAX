@@ -112,6 +112,7 @@ public struct DTSHDMAEncoder: Sendable {
         case session(DTSXPrivateStreamEncodingSession)
         case imax(DTSIMAXStreamEncodingSession)
         case dynamic(DTSXDynamicStreamSession)
+        case channels(DTSXChannelStreamSession)
 
         var frameCount: Int {
             switch self {
@@ -119,6 +120,7 @@ public struct DTSHDMAEncoder: Sendable {
             case .session(let session): session.frameCount
             case .imax(let session): session.frameCount
             case .dynamic(let session): session.frameCount
+            case .channels(let session): session.frameCount
             }
         }
     }
@@ -257,6 +259,13 @@ public struct DTSHDMAEncoder: Sendable {
                                accessUnitOutput: output, progress: progress)
     }
 
+    func encodeChannels(_ pcm: PCMBuffer, session: DTSXChannelStreamSession,
+                        writingAccessUnitsTo output: @escaping (Data) throws -> Void,
+                        progress: ((Int,Int) -> Void)? = nil) throws {
+        _ = try encodeInternal(pcm,privateXLLXSource: .channels(session),privateCoreAssociationPolicy: .coreResidual,
+                               accessUnitOutput: output,progress: progress)
+    }
+
     private func encodeInternal(
         _ pcm: PCMBuffer,
         privateXLLXSource: PrivateXLLXSource?,
@@ -315,13 +324,17 @@ public struct DTSHDMAEncoder: Sendable {
             && pcm.format.layout == .sevenOne
             && effectiveCoreAssociationPolicy == .coreResidual
         let totalFrameCount = sourceFrameCount + primingFrameCount
+        let fixedSpeakerPrivate: Bool
+        if case .channels = privateXLLXSource { fixedSpeakerPrivate = true } else { fixedSpeakerPrivate = false }
         let xllEncoder = XLLEncoder(
             codingMode: configuration.xllCodingMode,
-            enforcesOfficialHierarchyGrammar: configuration.officialHierarchyGrammarEnforced
+            enforcesOfficialHierarchyGrammar: configuration.officialHierarchyGrammarEnforced,
+            forcesScalableLSBs: fixedSpeakerPrivate
         )
         let exssWriter = ExSSWriter()
         let exssAssetDescriptorProfile: ExSSAssetDescriptorProfile
-        if case .dynamic = privateXLLXSource { exssAssetDescriptorProfile = .dtsxDynamic }
+        if case .channels = privateXLLXSource { exssAssetDescriptorProfile = .dtsxFixedChannels }
+        else if case .dynamic = privateXLLXSource { exssAssetDescriptorProfile = .dtsxDynamic }
         else if case .imax = privateXLLXSource { exssAssetDescriptorProfile = .dtsxIMAX }
         else { exssAssetDescriptorProfile = privateXLLXSource == nil ? .standardHDMA : .dtsxXLLX }
         progress?(150, progressTotal)
@@ -466,6 +479,9 @@ public struct DTSHDMAEncoder: Sendable {
                 if case .dynamic(let session) = privateXLLXSource {
                     privatePreferredSegmentCount = session.preferredPublicSegmentCount(at: item.frameIndex)
                 }
+                if case .channels(let session) = privateXLLXSource {
+                    privatePreferredSegmentCount = session.preferredPublicSegmentCount(at: item.frameIndex)
+                }
                 // The 4x128 form is the observed Nature's Fury silent-start
                 // grammar, and the references pair it only with fully silent
                 // access units. The native session now gates its own startup
@@ -525,8 +541,14 @@ public struct DTSHDMAEncoder: Sendable {
                                 return try session.encodeFrame(at: item.frameIndex, plan: segmentationPlan)
                             case .dynamic(let session):
                                 return try session.encodeFrame(at: item.frameIndex, plan: segmentationPlan)
+                            case .channels(let session):
+                                return try session.encodeFrame(at: item.frameIndex,plan: segmentationPlan)
                             }
                         }
+                    },
+                    privateExtensionNavigationWidthProvider: {
+                        if case .channels(let session) = privateXLLXSource { return try session.navigationWidth(at: item.frameIndex) }
+                        throw DTSError.malformed("Private navigation width requested from an incompatible provider")
                     },
                     forcedSegmentCount: forcedSegmentCount
                 )

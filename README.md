@@ -63,8 +63,24 @@ bridge.
 The Release CLI has one production entry point:
 
 ```text
-hdmax -i INPUT -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate FRAME_RATE]
+hdmax -i INPUT -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--set-channel-format FORMAT] [--encode-mode auto|standard] [--frame-rate FRAME_RATE]
 ```
+
+`--set-channel-format` is optional and defaults to `7.1.4`. Under vision 1,
+additional fixed speaker formats are `7.1.3`, `7.1.2F` (LFH/RFH), `7.1.2S`
+(LHS/RHS), `5.1.5`, `5.1.4`, and `5.1.3`. The three-height layouts use LFH,
+RFH and Crh; `5.1.5` adds an independent Cfh to the four corner heights.
+Selecting an additional format defaults to `channelbase`; explicitly combining
+it with `dynamic` is rejected. The existing dynamic profiles remain 7.1.4+4
+and IMAX 7.1.5+4. Vision 2 is reserved for IMAX and rejects this option.
+Ordinary PCM keeps its established route; the automatic format selector renders
+Atmos/DAMF/ADM/IAB input directly to the requested speaker feeds.
+
+The Framework shares this option through `HDMAX.run(arguments:)` and exposes
+`HDMAX.supportedChannelFormats()`. Typed callers may select
+`DTSAutomaticEncoder.encode(..., channelFormat: ...)`, or supply explicit
+integer feeds to `DTSXChannelHDMAEncoder`. Existing overloads retain their
+previous defaults and source compatibility.
 
 `--encode-mode` is optional and defaults to `auto`. Auto enables frame-local
 prediction and searches 2x256, 4x128 and 8x64 partitions using serialized public
@@ -279,8 +295,13 @@ metadata error for these dynamic profiles. Do not rewrite a record count or
 add a placeholder object to force a legacy label.
 
 The four-slot reduction fits source speaker images with nonnegative weights,
-uses stable identity matching at crossings, and retains sample-continuous
-source gain/activation. IMAX TFC uses a separate native gain state before the
+retains source membership across frames and uses a bounded energy envelope
+for carrier planning. Live carriers move by at most six degrees per 512-sample
+frame before position quantization; changes in the loudest source do not swap
+opposite-side slots. Unrepresented energy stays in the fixed residual without
+amplifying a weak projection or inventing a full-level object at an unrelated
+position. Source gain/activation remains sample-continuous.
+IMAX TFC uses a separate native gain state before the
 dynamic fit. Speaker anchors determine spherical coordinates; distance is
 retained independently, and gains are fitted to quantized transport positions.
 Dynamic compatibility folds follow the quantized object positions. Every

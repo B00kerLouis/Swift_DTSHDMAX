@@ -10,9 +10,11 @@ struct DTSIMAXBareChannelSet: Sendable {
     let requiredNavigationWidth: Int
     let predictionOrders: [Int]
     let fixedPredictionOrders: [Int]
+    let fixedHeaderNavigationWidth: Int?
 
     func serialize(navigationWidth: Int) throws -> Data {
-        guard navigationWidth >= requiredNavigationWidth, navigationWidth <= 16 else {
+        guard navigationWidth >= requiredNavigationWidth, navigationWidth <= 16,
+              fixedHeaderNavigationWidth == nil || fixedHeaderNavigationWidth == navigationWidth else {
             throw DTSError.malformed("IMAX group NAVI width cannot represent its segments")
         }
         var navi = BitWriter()

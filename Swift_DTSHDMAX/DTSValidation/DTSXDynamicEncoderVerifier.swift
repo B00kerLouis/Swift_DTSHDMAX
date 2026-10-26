@@ -94,9 +94,71 @@ public enum DTSXDynamicEncoderVerifier {
         }
         let expected = [0.25,0.5,0.1,0.15]
         let image = DTSXDynamicSpatialModel.rendered(expected,columns: columns)
-        let fitted = DTSXDynamicSpatialModel.fit(target: image,columns: columns,nearest: 0)
+        let fitted = DTSXDynamicSpatialModel.fit(target: image,columns: columns)
         guard DTSXDynamicSpatialModel.error(target: image,weights: fitted,columns: columns) < 1e-18 else {
             throw DTSError.malformed("Four-object nonnegative image fit does not reconstruct its spanned field")
+        }
+        // An unrepresented source must stay in the fixed residual, rather
+        // than becoming a full-level object on an unrelated carrier.
+        var leftImage = Array(repeating: 0.0,count: 12)
+        var rightImage = leftImage
+        leftImage[0] = 1; rightImage[1] = 1
+        let repeatedLeft = Array(repeating: leftImage,count: 4)
+        let absent = DTSXDynamicSpatialModel.fit(target: rightImage,columns: repeatedLeft)
+        var partial = rightImage.map { $0*sqrt(0.99) }; partial[0] = 0.1
+        let projection = DTSXDynamicSpatialModel.fit(target: partial,columns: repeatedLeft)
+        guard absent.allSatisfy({ $0 == 0 }),
+              abs(projection.reduce(0,+)-0.1) < 1e-10 else {
+            throw DTSError.malformed("Unspanned object energy was amplified or moved to an unrelated position")
+        }
+        // Instantaneous energy reversals must not swap opposite-side live
+        // carriers. Exercise more sources than slots, silence, and reordered
+        // inputs; the four-source crossing separately checks source identity.
+        var continuous = DTSXSpatialAggregator(count: 4)
+        var permuted = DTSXSpatialAggregator(count: 4)
+        let staticPoints = (0..<8).map { index -> AtmosPosition in
+            let a = Double(index)*2 * .pi/8
+            return AtmosPosition(x: sin(a),y: cos(a),z: index.isMultiple(of: 2) ? 0 : 0.7)
+        }
+        for frame in 0..<240 {
+            let energy = (0..<8).map { index in
+                frame == 120 ? 0.0 : (index == frame%8 ? 100.0 : 1.0)
+            }
+            let before = continuous.centres
+            _ = continuous.update(points: staticPoints,energy: energy)
+            _ = permuted.update(points: staticPoints.reversed(),energy: energy.reversed(),sourceIDs: (0..<8).reversed())
+            guard continuous.centres == permuted.centres else {
+                throw DTSError.malformed("Source order changed persistent aggregate trajectories")
+            }
+            if frame > 0 {
+                for (a,b) in zip(before,continuous.centres) {
+                    let dot = a.x*b.x+a.y*b.y+a.z*b.z
+                    guard acos(min(1,max(-1,dot))) < 15 * .pi/180 else {
+                        throw DTSError.malformed("Energy changes teleported a live aggregate")
+                    }
+                }
+            }
+        }
+        var crossing = DTSXSpatialAggregator(count: 4)
+        var identities: [Int] = []
+        for frame in 0..<100 {
+            let points = (0..<4).map { index -> AtmosPosition in
+                let a = Double(index)*2 * .pi/4+Double(frame)*0.02
+                return AtmosPosition(x: sin(a),y: cos(a),z: 0.3)
+            }
+            let assignments = crossing.update(points: points,energy: [1,2,3,4])
+            if frame == 0 { identities = assignments }
+            guard assignments == identities else { throw DTSError.malformed("Moving sources changed carrier identity") }
+        }
+        var lateActivation = DTSXSpatialAggregator(count: 4)
+        _ = lateActivation.update(points: [AtmosPosition(x: 0,y: 1,z: 0)],energy: [1])
+        let beforeActivation = lateActivation.centres
+        _ = lateActivation.update(points: [AtmosPosition(x: 0,y: 1,z: 0),AtmosPosition(x: 0,y: -1,z: 0)],
+                                  energy: [1,10])
+        for (a,b) in zip(beforeActivation,lateActivation.centres) {
+            guard acos(min(1,max(-1,a.x*b.x+a.y*b.y+a.z*b.z))) < 15 * .pi/180 else {
+                throw DTSError.malformed("A previously unoccupied carrier teleported on source activation")
+            }
         }
         let moving = try (0..<4).map { try DTSXObjectPosition(azimuthCode: 40+$0*40,elevationCode: 75) }
         var meta = try DTSXDynamicMetadata.encode(layout: .sevenOneFive,positions: moving,
@@ -169,6 +231,7 @@ public enum DTSXDynamicEncoderVerifier {
         return ["cases":cases,"comparedSamples":compared,"metadataCorruptionsRejected":corruptions,
                 "spatialAnchorCases":anchors.count,"interiorDistanceCases":2,"imageFitCases":1,
                 "continuousCarrierCases":carrierCases,
+                "unspannedImageCases":2,"persistentTrajectoryFrames":340,"lateActivationCases":1,
                 "reservedRoleCorruptionsRejected":1,"officialPlaybackQualified":0]
     }
 

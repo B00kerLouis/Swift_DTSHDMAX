@@ -59,6 +59,24 @@ enum XLLCoreReconstructor {
                 "XLL Core reconstruction requires one aligned 48 kHz/24-bit 5.1 Core frame"
             )
         }
+        if decoded.channelSets.count == 1, let primary = decoded.channelSets.first,
+           primary.planes.count == 6, primary.speakerMask == 0x3f {
+            let coreOrder = core.format.layout.waveToDTSPlaneOrder
+            var planes = primary.planes
+            for channel in planes.indices where primary.residualChannelMask & (UInt64(1) << channel) == 0 {
+                let assembly = try effectiveLSBWidth(channelSet: primary,channel: channel,fixedLSBWidth: decoded.fixedLSBWidth)
+                let shift = primary.storageBitDepth-primary.pcmBitDepth+assembly
+                guard (0...24).contains(shift) else { throw DTSError.malformed("Fixed 5.1 Core assembly shift is invalid") }
+                let rounding: Int64 = shift > 0 ? Int64(1) << (shift-1) : 0
+                for sample in 0..<decoded.sampleCount {
+                    let reduced = clip24((Int64(core.planes[coreOrder[channel]][sample])+rounding) >> shift)
+                    let value = Int64(planes[channel][sample])+(Int64(reduced) << assembly)
+                    guard (-8_388_608...8_388_607).contains(value) else { throw DTSError.malformed("Fixed 5.1 Core reconstruction exceeds PCM precision") }
+                    planes[channel][sample] = Int32(value)
+                }
+            }
+            return try PCMBuffer(format: core.format,planes: core.format.layout.dtsToWavePlaneOrder.map { planes[$0] })
+        }
         guard decoded.channelSets.count == 2,
               decoded.channelSets[0].planes.count == 6,
               decoded.channelSets[1].planes.count == 2 else {
@@ -230,7 +248,7 @@ struct XLLDecoder: Sendable {
     /// D0 groups carry an ordinary XLL predictor/entropy body behind a
     /// two-bit mapping prefix and an explicitly declared, CRC-closed NAVI.
     func decodeIMAXChannelSet(
-        data: Data, segmentCount: Int, segmentSizeBitCount: Int
+        data: Data, segmentCount: Int, segmentSizeBitCount: Int, fixedSpeakerMapping: Bool = false
     ) throws -> [[Int32]] {
         guard [2, 4, 8].contains(segmentCount), (8...16).contains(segmentSizeBitCount) else {
             throw DTSError.malformed("IMAX audio-group dimensions are invalid")
@@ -242,7 +260,10 @@ struct XLLDecoder: Sendable {
         parser.segmentSampleCount = 512 / segmentCount
         parser.segmentSampleCountLog2 = Int.ceilLog2(parser.segmentSampleCount)
         parser.segmentSizeBitCount = segmentSizeBitCount
-        let sets = try parser.parseChannelSetHeaders(alternateMapping: true)
+        // Short fixed groups inherit the public scalable-LSB declaration;
+        // zero-width LSB/adjustment fields are still mandatory syntax.
+        parser.scalableLSBs = fixedSpeakerMapping
+        let sets = try parser.parseChannelSetHeaders(alternateMapping: true,alternateMappingBitCount: fixedSpeakerMapping ? 1 : 2)
         let navigation = try parser.parseNavigation(channelSets: sets)
         let decoded = try parser.decodeBandData(channelSets: sets, navigation: navigation)
         return decoded[0]
@@ -393,7 +414,7 @@ private struct XLLFrameDecoderParser {
         try reader.seek(to: commonHeaderByteCount * 8, field: "XLL common-header end")
     }
 
-    mutating func parseChannelSetHeaders(alternateMapping: Bool = false) throws -> [XLLChannelSetConfiguration] {
+    mutating func parseChannelSetHeaders(alternateMapping: Bool = false,alternateMappingBitCount: Int = 2) throws -> [XLLChannelSetConfiguration] {
         var output: [XLLChannelSetConfiguration] = []
         output.reserveCapacity(channelSetCount)
         var lowerHierarchyChannelCount = 0
@@ -427,8 +448,8 @@ private struct XLLFrameDecoderParser {
             var downmixCoefficientCodes: [Int] = []
             var speakerMask = UInt64.lowBitMask(width: channelCount)
             if alternateMapping {
-                guard [1,4,5].contains(channelCount), residualMask == UInt64.lowBitMask(width: channelCount),
-                      try reader.read(2, field: "IMAX mapping prefix") == 0 else {
+                guard (1...5).contains(channelCount), residualMask == UInt64.lowBitMask(width: channelCount),
+                      try reader.read(alternateMappingBitCount, field: "Private mapping prefix") == 0 else {
                     throw DTSError.malformed("IMAX audio-group mapping is invalid")
                 }
             } else {

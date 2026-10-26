@@ -12,60 +12,55 @@ public enum DTS714Renderer {
     private static let q30: Int64 = 1 << 30
 
     public static func render(
-        master: AtmosMaster,
-        maximumSampleCount: Int? = nil,
-        blockSampleCount: Int = 4_096,
-        progress: ((Int64, Int64) -> Void)? = nil,
-        guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
+        master: AtmosMaster, maximumSampleCount: Int? = nil, blockSampleCount: Int = 4_096,
+        progress: ((Int64,Int64) -> Void)? = nil, guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
     ) throws -> DTS714PCMBuffer {
-        guard master.audioFormat.container != .iabMXF else {
-            throw DTSError.invalidArgument("IAB masters render via render(iab:)")
-        }
+        let pcm = try render(master: master,channelFormat: .sevenOneFour,maximumSampleCount: maximumSampleCount,
+                             blockSampleCount: blockSampleCount,progress: progress,guardReport: guardReport)
+        return try DTS714PCMBuffer(planes: pcm.planes)
+    }
+
+    public static func render(
+        iab: IABMaster, maximumSampleCount: Int? = nil, blockSampleCount: Int = 4_096,
+        progress: ((Int64,Int64) -> Void)? = nil, guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
+    ) throws -> DTS714PCMBuffer {
+        let pcm = try render(iab: iab,channelFormat: .sevenOneFour,maximumSampleCount: maximumSampleCount,
+                             blockSampleCount: blockSampleCount,progress: progress,guardReport: guardReport)
+        return try DTS714PCMBuffer(planes: pcm.planes)
+    }
+
+    public static func render(
+        master: AtmosMaster, channelFormat: DTSXChannelFormat, maximumSampleCount: Int? = nil,
+        blockSampleCount: Int = 4_096, progress: ((Int64,Int64) -> Void)? = nil,
+        guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
+    ) throws -> DTSXChannelPCMBuffer {
+        guard master.audioFormat.container != .iabMXF else { throw DTSError.invalidArgument("IAB masters render via render(iab:)") }
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: master.audioURL) }
         catch { throw DTSError.io("cannot open \(master.audioURL.path): \(error.localizedDescription)") }
         defer { try? handle.close() }
-        do { try handle.seek(toOffset: master.audioFormat.audioDataOffset) }
-        catch { throw DTSError.io("cannot seek Atmos PCM: \(error.localizedDescription)") }
-        return try render(
-            master: master,
-            maximumSampleCount: maximumSampleCount,
-            blockSampleCount: blockSampleCount,
-            progress: progress,
-            guardReport: guardReport
-        ) { byteCount in
-            do { return try handle.read(upToCount: byteCount) ?? Data() }
+        try handle.seek(toOffset: master.audioFormat.audioDataOffset)
+        return try render(master: master,channelFormat: channelFormat,maximumSampleCount: maximumSampleCount,
+                          blockSampleCount: blockSampleCount,progress: progress,guardReport: guardReport) { count in
+            do { return try handle.read(upToCount: count) ?? Data() }
             catch { throw DTSError.io("cannot read Atmos PCM: \(error.localizedDescription)") }
         }
     }
 
     public static func render(
-        iab: IABMaster,
-        maximumSampleCount: Int? = nil,
-        blockSampleCount: Int = 4_096,
-        progress: ((Int64, Int64) -> Void)? = nil,
+        iab: IABMaster, channelFormat: DTSXChannelFormat, maximumSampleCount: Int? = nil,
+        blockSampleCount: Int = 4_096, progress: ((Int64,Int64) -> Void)? = nil,
         guardReport: ((DTS714RenderGuardReport) -> Void)? = nil
-    ) throws -> DTS714PCMBuffer {
-        let handle: FileHandle
-        do { handle = try FileHandle(forReadingFrom: iab.master.audioURL) }
-        catch { throw DTSError.io("cannot open \(iab.master.audioURL.path): \(error.localizedDescription)") }
+    ) throws -> DTSXChannelPCMBuffer {
+        let handle = try FileHandle(forReadingFrom: iab.master.audioURL)
         defer { try? handle.close() }
-        var frameIndex = 0
-        var pending = Data()
-        return try render(
-            master: iab.master,
-            maximumSampleCount: maximumSampleCount,
-            blockSampleCount: blockSampleCount,
-            progress: progress,
-            guardReport: guardReport
-        ) { byteCount in
-            while pending.count < byteCount, frameIndex < iab.frames.count {
-                pending.append(try IMFIABReader.decodeFrameAudio(iab: iab, frameIndex: frameIndex, handle: handle))
-                frameIndex += 1
+        var frameIndex = 0, pending = Data()
+        return try render(master: iab.master,channelFormat: channelFormat,maximumSampleCount: maximumSampleCount,
+                          blockSampleCount: blockSampleCount,progress: progress,guardReport: guardReport) { count in
+            while pending.count < count, frameIndex < iab.frames.count {
+                pending.append(try IMFIABReader.decodeFrameAudio(iab: iab,frameIndex: frameIndex,handle: handle)); frameIndex += 1
             }
-            guard pending.count >= byteCount else { return pending }
-            let block = Data(pending.prefix(byteCount))
-            pending.removeFirst(byteCount)
+            let block = Data(pending.prefix(count)); pending.removeFirst(block.count)
             return block
         }
     }
@@ -83,12 +78,13 @@ public enum DTS714Renderer {
 
     private static func render(
         master: AtmosMaster,
+        channelFormat: DTSXChannelFormat,
         maximumSampleCount: Int?,
         blockSampleCount: Int,
         progress: ((Int64, Int64) -> Void)?,
         guardReport: ((DTS714RenderGuardReport) -> Void)? = nil,
         readBlock: (Int) throws -> Data
-    ) throws -> DTS714PCMBuffer {
+    ) throws -> DTSXChannelPCMBuffer {
         guard blockSampleCount > 0,
               master.audioFormat.sampleRate == DTS714PCMBuffer.sampleRate,
               master.audioFormat.bitDepth == DTS714PCMBuffer.bitDepth,
@@ -108,9 +104,9 @@ public enum DTS714Renderer {
         }
 
         let bedRouting: [(inputChannel: Int, routes: [(outputIndex: Int, q30: Int64)])] = master.bedChannels.map { bed in
-            let routes = DTS714ChannelMapper.routes(for: bed.dtsSpeaker).map {
+            let routes = channelFormat == .sevenOneFour ? DTS714ChannelMapper.routes(for: bed.dtsSpeaker).map {
                 (DTS714Channel.allCases.firstIndex(of: $0.channel)!, $0.gainQ30)
-            }
+            } : DTSXChannelPanner.bedRoutes(for: bed.dtsSpeaker,format: channelFormat).map { ($0.outputIndex,$0.q30) }
             return (bed.audioChannelIndex, routes)
         }
         let objectIndexByID = Dictionary(uniqueKeysWithValues: master.objects.enumerated().map { ($0.element.elementID, $0.offset) })
@@ -139,14 +135,14 @@ public enum DTS714Renderer {
         }
         var activeObjects = master.objects.enumerated().map { objectIndex, object in
             var smoother = DTS714ObjectGainSmoother()
-            smoother.setImmediately(objectGains(states[objectIndex]))
+            smoother.setImmediately(objectGains(states[objectIndex],format: channelFormat))
             return ActiveObject(
                 inputChannel: object.audioChannelIndex,
                 gainSmoother: smoother
             )
         }
-        var output = Array(repeating: [Int32](repeating: 0, count: sampleCount), count: DTS714Channel.allCases.count)
-        var accumulators = Array(repeating: Int64(0), count: DTS714Channel.allCases.count)
+        var output = Array(repeating: [Int32](repeating: 0, count: sampleCount), count: channelFormat.channelNames.count)
+        var accumulators = Array(repeating: Int64(0), count: channelFormat.channelNames.count)
 
         var blockStart = 0
         while blockStart < sampleCount {
@@ -166,7 +162,7 @@ public enum DTS714Renderer {
                         let (event, index) = events[eventCursor]
                         states[index].apply(event)
                         activeObjects[index].gainSmoother.retarget(
-                            objectGains(states[index]),
+                            objectGains(states[index],format: channelFormat),
                             over: smoothingSampleCount(
                                 for: event,
                                 framesPerSecond: master.framesPerSecond
@@ -228,13 +224,13 @@ public enum DTS714Renderer {
         // through bit-exact; the previous per-sample `saturate24` silently
         // hard-clipped exactly the hot object peaks that the lossless
         // XLL/XLL-X layers then delivered as clicks.
-        let report = DTS714RenderGuard.apply(to: &output)
+        let report = channelFormat == .sevenOneFour ? DTS714RenderGuard.apply(to: &output) : DTS714RenderGuard.apply(to: &output,channelFormat: channelFormat)
         guardReport?(report)
-        return try DTS714PCMBuffer(planes: output)
+        return try DTSXChannelPCMBuffer(channelFormat: channelFormat,planes: output)
     }
 
-    private static func objectGains(_ state: AtmosObjectState) -> [(outputIndex: Int, q30: Int64)] {
-        DTS714VBAPPanner.gains(for: state)
+    private static func objectGains(_ state: AtmosObjectState,format: DTSXChannelFormat) -> [(outputIndex: Int, q30: Int64)] {
+        format == .sevenOneFour ? DTS714VBAPPanner.gains(for: state) : DTSXChannelPanner.gains(for: state,format: format)
     }
 
     private static func smoothingSampleCount(

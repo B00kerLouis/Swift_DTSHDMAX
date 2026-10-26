@@ -26,98 +26,133 @@ public struct DTSXDynamicPCMBuffer: Sendable {
     }
 }
 
-/// Energy-weighted centroids with persistent slot identity. Assignment solves
-/// the complete minimum-cost matching across four slots, so reordered source
-/// energy cannot silently swap transport identities between frames.
+/// Invocation-local, warm-started spatial clusters. Source membership survives
+/// power changes; a different instantaneous leader cannot permute live slots.
+/// Uncovered images remain in the fixed residual while a carrier moves to them.
 struct DTSXSpatialAggregator {
-    var centres: [AtmosPosition]
+    private struct Source {
+        var point: AtmosPosition
+        var distance: Double
+        var energy: Double
+        var slot: Int
+        var missed = 0
+    }
+    private var sources: [Int: Source] = [:]
+    private var initialized: [Bool]
+    private(set) var centres: [AtmosPosition]
     private(set) var distances: [Double]
-    private var leaders: [Int]
+    // Six degrees per 512 samples permits fast authored motion while preventing
+    // a newly dominant image from teleporting a still-audible carrier.
+    static let maximumAngularStepDegrees = 6.0
+
     init(count: Int) {
         centres = (0..<count).map { index in
-            let angle = Double(index) * 2 * .pi / Double(count)
-            return AtmosPosition(x: sin(angle), y: cos(angle), z: 0.5)
+            let angle = Double(index)*2 * .pi/Double(count)
+            return Self.unit(AtmosPosition(x: sin(angle),y: cos(angle),z: 0.5))
         }
-        leaders = Array(repeating: -1,count: count)
+        initialized = Array(repeating: false,count: count)
         distances = Array(repeating: 1,count: count)
     }
     static func distance(_ a: AtmosPosition, _ b: AtmosPosition) -> Double {
-        pow((a.x-b.x)/2, 2) + pow((a.y-b.y)/2, 2) + pow(a.z-b.z, 2)
+        pow((a.x-b.x)/2,2)+pow((a.y-b.y)/2,2)+pow(a.z-b.z,2)
+    }
+    private static func unit(_ p: AtmosPosition) -> AtmosPosition {
+        let norm = sqrt(p.x*p.x+p.y*p.y+p.z*p.z)
+        return norm > 1e-12 ? AtmosPosition(x: p.x/norm,y: p.y/norm,z: p.z/norm) : AtmosPosition(x: 0,y: 1,z: 0)
+    }
+    private static func move(_ from: AtmosPosition, to: AtmosPosition) -> AtmosPosition {
+        let a = unit(from), b = unit(to)
+        let dot = min(1,max(-1,a.x*b.x+a.y*b.y+a.z*b.z))
+        let angle = acos(dot), step = maximumAngularStepDegrees * .pi/180
+        guard angle > step else { return b }
+        // The tangent is deterministic even for antipodal targets. Choosing
+        // the upper arc keeps all emitted elevation codes in the legal dome.
+        var tangent = AtmosPosition(x: b.x-dot*a.x,y: b.y-dot*a.y,z: b.z-dot*a.z)
+        if sqrt(tangent.x*tangent.x+tangent.y*tangent.y+tangent.z*tangent.z) < 1e-10 {
+            tangent = AtmosPosition(x: -a.z*a.x,y: -a.z*a.y,z: 1-a.z*a.z)
+        }
+        tangent = unit(tangent)
+        return unit(AtmosPosition(x: a.x*cos(step)+tangent.x*sin(step),
+                                 y: a.y*cos(step)+tangent.y*sin(step),
+                                 z: max(0,a.z*cos(step)+tangent.z*sin(step))))
     }
     mutating func update(points: [AtmosPosition], energy: [Double], sourceIDs: [Int]? = nil,
                          sourceDistances: [Double]? = nil) -> [Int] {
         let identities = sourceIDs ?? Array(points.indices)
         let radial = sourceDistances ?? Array(repeating: 1,count: points.count)
         precondition(points.count == energy.count && identities.count == points.count && radial.count == points.count)
-        let active = points.indices.filter { energy[$0] > 0 }
-        guard !active.isEmpty else { return Array(repeating: -1, count: points.count) }
-        var next: [AtmosPosition] = [], seeds: [Int] = []
-        for _ in centres.indices {
-            let remaining = active.filter { !seeds.contains($0) }
-            let best = remaining.max { first, second in
-                let a = energy[first] * (next.map { Self.distance(points[first], $0) }.min() ?? 1)
-                let b = energy[second] * (next.map { Self.distance(points[second], $0) }.min() ?? 1)
-                return a == b ? identities[first] > identities[second] : a < b
-            }
-            if let best { next.append(points[best]); seeds.append(best) }
-            else { next.append(centres[next.count]); seeds.append(-1) }
+        let live = Set(points.indices.filter { energy[$0] > 0 }.map { identities[$0] })
+        for id in Array(sources.keys) where !live.contains(id) {
+            sources[id]!.energy *= 0.9; sources[id]!.missed += 1
+            if sources[id]!.missed > 32 { sources.removeValue(forKey: id) }
         }
-        func nearest(_ source: Int, _ candidates: [AtmosPosition]) -> Int {
-            candidates.indices.min {
-                let a = Self.distance(points[source], candidates[$0]), b = Self.distance(points[source], candidates[$1])
+        for i in points.indices where energy[i] > 0 {
+            let previous = sources[identities[i]]
+            let weight = previous.map { $0.energy+0.25*(energy[i]-$0.energy) } ?? energy[i]
+            sources[identities[i]] = Source(point: Self.unit(points[i]),distance: radial[i],energy: weight,
+                                            slot: previous?.slot ?? -1)
+        }
+        guard !live.isEmpty else { return Array(repeating: -1,count: points.count) }
+        let ids = sources.keys.sorted()
+        var next = centres
+        var occupied = Array(repeating: false,count: centres.count)
+        // Follow the existing members before refining the partition. Seeding
+        // anew from each AU's loudest source destroys this correspondence.
+        func centroid(_ members: [Int]) -> AtmosPosition {
+            var x = 0.0,y = 0.0,z = 0.0
+            for id in members {
+                let source = sources[id]!
+                x += source.energy*source.point.x; y += source.energy*source.point.y; z += source.energy*source.point.z
+            }
+            return Self.unit(AtmosPosition(x: x,y: y,z: z))
+        }
+        for slot in centres.indices {
+            let members = ids.filter { sources[$0]!.slot == slot }
+            if !members.isEmpty { next[slot] = centroid(members); occupied[slot] = true }
+        }
+        var seeds = Set<Int>()
+        for slot in centres.indices where !occupied[slot] {
+            let candidates = ids.filter { sources[$0]!.slot < 0 && !seeds.contains($0) }
+            let best = candidates.max { first,second in
+                func score(_ id: Int) -> Double {
+                    let source = sources[id]!
+                    let coverage = next.indices.filter { occupied[$0] }.map { Self.distance(source.point,next[$0]) }.min() ?? 1
+                    return source.energy*coverage
+                }
+                let a = score(first),b = score(second)
+                return a == b ? first > second : a < b
+            }
+            if let best { next[slot] = sources[best]!.point; occupied[slot] = true; seeds.insert(best) }
+        }
+        func nearest(_ id: Int) -> Int {
+            let source = sources[id]!
+            return next.indices.filter { occupied[$0] }.min {
+                // Small membership hysteresis removes partition-boundary
+                // chatter without preventing a source from changing cluster.
+                let a = Self.distance(source.point,next[$0])+($0 == source.slot ? 0 : 0.02)
+                let b = Self.distance(source.point,next[$1])+($1 == source.slot ? 0 : 0.02)
                 return a == b ? $0 < $1 : a < b
             }!
         }
         for _ in 0..<6 {
-            var mass = Array(repeating: 0.0, count: next.count)
-            var x = mass, y = mass, z = mass
-            for source in active {
-                let slot = nearest(source, next), weight = energy[source]
-                mass[slot] += weight; x[slot] += points[source].x * weight
-                y[slot] += points[source].y * weight; z[slot] += points[source].z * weight
-            }
-            for slot in next.indices where mass[slot] > 0 {
-                next[slot] = AtmosPosition(x: x[slot]/mass[slot], y: y[slot]/mass[slot], z: z[slot]/mass[slot])
+            let assignment = Dictionary(uniqueKeysWithValues: ids.map { ($0,nearest($0)) })
+            for slot in next.indices where occupied[slot] {
+                let members = ids.filter { assignment[$0] == slot }
+                if !members.isEmpty { next[slot] = centroid(members) }
             }
         }
-        var incomingLeaders = Array(repeating: -1,count: next.count)
-        var leaderPower = Array(repeating: 0.0,count: next.count)
-        var incomingDistance = Array(repeating: 0.0,count: next.count)
-        var incomingMass = incomingDistance
-        for source in active {
-            let slot = nearest(source,next)
-            incomingDistance[slot] += energy[source]*radial[source]; incomingMass[slot] += energy[source]
-            if energy[source] > leaderPower[slot] { leaderPower[slot] = energy[source]; incomingLeaders[slot] = identities[source] }
+        for id in ids { sources[id]!.slot = nearest(id) }
+        for slot in centres.indices where occupied[slot] {
+            centres[slot] = initialized[slot] ? Self.move(centres[slot],to: next[slot]) : next[slot]
+            let members = ids.filter { sources[$0]!.slot == slot }
+            let mass = members.reduce(0.0) { $0+sources[$1]!.energy }
+            if mass > 0 { distances[slot] = members.reduce(0.0) { $0+sources[$1]!.energy*sources[$1]!.distance }/mass }
         }
-        for slot in next.indices {
-            if incomingMass[slot] > 0 { incomingDistance[slot] /= incomingMass[slot] }
-            else { incomingDistance[slot] = distances[slot] }
-        }
-        let size = 1 << centres.count
-        var costs = Array(repeating: Double.infinity, count: size)
-        var parents = Array(repeating: -1, count: size), choices = parents
-        costs[0] = 0
-        for mask in 0..<size where costs[mask].isFinite {
-            let slot = mask.nonzeroBitCount
-            guard slot < centres.count else { continue }
-            for incoming in next.indices where mask & (1 << incoming) == 0 {
-                let target = mask | (1 << incoming)
-                // Preserve a dominant source's slot through crossings. Empty
-                // slots incur no penalty and retain their last direction.
-                let identityCost = leaders[slot] >= 0 && incomingLeaders[incoming] >= 0
-                    && leaders[slot] != incomingLeaders[incoming] ? 4.0 : 0
-                let cost = costs[mask] + Self.distance(centres[slot], next[incoming]) + identityCost
-                if cost < costs[target] { costs[target] = cost; parents[target] = mask; choices[target] = incoming }
-            }
-        }
-        var assignment = Array(repeating: 0, count: centres.count), mask = size - 1
-        for slot in centres.indices.reversed() { assignment[slot] = choices[mask]; mask = parents[mask] }
-        centres = assignment.map { next[$0] }
-        distances = assignment.map { incomingDistance[$0] }
-        leaders = assignment.enumerated().map { slot,incoming in
-            incomingLeaders[incoming] >= 0 ? incomingLeaders[incoming] : leaders[slot]
-        }
-        return points.indices.map { energy[$0] > 0 ? nearest($0, centres) : -1 }
+        // Even an unoccupied column can participate in the nonnegative fit.
+        // Once emitted alongside audible PCM, it must obey the same motion
+        // bound when it first acquires cluster members.
+        initialized = Array(repeating: true,count: centres.count)
+        return points.indices.map { energy[$0] > 0 ? sources[identities[$0]]!.slot : -1 }
     }
 }
 
@@ -321,7 +356,7 @@ public enum DTSXDynamicRenderer {
                 distanceError = max(distanceError,abs(radius-quantized[slot].distance))
             }
             for source in 0..<sourceCount {
-                let fitted = DTSXDynamicSpatialModel.fit(target: targets[source],columns: columns,nearest: assignments[source])
+                let fitted = DTSXDynamicSpatialModel.fit(target: targets[source],columns: columns)
                 let sparse = fitted.enumerated().compactMap { slot,gain -> (outputIndex: Int,q30: Int64)? in
                     guard gain > 0 else { return nil }
                     return (slot,Int64((gain*Double(1 << 30)).rounded()))

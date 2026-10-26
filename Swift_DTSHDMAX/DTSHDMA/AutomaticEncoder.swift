@@ -17,6 +17,7 @@ public enum DTSObjectMetadataDisposition: String, Sendable, Codable {
     case notApplicable
     case renderedToSevenOneBed
     case renderedToSevenOneFour
+    case renderedToSelectedChannelFormat
     case renderedToIMAX
     case aggregatedToFourDynamicObjects
     case aggregatedToFourDynamicObjectsWithReservedIMAXTFC
@@ -68,6 +69,8 @@ public struct DTSAutomaticEncodeReport: Sendable, Equatable, Codable {
     public let dtsxVision: DTSXVision?
     public let objectMode: DTSObjectMode?
     public let dynamicEncoding: DTSXDynamicEncodingReport?
+    public let channelFormat: DTSXChannelFormat?
+    public let channelEncoding: DTSXChannelEncodingReport?
     public let objectMetadataDisposition: DTSObjectMetadataDisposition
     public let atmosBedChannelCount: Int?
     public let atmosObjectCount: Int?
@@ -84,6 +87,7 @@ public enum DTSAutomaticEncoder {
         case dtsx(rendered: DTS714PCMBuffer, compatibilityBed: PCMBuffer)
         case imax(rendered: DTSIMAXPCMBuffer, compatibilityBed: PCMBuffer)
         case dynamic(DTSXDynamicPCMBuffer)
+        case fixed(DTSXChannelPCMBuffer,PCMBuffer)
     }
 
     private struct LoadedSource {
@@ -121,12 +125,31 @@ public enum DTSAutomaticEncoder {
                    objectMode: DTSObjectMode.defaultMode(for: dtsxVision),progress: progress)
     }
 
+    /// Explicit format selection defaults to fixed speakers for the additional
+    /// layouts. Existing 7.1.4 signatures retain their vision-specific defaults.
+    public static func encode(
+        inputURL: URL,outputURL: URL,frameRateOverride: DTSFrameRate? = nil,
+        encodeMode: DTSEncodeMode = .auto,dtsxVision: DTSXVision = .sevenOneFour,
+        channelFormat: DTSXChannelFormat,objectMode: DTSObjectMode? = nil,
+        progress: ((Int64,Int64) -> Void)? = nil
+    ) throws -> DTSAutomaticEncodeReport {
+        guard dtsxVision == .sevenOneFour else { throw DTSError.invalidArgument("Channel-format selection requires --dtsx-vision 1; vision 2 is reserved for IMAX") }
+        return try encode(inputURL: inputURL,outputURL: outputURL,frameRateOverride: frameRateOverride,
+            encodeMode: encodeMode,dtsxVision: dtsxVision,
+            objectMode: objectMode ?? (channelFormat == .sevenOneFour ? .dynamic : .channelbase),
+            channelFormat: channelFormat,progress: progress)
+    }
+
     public static func encode(
         inputURL: URL, outputURL: URL, frameRateOverride: DTSFrameRate? = nil,
         encodeMode: DTSEncodeMode = .auto, dtsxVision: DTSXVision = .sevenOneFour,
         objectMode: DTSObjectMode, stemsDirectory: URL? = nil,
+        channelFormat: DTSXChannelFormat = .sevenOneFour,
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws -> DTSAutomaticEncodeReport {
+        guard channelFormat == .sevenOneFour || (dtsxVision == .sevenOneFour && objectMode == .channelbase) else {
+            throw DTSError.invalidArgument("Additional channel formats require vision 1 and channelbase object mode; dynamic authoring remains 7.1.4+4 or IMAX 7.1.5+4")
+        }
         let progressTotal = Int64(1_000)
         progress?(0, progressTotal)
         let input = inputURL.standardizedFileURL
@@ -149,6 +172,7 @@ public enum DTSAutomaticEncoder {
             frameRateOverride: frameRateOverride,
             dtsxVision: dtsxVision,
             objectMode: objectMode,
+            channelFormat: channelFormat,
             progress: { completed, total in
                 progress?(
                     Int64(250) * completed / max(1, total),
@@ -162,8 +186,10 @@ public enum DTSAutomaticEncoder {
         }
         let artifacts: DTSHDMADeliveryArtifactReport
         var dynamicEncoding: DTSXDynamicEncodingReport?
+        var channelEncoding: DTSXChannelEncodingReport?
         switch source.source {
         case .hdma(let pcm):
+            guard channelFormat == .sevenOneFour else { throw DTSError.invalidArgument("Additional channel formats require an Atmos master; ordinary PCM retains its existing channel route") }
             try HDMAEncoder(
                 format: pcm.format,
                 tailPolicy: .zeroPad,
@@ -183,6 +209,14 @@ public enum DTSAutomaticEncoder {
             )
             progress?(980, progressTotal)
 
+        case .fixed(let rendered,let bed):
+            channelEncoding = try DTSXChannelHDMAEncoder(encodeMode: encodeMode).encode(source: rendered,to: output,
+                frameRate: source.frameRate,progress: { done,total in
+                    progress?(250+Int64(600)*Int64(done)/Int64(max(1,total)),progressTotal)
+                })
+            artifacts = try DTSHDMADeliveryArtifactWriter.writeCompleted(pcm: bed,input: source.deliveryInput,
+                outputURL: output,frameRate: source.frameRate)
+            progress?(980,progressTotal)
         case .dtsx(let rendered, let compatibilityBed):
             _ = try DTSXNativeHDMAEncoder(encodeMode: encodeMode).encode(
                 source: rendered,
@@ -238,6 +272,8 @@ public enum DTSAutomaticEncoder {
             dtsxVision: dtsxVision,
             objectMode: source.detectedInput == .atmosMaster ? objectMode : nil,
             dynamicEncoding: dynamicEncoding,
+            channelFormat: source.detectedInput == .atmosMaster && dtsxVision == .sevenOneFour ? channelFormat : nil,
+            channelEncoding: channelEncoding,
             objectMetadataDisposition: source.objectMetadataDisposition,
             atmosBedChannelCount: source.atmosBedChannelCount,
             atmosObjectCount: source.atmosObjectCount,
@@ -254,6 +290,7 @@ public enum DTSAutomaticEncoder {
         frameRateOverride: DTSFrameRate?,
         dtsxVision: DTSXVision,
         objectMode: DTSObjectMode,
+        channelFormat: DTSXChannelFormat,
         progress: ((Int64, Int64) -> Void)?
     ) throws -> LoadedSource {
         var isDirectory: ObjCBool = false
@@ -268,6 +305,7 @@ public enum DTSAutomaticEncoder {
                 frameRateOverride: frameRateOverride,
                 dtsxVision: dtsxVision,
                 objectMode: objectMode,
+                channelFormat: channelFormat,
                 progress: progress
             )
         }
@@ -280,6 +318,7 @@ public enum DTSAutomaticEncoder {
                     frameRateOverride: frameRateOverride,
                     dtsxVision: dtsxVision,
                     objectMode: objectMode,
+                    channelFormat: channelFormat,
                     progress: progress
                 )
             }
@@ -369,6 +408,7 @@ public enum DTSAutomaticEncoder {
             frameRateOverride: frameRateOverride,
             dtsxVision: dtsxVision,
             objectMode: objectMode,
+            channelFormat: channelFormat,
             progress: progress
         )
     }
@@ -379,8 +419,30 @@ public enum DTSAutomaticEncoder {
         frameRateOverride: DTSFrameRate?,
         dtsxVision: DTSXVision,
         objectMode: DTSObjectMode,
+        channelFormat: DTSXChannelFormat,
         progress: ((Int64, Int64) -> Void)?
     ) throws -> LoadedSource {
+        if channelFormat != .sevenOneFour {
+            let master: AtmosMaster
+            let rendered: DTSXChannelPCMBuffer
+            if resolvedURL.pathExtension.lowercased() == "mxf" {
+                let iab = try IMFIABReader.read(url: resolvedURL)
+                master = iab.master
+                rendered = try DTS714Renderer.render(iab: iab,channelFormat: channelFormat,progress: progress)
+            } else {
+                master = try AtmosInputReader.read(url: resolvedURL)
+                rendered = try DTS714Renderer.render(master: master,channelFormat: channelFormat,progress: progress)
+            }
+            let rate = try DTSFrameRate.resolve(metadataFramesPerSecond: master.framesPerSecond,
+                override: frameRateOverride,sourceDescription: "Atmos fixed speaker render")
+            return LoadedSource(resolvedInputURL: resolvedURL,detectedInput: .atmosMaster,encodedProduct: .dtsxHDMA,
+                objectMetadataDisposition: .renderedToSelectedChannelFormat,atmosBedChannelCount: master.bedChannels.count,
+                atmosObjectCount: master.objects.count,frameRate: rate,source: .fixed(rendered,try rendered.compatibilityBed()),
+                deliveryInput: DTSHDMADeliveryInput(inputURL: inputURL,resolvedInputURL: resolvedURL,detectedInput: .atmosMaster,
+                    sourceChannelCount: master.audioFormat.channelCount,atmosBedChannelCount: master.bedChannels.count,
+                    atmosObjectCount: master.objects.count,renderedFromAtmos: true,dtsxVision: .sevenOneFour,
+                    objectMode: .channelbase,channelFormat: channelFormat))
+        }
         // Dispatch before any fixed renderer/guard is constructed. All gain,
         // aggregation and private-provider state belongs to this invocation.
         if objectMode == .dynamic {

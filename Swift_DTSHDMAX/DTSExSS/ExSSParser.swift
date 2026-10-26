@@ -190,6 +190,13 @@ struct ExSSParser: Sendable {
         guard remainingDescriptorBitCount >= 0 else {
             throw DTSError.malformed("ExSS asset descriptor ended before decoder navigation data")
         }
+        // A long zero-filled HDMA descriptor is padding, not a DTS:X
+        // declaration. Inspect the profile without consuming the reader.
+        let hasFixedNavigation: Bool
+        if (60...67).contains(remainingDescriptorBitCount), !hasAssetType {
+            var preview = reader
+            hasFixedNavigation = try preview.read(5,field: "Fixed navigation profile preview") == 3
+        } else { hasFixedNavigation = false }
         let dtsxAssetDescriptorSignal: ExSSDTSXAssetDescriptorSignal?
         if remainingDescriptorBitCount == ExSSDTSXAssetDescriptorSignal.imaxEncodedBitCount, hasAssetType {
             guard try reader.read(5, field: "IMAX profile code") == 3 else { throw DTSError.malformed("IMAX profile code") }
@@ -207,25 +214,23 @@ struct ExSSParser: Sendable {
             guard (0...7).contains(padding), try reader.read(padding, field: "Object descriptor padding") == 0 else { throw DTSError.malformed("Object descriptor padding") }
             dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(imaxOffset: offset, groupByteCounts: counts,
                                                                        metadataByteCounts: metadata)
-        } else if remainingDescriptorBitCount == ExSSDTSXAssetDescriptorSignal.encodedBitCount {
-            let profileCode = Int(try reader.read(5, field: "nuDTSXProfileCode"))
-            let xllXByteOffset = Int(try reader.read(16, field: "nuDTSXXLLXByteOffset"))
-            let signature = try reader.read(24, field: "nuDTSXDescriptorSignature")
-            let payloadNibbleCount = Int(
-                try reader.read(16, field: "nuDTSXXLLXPayloadNibbleCount")
-            )
-            let zeroPadding = try reader.read(6, field: "DTSXDescriptorZeroPad")
-            guard profileCode == ExSSDTSXAssetDescriptorSignal.profileCode,
-                  signature == ExSSDTSXAssetDescriptorSignal.signature,
-                  zeroPadding == 0 else {
-                throw DTSError.malformed(
-                    "ExSS DTS:X asset-descriptor signal does not match the qualified profile"
-                )
+        } else if hasFixedNavigation {
+            let profileCode = Int(try reader.read(5,field: "DTS:X profile code"))
+            let offset = Int(try reader.read(16,field: "DTS:X private offset"))
+            let signature = try reader.read(24,field: "DTS:X fixed metadata/audio navigation")
+            let groupByteCount = Int(try reader.read(15,field: "DTS:X fixed audio group bytes"))+1
+            let padding = descriptorEnd-reader.bitOffset
+            guard profileCode == 3, signature & 0xff_00ff == 0x45,
+                  (0...7).contains(padding), try reader.read(padding,field: "DTS:X fixed navigation padding") == 0 else {
+                throw DTSError.malformed("ExSS fixed speaker navigation is invalid")
             }
-            dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(
-                xllXByteOffset: xllXByteOffset,
-                xllXPayloadNibbleCount: payloadNibbleCount
-            )
+            let metadataBytes = Int((signature >> 8) & 255)+4
+            if metadataBytes == 21, layout == .sevenOne {
+                dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(xllXByteOffset: offset,xllXPayloadNibbleCount: (groupByteCount-1)*2)
+            } else {
+                dtsxAssetDescriptorSignal = try ExSSDTSXAssetDescriptorSignal(fixedOffset: offset,
+                    metadataByteCount: metadataBytes,groupByteCount: groupByteCount)
+            }
         } else {
             var reservedBitsAreZero = true
             for _ in 0..<remainingDescriptorBitCount {
@@ -235,7 +240,7 @@ struct ExSSParser: Sendable {
             }
             guard reservedBitsAreZero else {
                 throw DTSError.unsupported(
-                    "unrecognized ExSS asset-descriptor reserved extension"
+                    "unrecognized ExSS asset-descriptor reserved extension (\(remainingDescriptorBitCount) bits)"
                 )
             }
             dtsxAssetDescriptorSignal = nil
@@ -283,6 +288,11 @@ struct ExSSParser: Sendable {
                           signal.alternateMetadataByteCounts == [20,23] else {
                         throw DTSError.malformed("IMAX descriptor chunk sizes disagree with payload")
                     }
+                }
+            } else if let metadataBytes = signal.fixedMetadataByteCount, let groupBytes = signal.fixedAudioGroupByteCount {
+                let fixed = try DTSXFixedPrivateFrame.parse(xll.privateData,groupByteCount: groupBytes,navigationWidth: max(8,xll.segmentSizeBitCount))
+                guard metadataBytes == fixed.format.metadata.count, fixed.format.bedLayout == layout else {
+                    throw DTSError.malformed("Fixed speaker descriptor and presentation disagree")
                 }
             } else { _ = try DTSXPrivateFrameAST.parse(xll.privateData[...]) }
         }

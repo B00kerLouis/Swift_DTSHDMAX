@@ -46,7 +46,7 @@ jobs:
       - name: Run in-memory codec regressions
         run: |
           set -euo pipefail
-          for check in verify-encode-modes verify-object-modes verify-dtsx-navigation-width \
+          for check in verify-encode-modes verify-object-modes verify-dtsx-channel-formats verify-dtsx-navigation-width \
             verify-xllx-native-encoder verify-dtsx-native-encoder verify-dtsx-imax-encoder \
             verify-dtsx-dynamic-encoder verify-multi-bed; do
             Build/CI/Products/Debug/hdmax "$check" \

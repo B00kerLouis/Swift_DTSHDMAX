@@ -27,6 +27,12 @@ struct ExSSWriter: Sendable {
                 xllXByteOffset: xll.privateDataByteRange.lowerBound,
                 xllXFrameByteCount: xll.privateDataByteRange.count
             )
+        case .dtsxFixedChannels:
+            guard backwardCompatibleCore else { throw DTSError.invalidArgument("Fixed speaker DTS:X requires compatible Core") }
+            let xll = try XLLFrameASTParser.parse(xllFrame.data)
+            let fixed = try DTSXFixedPrivateFrame.parse(xll.privateData,segmentCount: xll.segmentCount,publicNavigationWidth: xll.segmentSizeBitCount)
+            dtsxSignal = try ExSSDTSXAssetDescriptorSignal(fixedOffset: xll.privateDataByteRange.lowerBound,
+                metadataByteCount: fixed.format.metadata.count,groupByteCount: fixed.groupByteCount)
         case .dtsxIMAX:
             guard backwardCompatibleCore else { throw DTSError.invalidArgument("IMAX requires compatible Core") }
             let xll = try XLLFrameASTParser.parse(xllFrame.data)
@@ -124,6 +130,11 @@ struct ExSSWriter: Sendable {
             if backwardCompatibleCore, headerByteCount != 36 {
                 throw DTSError.malformed("ordinary Core+XLL ExSS header is not 36 bytes")
             }
+        case .dtsxFixedChannels:
+            let expectedDescriptorBytes = format.layout == .sevenOne ? 23 : 21
+            guard assetDescriptor.count == expectedDescriptorBytes, headerByteCount == 40 else {
+                throw DTSError.malformed("Fixed speaker ExSS header dimensions are invalid: descriptor=\(assetDescriptor.count), header=\(headerByteCount)")
+            }
         case .dtsxXLLX:
             guard assetDescriptor.count == 23, headerByteCount == 40 else {
                 throw DTSError.malformed(
@@ -171,7 +182,7 @@ struct ExSSWriter: Sendable {
             )
         }
         try writer.write(1, bitCount: 1, field: "bSpkrMaskEnabled")
-        let speakerMaskBitCount = format.layout.channelCount > 6 ? 12 : 8
+        let speakerMaskBitCount = format.layout.channelCount > 6 ? 12 : dtsxSignal?.fixedMetadataByteCount != nil ? 4 : 8
         try writer.write(
             UInt64(speakerMaskBitCount / 4 - 1),
             bitCount: 2,
@@ -245,6 +256,10 @@ struct ExSSWriter: Sendable {
                 for _ in counts { try writer.write(0x44, bitCount: 8, field: "Object audio chunk type/width") }
                 for count in counts { try writer.write(UInt64(count - 1), bitCount: 15, field: "Alternate associated chunk size") }
                 writer.alignToByte()
+            } else if let metadata = signal.fixedMetadataByteCount, let group = signal.fixedAudioGroupByteCount {
+                try writer.write(UInt64((metadata-4)<<8 | 0x45),bitCount: 24,field: "Fixed metadata/audio navigation")
+                try writer.write(UInt64(group-1),bitCount: 15,field: "Fixed audio group byte count")
+                writer.alignToByte()
             } else {
             try writer.write(
                 ExSSDTSXAssetDescriptorSignal.signature,
@@ -266,7 +281,7 @@ struct ExSSWriter: Sendable {
         }
 
         let descriptorByteCount = writer.byteCount
-        if let signal = dtsxSignal, descriptorByteCount != (signal.hasAlternateAudioGroups ? 27 : 23) {
+        if let signal = dtsxSignal, descriptorByteCount != (signal.hasAlternateAudioGroups ? 27 : signal.fixedMetadataByteCount != nil && format.layout != .sevenOne ? 21 : 23) {
             throw DTSError.malformed("DTS:X asset descriptor byte count does not match its navigation profile")
         }
         try writer.patch(

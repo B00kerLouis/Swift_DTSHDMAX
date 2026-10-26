@@ -33,9 +33,12 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
     let xllXPayloadNibbleCount: Int
     let alternateGroupByteCounts: [Int]?
     let alternateMetadataByteCounts: [Int]?
+    let fixedMetadataByteCount: Int?
+    let fixedAudioGroupByteCount: Int?
     var hasAlternateAudioGroups: Bool { alternateGroupByteCounts != nil }
 
     var xllXFrameByteCount: Int {
+        if let metadata = fixedMetadataByteCount, let group = fixedAudioGroupByteCount { return (metadata+1+group+3) & ~3 }
         if let counts = alternateGroupByteCounts {
             return ((alternateMetadataByteCounts?.reduce(0,+) ?? 43) + 2 + counts.reduce(0, +) + 3) & ~3
         }
@@ -66,6 +69,8 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         self.xllXPayloadNibbleCount = nibbleCount
         alternateGroupByteCounts = nil
         alternateMetadataByteCounts = nil
+        fixedMetadataByteCount = nil
+        fixedAudioGroupByteCount = nil
     }
 
     init(xllXByteOffset: Int, xllXPayloadNibbleCount: Int) throws {
@@ -81,6 +86,19 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         self.xllXPayloadNibbleCount = xllXPayloadNibbleCount
         alternateGroupByteCounts = nil
         alternateMetadataByteCounts = nil
+        fixedMetadataByteCount = nil
+        fixedAudioGroupByteCount = nil
+    }
+
+    init(fixedOffset: Int,metadataByteCount: Int,groupByteCount: Int) throws {
+        guard (0...65535).contains(fixedOffset), (4...259).contains(metadataByteCount),
+              (1...32768).contains(groupByteCount) else { throw DTSError.invalidArgument("Fixed speaker descriptor sizes are invalid") }
+        xllXByteOffset = fixedOffset
+        xllXPayloadNibbleCount = 0
+        alternateGroupByteCounts = nil
+        alternateMetadataByteCounts = nil
+        fixedMetadataByteCount = metadataByteCount
+        fixedAudioGroupByteCount = groupByteCount
     }
 
     init(imaxOffset: Int, groupByteCounts: [Int], metadataByteCounts: [Int] = [20,23]) throws {
@@ -94,6 +112,8 @@ struct ExSSDTSXAssetDescriptorSignal: Sendable, Equatable, Codable {
         xllXPayloadNibbleCount = 0
         alternateGroupByteCounts = groupByteCounts
         alternateMetadataByteCounts = metadataByteCounts
+        fixedMetadataByteCount = nil
+        fixedAudioGroupByteCount = nil
     }
 }
 
@@ -102,6 +122,7 @@ enum ExSSAssetDescriptorProfile: Sendable, Equatable {
     case dtsxXLLX
     case dtsxIMAX
     case dtsxDynamic
+    case dtsxFixedChannels
 }
 
 struct ExSSFrameInfo: Sendable, Equatable, Codable {

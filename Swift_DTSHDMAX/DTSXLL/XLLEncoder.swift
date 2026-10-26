@@ -112,6 +112,7 @@ struct XLLEncoder: Sendable {
 
     private let codingMode: XLLCodingMode
     private let maximumPredictionOrder: Int
+    private let forcesScalableLSBs: Bool
     private var usesBoundedPrediction: Bool {
         codingMode == .terminalOfficialPredictive || codingMode == .terminalAutomaticPredictive
     }
@@ -127,9 +128,11 @@ struct XLLEncoder: Sendable {
     init(
         codingMode: XLLCodingMode = .research,
         enforcesOfficialHierarchyGrammar: Bool = false,
-        maximumPredictionOrder: Int = 15
+        maximumPredictionOrder: Int = 15,
+        forcesScalableLSBs: Bool = false
     ) {
         self.codingMode = codingMode
+        self.forcesScalableLSBs = forcesScalableLSBs
         self.enforcesOfficialHierarchyGrammar = enforcesOfficialHierarchyGrammar
         self.maximumPredictionOrder = min(15, max(0, maximumPredictionOrder))
     }
@@ -141,6 +144,7 @@ struct XLLEncoder: Sendable {
         coreAssociationPolicy: XLLCoreAssociationPolicy = .fullPrimaryChannels,
         privateExtension: Data = Data(),
         privateExtensionProvider: ((XLLSegmentationPlan) throws -> Data)? = nil,
+        privateExtensionNavigationWidthProvider: (() throws -> Int)? = nil,
         forcedSegmentCount: Int? = nil
     ) throws -> XLLEncodedFrame {
         guard pcm.sampleCount == XLLSyntax.frameSampleCount else {
@@ -157,6 +161,7 @@ struct XLLEncoder: Sendable {
             )
         }
 
+        let publicChannelMaskBitCount = forcesScalableLSBs && pcm.format.layout == .fiveOneSide ? 6 : pcm.format.layout.xllSpeakerMaskBitCount
         let inputChannelSets = try makeChannelSets(
             pcm: pcm,
             useSevenOneHierarchy: useSevenOneHierarchy,
@@ -293,8 +298,8 @@ struct XLLEncoder: Sendable {
                     ? try publicCandidateByteCount(
                         channelSets: candidateChannelSets, segmentCount: candidate.count,
                         segmentSampleCount: candidate.samples, segmentSizeBitCount: segmentSizeBitCount,
-                        channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
-                        scalableLSBs: useSevenOneHierarchy, bandByteCount: entropyAndNavigationByteCount
+                        channelMaskBitCount: publicChannelMaskBitCount,
+                        scalableLSBs: useSevenOneHierarchy || forcesScalableLSBs, bandByteCount: entropyAndNavigationByteCount
                     ) : entropyAndNavigationByteCount
                 if candidateByteCount < bestSegmentationByteCount {
                     channelSets = candidateChannelSets
@@ -321,7 +326,7 @@ struct XLLEncoder: Sendable {
             requiredUnsignedBitCount(maximumValue: (allSegments.map(\.count).max() ?? 1) - 1)
         )
 
-        let scalableLSBs = useSevenOneHierarchy
+        let scalableLSBs = useSevenOneHierarchy || forcesScalableLSBs
         var navigation = try encodeNavigation(
             segmentByteCounts: segments.map { $0.map(\.count) },
             segmentSizeBitCount: segmentSizeBitCount
@@ -337,7 +342,20 @@ struct XLLEncoder: Sendable {
             ?? privateExtension
         try validatePrivateExtension(resolvedPrivateExtension)
         if !resolvedPrivateExtension.isEmpty {
-            if DTSIMAXPrivateFrame.isIMAX(resolvedPrivateExtension) {
+            if DTSXFixedPrivateFrame.format(of: resolvedPrivateExtension) != nil {
+                guard let contribution = try privateExtensionNavigationWidthProvider?(),
+                      contribution >= max(8,segmentSizeBitCount), contribution <= XLLSyntax.segmentSizeBitCount else {
+                    throw DTSError.malformed("Fixed speaker provider did not contribute a valid shared NAVI width")
+                }
+                if contribution > segmentSizeBitCount {
+                    segmentSizeBitCount = contribution
+                    navigation = try encodeNavigation(segmentByteCounts: segments.map { $0.map(\.count) },segmentSizeBitCount: segmentSizeBitCount)
+                    segmentationPlan = try XLLSegmentationPlan(segmentCount: segmentCount,segmentSampleCount: segmentSampleCount,
+                        segmentSizeBitCount: segmentSizeBitCount,navigationByteCount: navigation.count,
+                        segmentEntropyByteCounts: segments.map { $0.map(\.count) })
+                }
+                _ = try DTSXFixedPrivateFrame.parse(resolvedPrivateExtension,segmentCount: segmentCount,publicNavigationWidth: segmentSizeBitCount)
+            } else if DTSIMAXPrivateFrame.isIMAX(resolvedPrivateExtension) {
                 let imax = try DTSIMAXPrivateFrame.parse(resolvedPrivateExtension)
                 try imax.validate(plan: segmentationPlan, allowWiderWidth: true)
                 if imax.navigationWidth > max(8, segmentSizeBitCount) {
@@ -435,7 +453,7 @@ struct XLLEncoder: Sendable {
         let channelHeaders = try channelSets.map {
             try encodeChannelSetHeader(
                 input: $0,
-                channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
+                channelMaskBitCount: publicChannelMaskBitCount,
                 segmentSizeBitCount: segmentSizeBitCount,
                 segmentSampleCount: segmentSampleCount,
                 scalableLSBs: scalableLSBs
@@ -450,7 +468,7 @@ struct XLLEncoder: Sendable {
                 segmentSizeBitCount: segmentSizeBitCount,
                 segmentCount: segmentCount,
                 segmentSampleCount: segmentSampleCount,
-                channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
+                channelMaskBitCount: publicChannelMaskBitCount,
                 channelSetCount: channelSets.count,
                 scalableLSBs: scalableLSBs
             ).count
@@ -478,7 +496,7 @@ struct XLLEncoder: Sendable {
             segmentSizeBitCount: segmentSizeBitCount,
             segmentCount: segmentCount,
             segmentSampleCount: segmentSampleCount,
-            channelMaskBitCount: pcm.format.layout.xllSpeakerMaskBitCount,
+            channelMaskBitCount: publicChannelMaskBitCount,
             channelSetCount: channelSets.count,
             scalableLSBs: scalableLSBs
         )
@@ -518,6 +536,7 @@ struct XLLEncoder: Sendable {
 
     private func validatePrivateExtension(_ privateExtension: Data) throws {
         guard !privateExtension.isEmpty else { return }
+        if DTSXFixedPrivateFrame.format(of: privateExtension) != nil { return }
         if DTSXDynamicPrivateFrame.isDynamic(privateExtension) {
             _ = try DTSXDynamicPrivateFrame.parse(privateExtension)
             return
@@ -552,11 +571,11 @@ struct XLLEncoder: Sendable {
     /// grammar as the mono/quartet groups. The five-component form reserves
     /// TFC separately from the four moving objects.
     func encodeObjectChannelSet(
-        planes: [[Int32]], segmentCount: Int
+        planes: [[Int32]], segmentCount: Int, fixedSpeakerMapping: Bool = false, minimumNavigationWidth: Int = 8
     ) throws -> DTSIMAXBareChannelSet {
-        guard [1,4,5].contains(planes.count), [2, 4, 8].contains(segmentCount),
+        guard (1...5).contains(planes.count), [2, 4, 8].contains(segmentCount),
               planes.allSatisfy({ $0.count == 512 && $0.allSatisfy { (-8_388_608...8_388_607).contains(Int($0)) } }) else {
-            throw DTSError.invalidArgument("Object audio group requires 1, 4 or 5 signed-24 planes and 2/4/8 segments")
+            throw DTSError.invalidArgument("Object audio group requires 1...5 signed-24 planes and 2/4/8 segments")
         }
         let channels = planes.count
         let samples = 512 / segmentCount
@@ -564,7 +583,7 @@ struct XLLEncoder: Sendable {
             planes: planes, speakerMask: UInt64((1 << channels) - 1),
             residualChannelMask: UInt64((1 << channels) - 1), primary: true,
             hierarchical: false, downmixScaleCodes: [], downmixCoefficientCodes: [],
-            decorrelationEnabled: false, originalOrder: Array(0..<channels),
+            decorrelationEnabled: fixedSpeakerMapping, originalOrder: Array(0..<channels),
             decorrelationCoefficients: Array(repeating: 0, count: channels / 2),
             adaptivePredictionOrders: Array(repeating: 0, count: channels),
             adaptiveReflectionCoefficientIndices: Array(repeating: [], count: channels),
@@ -572,7 +591,7 @@ struct XLLEncoder: Sendable {
             scalableLSBWidths: Array(repeating: 0, count: channels),
             scalableLSBPlanes: Array(repeating: Array(repeating: 0, count: 512), count: channels)
         )
-        let predicted = applyingPrediction(to: [input], segmentSampleCount: samples)[0]
+        let predicted = applyingPrediction(to: [input], segmentSampleCount: samples,preservesRouting: fixedSpeakerMapping)[0]
         let modes = selectEntropyModes(
             dtsPlanes: predicted.planes, adaptivePredictionOrders: predicted.adaptivePredictionOrders,
             segmentCount: segmentCount, segmentSampleCount: samples
@@ -586,16 +605,18 @@ struct XLLEncoder: Sendable {
                 scalableLSBPlanes: predicted.scalableLSBPlanes
             )
         }
-        let width = max(8, requiredUnsignedBitCount(maximumValue: (segments.map(\.count).max() ?? 1) - 1))
+        let width = max(8, minimumNavigationWidth, requiredUnsignedBitCount(maximumValue: (segments.map(\.count).max() ?? 1) - 1))
         let header = try encodeChannelSetHeader(
             input: predicted, channelMaskBitCount: channels, segmentSizeBitCount: width,
-            segmentSampleCount: samples, scalableLSBs: false, alternateMapping: true
+            segmentSampleCount: samples, scalableLSBs: fixedSpeakerMapping, alternateMapping: true,
+            alternateMappingBitCount: fixedSpeakerMapping ? 1 : 2
         )
         return DTSIMAXBareChannelSet(
             header: header, segments: segments, channelCount: channels,
             segmentSampleCount: samples, requiredNavigationWidth: width,
             predictionOrders: predicted.adaptivePredictionOrders,
-            fixedPredictionOrders: predicted.fixedPredictionOrders
+            fixedPredictionOrders: predicted.fixedPredictionOrders,
+            fixedHeaderNavigationWidth: fixedSpeakerMapping ? width : nil
         )
     }
 
@@ -803,13 +824,30 @@ struct XLLEncoder: Sendable {
                 )
             ])
         }
-        let planes = try pcm.reorderedPlanes(pcm.format.layout.waveToDTSPlaneOrder)
+        var planes = try pcm.reorderedPlanes(pcm.format.layout.waveToDTSPlaneOrder)
+        let fixedCoreResidual = forcesScalableLSBs && pcm.format.layout == .fiveOneSide && coreAssociationPolicy == .coreResidual
+        if fixedCoreResidual {
+            guard let coreReconstruction, coreReconstruction.format == pcm.format,
+                  coreReconstruction.sampleCount == pcm.sampleCount else {
+                throw DTSError.invalidArgument("Fixed 5.1 DTS:X requires aligned Core reconstruction")
+            }
+            let core = try coreReconstruction.reorderedPlanes(pcm.format.layout.waveToDTSPlaneOrder)
+            for channel in planes.indices {
+                for sample in planes[channel].indices {
+                    let value = Int64(planes[channel][sample])-Int64(core[channel][sample])
+                    guard (-8_388_608...8_388_607).contains(value) else {
+                        throw DTSError.malformed("Fixed 5.1 Core residual exceeds signed 24-bit precision")
+                    }
+                    planes[channel][sample] = Int32(value)
+                }
+            }
+        }
         return applyingPrediction(to: [ChannelSetInput(
             planes: planes,
             speakerMask: UInt64(pcm.format.layout.xllSpeakerMask),
-            residualChannelMask: UInt64((1 << pcm.format.layout.channelCount) - 1),
+            residualChannelMask: fixedCoreResidual ? 0 : UInt64((1 << pcm.format.layout.channelCount) - 1),
             primary: true,
-            hierarchical: false,
+            hierarchical: fixedCoreResidual,
             downmixScaleCodes: [],
             downmixCoefficientCodes: [],
             decorrelationEnabled: false,
@@ -932,7 +970,7 @@ struct XLLEncoder: Sendable {
     }
 
     private func applyingPrediction(
-        to inputs: [ChannelSetInput], segmentSampleCount: Int? = nil
+        to inputs: [ChannelSetInput], segmentSampleCount: Int? = nil, preservesRouting: Bool = false
     ) -> [ChannelSetInput] {
         // Auto retains unpredicted channel-set input until each partition is
         // scored. Other modes preserve their existing selection behavior.
@@ -977,7 +1015,7 @@ struct XLLEncoder: Sendable {
                     hierarchical: input.hierarchical,
                     downmixScaleCodes: input.downmixScaleCodes,
                     downmixCoefficientCodes: input.downmixCoefficientCodes,
-                    decorrelationEnabled: false,
+                    decorrelationEnabled: preservesRouting && input.decorrelationEnabled,
                     originalOrder: Array(0..<directPlanes.count),
                     decorrelationCoefficients: Array(
                         repeating: 0,
@@ -1565,7 +1603,8 @@ struct XLLEncoder: Sendable {
         segmentSizeBitCount: Int,
         segmentSampleCount: Int,
         scalableLSBs: Bool,
-        alternateMapping: Bool = false
+        alternateMapping: Bool = false,
+        alternateMappingBitCount: Int = 2
     ) throws -> Data {
         let channels = input.planes.count
         var writer = BitWriter()
@@ -1582,7 +1621,9 @@ struct XLLEncoder: Sendable {
         if alternateMapping {
             // The D0 audio groups replace the public speaker mapping with
             // two profile bits. Prediction and entropy retain XLL grammar.
-            try writer.write(0, bitCount: 2, field: "IMAX channel-set mapping")
+            // Short, inherited fixed-speaker groups omit the channel mask
+            // with one flag. Independent object/IMAX groups use two bits.
+            try writer.write(0, bitCount: alternateMappingBitCount, field: "Private channel-set mapping")
         } else {
         // bOne2OneMapChannels2Speakers is true in the enclosing asset descriptor.
         try writer.write(input.primary ? 1 : 0, bitCount: 1, field: "bPrimaryChSet")

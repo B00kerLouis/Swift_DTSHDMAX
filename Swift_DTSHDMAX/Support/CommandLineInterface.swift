@@ -54,7 +54,8 @@ public enum DTSHDMACommandLine {
                 encodeMode: options.encodeMode,
                 dtsxVision: options.dtsxVision,
                 objectMode: options.objectMode,
-                stemsDirectory: options.stemsDirectory
+                stemsDirectory: options.stemsDirectory,
+                channelFormat: options.channelFormat
             ) { completed, total in
                 progress(Int(completed), Int(total))
             }
@@ -64,6 +65,10 @@ public enum DTSHDMACommandLine {
 #if DEBUG
         let values = Array(arguments.dropFirst())
         switch command {
+        case "verify-dtsx-channel-formats":
+            guard values.isEmpty else { throw DTSError.invalidArgument("verify-dtsx-channel-formats takes no arguments") }
+            print(try jsonString(DTSXChannelFormatVerifier.verify()))
+
         case "verify-object-modes":
             guard values.isEmpty else { throw DTSError.invalidArgument("verify-object-modes takes no arguments") }
             print(try jsonString(DTSObjectModeVerifier.verify()))
@@ -2356,7 +2361,7 @@ public enum DTSHDMACommandLine {
     static func parseAutomaticOptions(
         _ arguments: [String]
     ) throws -> (input: URL, output: URL, frameRate: DTSFrameRate?, encodeMode: DTSEncodeMode,
-                 dtsxVision: DTSXVision, objectMode: DTSObjectMode, stemsDirectory: URL?) {
+                 dtsxVision: DTSXVision, objectMode: DTSObjectMode, stemsDirectory: URL?, channelFormat: DTSXChannelFormat) {
         var input: URL?
         var output: URL?
         var frameRate: DTSFrameRate?
@@ -2364,16 +2369,21 @@ public enum DTSHDMACommandLine {
         var dtsxVision: DTSXVision?
         var objectMode: DTSObjectMode?
         var stemsDirectory: URL?
+        var channelFormat: DTSXChannelFormat?
         var index = 0
         while index < arguments.count {
             let option = arguments[index]
-            guard ["-i", "-o", "--frame-rate", "--encode-mode", "--dtsx-vision", "--object-mode", "--stems-directory"].contains(option) else {
+            guard ["-i", "-o", "--frame-rate", "--encode-mode", "--dtsx-vision", "--object-mode", "--stems-directory", "--set-channel-format"].contains(option) else {
                 throw DTSError.invalidArgument(
                     "unknown option \(option); use -i INPUT -o OUTPUT [--object-mode dynamic|channelbase] [--frame-rate VALUE] [--encode-mode auto|standard] [--dtsx-vision 1|2]"
                 )
             }
             guard index + 1 < arguments.count else {
                 throw DTSError.invalidArgument("\(option) requires a value")
+            }
+            if option == "--set-channel-format" {
+                guard channelFormat == nil else { throw DTSError.invalidArgument("--set-channel-format may be specified only once") }
+                channelFormat = try DTSXChannelFormat(argument: arguments[index+1]); index += 2; continue
             }
             if option == "--object-mode" {
                 guard objectMode == nil else { throw DTSError.invalidArgument("--object-mode may be specified only once") }
@@ -2422,8 +2432,15 @@ public enum DTSHDMACommandLine {
             throw DTSError.invalidArgument("automatic product output must use the .dtshd extension")
         }
         let selectedVision = dtsxVision ?? .sevenOneFour
-        return (input, output, frameRate, encodeMode ?? .auto, selectedVision,
-                objectMode ?? DTSObjectMode.defaultMode(for: selectedVision), stemsDirectory)
+        if channelFormat != nil && selectedVision != .sevenOneFour {
+            throw DTSError.invalidArgument("--set-channel-format requires --dtsx-vision 1; vision 2 is reserved for IMAX")
+        }
+        let selectedFormat = channelFormat ?? .sevenOneFour
+        let selectedMode = objectMode ?? (selectedFormat == .sevenOneFour ? DTSObjectMode.defaultMode(for: selectedVision) : .channelbase)
+        guard selectedFormat == .sevenOneFour || selectedMode == .channelbase else {
+            throw DTSError.invalidArgument("Additional fixed channel formats require --object-mode channelbase")
+        }
+        return (input, output, frameRate, encodeMode ?? .auto, selectedVision,selectedMode,stemsDirectory,selectedFormat)
     }
 
     private static func productOutputURL(_ path: String) throws -> URL {
@@ -2439,7 +2456,7 @@ public enum DTSHDMACommandLine {
         Native Swift 6 DTS HDMA / DTS:X HDMA research encoder
 
         Primary usage:
-          hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
+          hdmax -i INPUT.wav|INPUT.atmos|ADM.wav|IAB.mxf -o OUTPUT.dtshd [--object-mode dynamic|channelbase] [--dtsx-vision 1|2] [--set-channel-format FORMAT] [--encode-mode auto|standard] [--frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60]
 
         Object modes for Atmos inputs (optional):
           dynamic     -> 7.1.4 + four moving aggregates (vision 1)
@@ -2447,6 +2464,8 @@ public enum DTSHDMACommandLine {
           channelbase -> established fixed 7.1.4 (vision 1) or IMAX 12.1 (vision 2)
           Default: dynamic for vision 1; channelbase for vision 2.
           Explicit --object-mode overrides that default for either vision.
+          --set-channel-format 7.1.4|7.1.3|7.1.2F|7.1.2S|5.1.5|5.1.4|5.1.3 defaults to 7.1.4.
+          Additional formats select channelbase and require vision 1. F uses LFH/RFH; S uses LHS/RHS.
           Ordinary PCM has no object metadata and retains its channel presentation.
           --stems-directory PATH exports dynamic Atmos QC PCM, folds and positions.
 
@@ -2551,6 +2570,7 @@ public enum DTSHDMACommandLine {
           hdmax verify-xllx-official-inverse INPUT_INDEX.json INPUT.xllx OUTPUT.json [MAX_FRAMES] [FRAME_OFFSET]
           hdmax verify-dtsx-native-encoder
           hdmax verify-encode-modes
+          hdmax verify-dtsx-channel-formats
           hdmax verify-object-modes
           hdmax encode-dtsx-native-wave INPUT_7.1.4.wav OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
           hdmax encode-dtsx-native-source SOURCE_DTSX_DIRECTORY OUTPUT.dtshd [SOURCE_FRAME_COUNT] --frame-rate 23.976|24|25|29.97|30|47.952|48|50|59.94|60
