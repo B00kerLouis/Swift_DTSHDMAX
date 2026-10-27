@@ -65,7 +65,8 @@ typedef struct hdmaxdec_frame {
    * reset or destroy. Each plane has sample_count entries. */
   const int32_t *planes[HDMAXDEC_MAX_CHANNELS];
   uint32_t
-      immersive; /* 0: public bed, 1: four heights, 2: TFC + four heights */
+      immersive; /* 0: public bed, 1: standard heights/object presentation,
+                    2: IMAX TFC + four heights/object presentation */
 } hdmaxdec_frame;
 typedef struct hdmaxdec_decoder hdmaxdec_decoder;
 HDMAXDEC_API hdmaxdec_decoder *hdmaxdec_create(void);
@@ -97,8 +98,9 @@ HDMAXDEC_API int hdmaxdec_file_seek_progress(hdmaxdec_file *, uint64_t sample,
 HDMAXDEC_API int hdmaxdec_file_measure(hdmaxdec_file *, hdmaxdec_progress,
                                        void *);
 /* Optional session-only seek acceleration. Scan AU headers and reconstruct
- * Core history, retaining at most 4096 states (under 64 MiB), never programme
- * PCM. Existing reads/pending PCM are preserved, including on cancellation.
+ * Core and continuous object-presentation history, retaining at most 4096
+ * states (under 64 MiB), never programme PCM. Existing reads/pending PCM are
+ * preserved, including on cancellation.
  * Subsequent seeks restore the nearest state and replay only the local span.
  * Without preparation, seeking retains exact replay from the stream start. */
 HDMAXDEC_API int hdmaxdec_file_prepare_seek(hdmaxdec_file *, hdmaxdec_progress,

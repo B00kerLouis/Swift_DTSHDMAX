@@ -1,5 +1,6 @@
 // Copyright (c) 2026 B00kerLouis. SPDX-License-Identifier: LGPL-2.1-or-later
 #include "fixtures/layered_vectors.hpp"
+#include "fixtures/profiles_vectors.hpp"
 #include "fixtures/public_vectors.hpp"
 #include "hdmaxdec.h"
 #include "internal.hpp"
@@ -266,6 +267,198 @@ void malformed() {
   check(hd::asr(-3, 1) == -2 && hd::wrap(INT64_C(0xffffffff)) == -1,
         "portable integer arithmetic");
 }
+int sampleValue(int channel, int sample) {
+  return ((sample % 67) - 33) * (channel + 1) * 113;
+}
+void profile(const char *encoded, int id, bool dynamic) {
+  auto bytes = profileBytes(encoded);
+  auto *d = hdmaxdec_create();
+  check(d, "profile context");
+  int timeline = -1024;
+  size_t at = 0;
+  int bed = id >= 3 && !dynamic ? 6 : 8;
+  int records = dynamic ? id : 0;
+  std::array<std::array<double, 12>, 4> image{}, target{};
+  for (int slot = 0; slot < 4; ++slot)
+    image[slot] = hd::objectImage(std::array<int, 4>{100, 140, 20, 220}[slot],
+                                  60 + slot * 10);
+  int maximum = 0;
+  while (at < bytes.size()) {
+    hdmaxdec_frame f{};
+    size_t used = 0;
+    check(hdmaxdec_decode(d, bytes.data() + at, bytes.size() - at, &used, &f) ==
+              HD_OK,
+          hdmaxdec_error(d));
+    check(used > 0 && f.sample_count == 512, "profile AU closure");
+    check(f.layout.count ==
+              unsigned(dynamic
+                           ? (records == 5 ? 13 : 12)
+                           : bed + std::array<int, 6>{3, 2, 2, 5, 4, 3}[id]),
+          "profile speaker count");
+    int frame = std::max(0, timeline / 512);
+    for (int slot = 0; slot < 4; ++slot)
+      target[slot] = hd::objectImage(
+          std::array<int, 4>{100, 140, 20, 220}[slot] + frame * 3,
+          60 + slot * 10);
+    for (int i = 0; i < 512; ++i) {
+      int sample = timeline + i;
+      bool audible = sample >= 0 && sample < 1025;
+      std::array<double, 12> rendered{};
+      if (dynamic)
+        for (int slot = 0; slot < 4; ++slot) {
+          int value = audible ? sampleValue(slot + 13, sample) : 0;
+          int64_t numerator = int64_t(value) * 32768;
+          constexpr int gain = 23170;
+          int64_t coded = numerator >= 0 ? (numerator + gain / 2) / gain
+                                         : -((-numerator + gain / 2) / gain);
+          for (int c = 0; c < 12; ++c) {
+            image[slot][c] +=
+                (target[slot][c] - image[slot][c]) * 0.001098198738079148;
+            rendered[c] += double(coded) * gain / 32768 * image[slot][c];
+          }
+        }
+      for (unsigned c = 0; c < f.layout.count; ++c) {
+        int source = -1;
+        switch (f.layout.speakers[c]) {
+        case HD_FL:
+          source = 0;
+          break;
+        case HD_FR:
+          source = 1;
+          break;
+        case HD_FC:
+          source = 2;
+          break;
+        case HD_LFE:
+          source = 3;
+          break;
+        case HD_SL:
+          source = 4;
+          break;
+        case HD_SR:
+          source = 5;
+          break;
+        case HD_BL:
+          source = 6;
+          break;
+        case HD_BR:
+          source = 7;
+          break;
+        case HD_TFL:
+        case HD_TSL:
+          source = bed;
+          break;
+        case HD_TFR:
+        case HD_TSR:
+          source = bed + 1;
+          break;
+        case HD_TBC:
+          source = bed + 2;
+          break;
+        case HD_TFC:
+          source = dynamic ? 12 : bed + 2;
+          break;
+        case HD_TBL:
+          source = bed + (id == 3 && !dynamic ? 3 : 2);
+          break;
+        case HD_TBR:
+          source = bed + (id == 3 && !dynamic ? 4 : 3);
+          break;
+        default:
+          check(false, "unexpected profile speaker");
+        }
+        int expected = audible ? sampleValue(source, sample) : 0;
+        if (dynamic && source < 12)
+          expected += int(std::round(rendered[source]));
+        // Raw AUs include codec priming; compare the exact source interval.
+        if (audible)
+          maximum = std::max(maximum, std::abs(f.planes[c][i] - expected));
+      }
+    }
+    // All new layouts must also support a conventional monitoring downmix.
+    hdmaxdec_layout stereo{};
+    check(!hdmaxdec_layout_named("2.0", &stereo), "stereo layout");
+    float matrix[64];
+    check(!hdmaxdec_frame_mix_matrix(&f, &stereo, matrix),
+          "profile stereo fold");
+    timeline += 512;
+    at += used;
+  }
+  if (maximum > (dynamic ? 2 : 0))
+    std::fprintf(stderr, "Profile %d dynamic=%d error=%d\n", id, int(dynamic),
+                 maximum);
+  check(maximum <= (dynamic ? 2 : 0),
+        "profile reference PCM, permutation and continuous image");
+  check(timeline == 1536, "profile priming and padded tail");
+  // Exercise the private parser with a valid payload but a different enclosing
+  // NAVI width, including the all-zero priming frame and its zero LSB fields.
+  hd::Bits coreHeader(bytes.data(), 10);
+  coreHeader.skip(46);
+  size_t extension = (size_t(coreHeader.get(14) + 1) + 3) & ~size_t(3);
+  hd::Bits extensionHeader(bytes.data() + extension, 10);
+  extensionHeader.skip(42);
+  bool wide = extensionHeader.get(1);
+  size_t header = size_t(extensionHeader.get(wide ? 12 : 8) + 1);
+  size_t frame = size_t(extensionHeader.get(wide ? 20 : 16) + 1);
+  const uint8_t *xll = bytes.data() + extension + header;
+  auto x = hd::decodeXLL(xll, frame - header);
+  hd::Audio dummy;
+  dummy.layout.count = unsigned(bed);
+  hdmaxdec_speaker positions[] = {HD_FL, HD_FR, HD_FC, HD_LFE,
+                                  HD_BL, HD_BR, HD_SL, HD_SR};
+  for (int c = 0; c < bed; ++c)
+    dummy.layout.speakers[c] = positions[bed == 6 && c >= 4 ? c + 2 : c];
+  dummy.planes = hd::Planes(size_t(bed), std::vector<int32_t>(512));
+  hd::Presentation presentation;
+  x.width = std::max(8, x.width) + 1;
+  bool rejected = false;
+  try {
+    hd::decodePrivate(dummy, x, xll + x.privateOffset,
+                      frame - header - x.privateOffset, presentation);
+  } catch (const hd::Error &) {
+    rejected = true;
+  }
+  check(rejected, "private group must use the enclosing NAVI width");
+  hdmaxdec_reset(d);
+  size_t used = 99;
+  hdmaxdec_frame f{};
+  check(hdmaxdec_decode(d, bytes.data(), 10, &used, &f) == HD_NEED_MORE &&
+            !used,
+        "profile truncation consumes nothing");
+  // Corrupt an ExSS header; the Core transaction must not be committed.
+  auto damaged = bytes;
+  check(extension + 8 < damaged.size(), "profile ExSS fixture");
+  damaged[extension + 6] ^= 1;
+  check(hdmaxdec_decode(d, damaged.data(), damaged.size(), &used, &f) < 0 &&
+            !used,
+        "profile CRC rejection");
+  check(hdmaxdec_decode(d, bytes.data(), bytes.size(), &used, &f) == HD_OK,
+        "profile failed AU preserves history");
+  hdmaxdec_destroy(d);
+}
+void profiles() {
+  const char *fixed[2][6] = {{fixed_0_auto, fixed_1_auto, fixed_2_auto,
+                              fixed_3_auto, fixed_4_auto, fixed_5_auto},
+                             {fixed_0_standard, fixed_1_standard,
+                              fixed_2_standard, fixed_3_standard,
+                              fixed_4_standard, fixed_5_standard}};
+  for (auto &mode : fixed)
+    for (int id = 0; id < 6; ++id)
+      profile(mode[id], id, false);
+  profile(dynamic_4_auto, 4, true);
+  profile(dynamic_4_standard, 4, true);
+  profile(dynamic_5_auto, 5, true);
+  profile(dynamic_5_standard, 5, true);
+  for (const auto &anchor : std::array<std::array<int, 3>, 5>{{{100, 60, 0},
+                                                               {140, 60, 1},
+                                                               {120, 60, 2},
+                                                               {90, 90, 8},
+                                                               {30, 90, 10}}}) {
+    auto image = hd::objectImage(anchor[0], anchor[1]);
+    check(std::abs(image[size_t(anchor[2])] - 1) < 1e-6,
+          "speaker image unity anchor");
+  }
+}
 void programme(const char *path) {
   std::unique_ptr<hdmaxdec_file, decltype(&hdmaxdec_file_close)> f(
       hdmaxdec_file_open(path), hdmaxdec_file_close);
@@ -304,6 +497,7 @@ int main(int argc, char **argv) {
   vector(fiveone, std::size(fiveone), 6);
   vector(sevenone, std::size(sevenone), 8);
   layered();
+  profiles();
   layouts();
   malformed();
   for (int i = 1; i < argc; ++i)

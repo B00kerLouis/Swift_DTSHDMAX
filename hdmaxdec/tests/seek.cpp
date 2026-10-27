@@ -1,5 +1,6 @@
 // Copyright (c) 2026 B00kerLouis. SPDX-License-Identifier: LGPL-2.1-or-later
 #include "fixtures/layered_vectors.hpp"
+#include "fixtures/profiles_vectors.hpp"
 #include "fixtures/public_vectors.hpp"
 #include "hdmaxdec.h"
 #include <algorithm>
@@ -24,8 +25,10 @@ struct Range {
   std::vector<std::vector<int32_t>> planes;
 };
 static void verify(const fs::path &path) {
-  File reference(hdmaxdec_file_open(path.u8string().c_str()), hdmaxdec_file_close);
-  File indexed(hdmaxdec_file_open(path.u8string().c_str()), hdmaxdec_file_close);
+  File reference(hdmaxdec_file_open(path.u8string().c_str()),
+                 hdmaxdec_file_close);
+  File indexed(hdmaxdec_file_open(path.u8string().c_str()),
+               hdmaxdec_file_close);
   check(reference && indexed, "seek fixture open");
   check(hdmaxdec_file_measure(reference.get(), nullptr, nullptr) == HD_OK &&
             hdmaxdec_file_measure(indexed.get(), nullptr, nullptr) == HD_OK,
@@ -60,18 +63,21 @@ static void verify(const fs::path &path) {
       uint64_t end = std::min(cursor + frame.sample_count, r.end);
       if (begin < end)
         for (unsigned c = 0; c < layout.count; ++c)
-          r.planes[c].insert(r.planes[c].end(), frame.planes[c] + begin - cursor,
-                            frame.planes[c] + end - cursor);
+          r.planes[c].insert(r.planes[c].end(),
+                             frame.planes[c] + begin - cursor,
+                             frame.planes[c] + end - cursor);
     }
     cursor += frame.sample_count;
   }
-  check(status == HD_NEED_MORE && cursor == total, "sequential reference closure");
+  check(status == HD_NEED_MORE && cursor == total,
+        "sequential reference closure");
   check(hdmaxdec_file_seek(indexed.get(), 17) == HD_OK, "pending partial AU");
   unsigned callbacks = 0;
   auto cancel = [](void *p, uint64_t, uint64_t) -> int {
     return ++*static_cast<unsigned *>(p) < 16;
   };
-  check(hdmaxdec_file_prepare_seek(indexed.get(), cancel, &callbacks) == HD_CANCELLED,
+  check(hdmaxdec_file_prepare_seek(indexed.get(), cancel, &callbacks) ==
+            HD_CANCELLED,
         "cancel partial history preparation");
   check(hdmaxdec_file_prepare_seek(indexed.get(), nullptr, nullptr) == HD_OK,
         "prepare full Core history index");
@@ -87,14 +93,15 @@ static void verify(const fs::path &path) {
     auto begin = std::chrono::steady_clock::now();
     check(hdmaxdec_file_seek(indexed.get(), r.start) == HD_OK, "indexed seek");
     worst = std::max(worst, std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - begin).count());
+                                std::chrono::steady_clock::now() - begin)
+                                .count());
     uint64_t done = 0;
     while (done < r.end - r.start) {
       check(hdmaxdec_file_read(indexed.get(), &frame) == HD_OK &&
                 frame.layout.count == layout.count,
             "indexed PCM dimensions");
-      unsigned count = unsigned(std::min<uint64_t>(frame.sample_count,
-                                                  r.end - r.start - done));
+      unsigned count = unsigned(
+          std::min<uint64_t>(frame.sample_count, r.end - r.start - done));
       for (unsigned c = 0; c < layout.count; ++c)
         for (unsigned i = 0; i < count; ++i)
           check(frame.planes[c][i] == r.planes[c][size_t(done) + i],
@@ -115,8 +122,9 @@ int main(int argc, char **argv) {
     return 0;
   }
   auto dir = fs::temp_directory_path() /
-             ("hdmaxdec-seek-" + std::to_string(
-                 std::chrono::steady_clock::now().time_since_epoch().count()));
+             ("hdmaxdec-seek-" +
+              std::to_string(
+                  std::chrono::steady_clock::now().time_since_epoch().count()));
   fs::create_directories(dir);
   auto fixture = [&](const char *name, const uint8_t *bytes, size_t size) {
     auto path = dir / name;
@@ -131,5 +139,9 @@ int main(int argc, char **argv) {
   fixture("core.dts", core_vector, sizeof(core_vector));
   fixture("public.dts", sevenone, sizeof(sevenone));
   fixture("private.dts", private_sine, sizeof(private_sine));
+  auto objects = profileBytes(dynamic_4_auto);
+  fixture("四对象.dts", objects.data(), objects.size());
+  auto imax = profileBytes(dynamic_5_auto);
+  fixture("imax-objects.dts", imax.data(), imax.size());
   fs::remove_all(dir);
 }

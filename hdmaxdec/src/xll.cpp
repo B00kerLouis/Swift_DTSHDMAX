@@ -116,7 +116,7 @@ static void entropy(Bits &r, Set &s, Entropy &e, int seg, int samples) {
   }
 }
 static Set channelHeader(Bits &r, XLL &x, int index, int lower, int maskBits,
-                         bool alternate) {
+                         bool alternate, bool fixedMapping) {
   size_t start = r.pos / 8;
   size_t end = start + size_t(r.get(10) + 1);
   r.checkCRC(start, end);
@@ -135,8 +135,8 @@ static Set channelHeader(Bits &r, XLL &x, int index, int lower, int maskBits,
               !replacement,
           "unsupported XLL audio characteristics", HD_UNSUPPORTED);
   if (alternate) {
-    require((s.count == 1 || s.count == 4) &&
-                s.residual == ((uint64_t(1) << s.count) - 1) && !r.get(2),
+    require(s.residual == ((uint64_t(1) << s.count) - 1) &&
+                !r.get(fixedMapping ? 1 : 2),
             "invalid private group map");
   } else {
     bool primary = r.get(1);
@@ -185,6 +185,10 @@ static Set channelHeader(Bits &r, XLL &x, int index, int lower, int maskBits,
         s.decorCoeff[p] = r.linear(7);
   }
   predictionHeader(r, s);
+  if (alternate)
+    for (int c = 0; c < s.count; ++c)
+      require(s.adaptive[c] <= 10, "private predictor order exceeds profile",
+              HD_UNSUPPORTED);
   if (x.scalable) {
     uint64_t bytes = r.read(unsigned(x.width));
     require(bytes <= r.size, "LSB section exceeds frame");
@@ -258,12 +262,14 @@ static void bandData(Bits &r, XLL &x, std::vector<Set> &sets,
     }
   }
 }
-std::vector<Set> decodeGroups(Bits &r, XLL &x, bool alternate) {
+std::vector<Set> decodeGroups(Bits &r, XLL &x, bool alternate,
+                              bool fixedMapping) {
   int lower = 0;
   std::vector<Set> sets;
   int maskBits = int(x.privateOffset);
   for (size_t j = 0; j < x.sets.size(); ++j) {
-    sets.push_back(channelHeader(r, x, int(j), lower, maskBits, alternate));
+    sets.push_back(
+        channelHeader(r, x, int(j), lower, maskBits, alternate, fixedMapping));
     lower += sets.back().count;
   }
   size_t start = r.pos / 8;
@@ -279,7 +285,7 @@ std::vector<Set> decodeGroups(Bits &r, XLL &x, bool alternate) {
   r.skip(16);
   r.checkCRC(start, r.pos / 8);
   bandData(r, x, sets, navi);
-  x.privateOffset = (r.pos / 8 + 3) & ~size_t(3);
+  x.privateOffset = fixedMapping ? r.pos / 8 : (r.pos / 8 + 3) & ~size_t(3);
   r.zeros(x.privateOffset * 8);
   return sets;
 }
@@ -436,12 +442,39 @@ Audio assemble(const XLL &x, const Audio *core) {
   }
   std::vector<std::pair<hdmaxdec_speaker, std::vector<int32_t>>> channels;
   for (const Set &s : x.sets) {
-    require(s.residual == ((uint64_t(1) << s.count) - 1),
+    bool residual = s.residual != ((uint64_t(1) << s.count) - 1);
+    require(!residual ||
+                (x.sets.size() == 1 && s.count == 6 && s.mask == 0x3f && core),
             "unsupported residual hierarchy", HD_UNSUPPORTED);
     int c = 0;
     for (int b = 0; b < 64; ++b)
-      if (s.mask & (uint64_t(1) << b))
-        channels.push_back({speaker(b), s.planes[c++]});
+      if (s.mask & (uint64_t(1) << b)) {
+        auto plane = s.planes[c];
+        if (!(s.residual & (uint64_t(1) << c))) {
+          auto pos = speaker(b);
+          uint32_t index = 0;
+          while (index < core->layout.count &&
+                 core->layout.speakers[index] != pos)
+            ++index;
+          require(index < core->layout.count &&
+                      core->planes[index].size() == plane.size(),
+                  "Core/XLL primary timeline or speaker mismatch");
+          int assembly = x.fixedLSB ? x.fixedLSB
+                                    : s.lsb[c] + s.adjust[c] -
+                                          int(s.lsb[c] > 0 && s.adjust[c] > 0);
+          int shift = s.storage - s.pcm + assembly;
+          require(shift >= 0 && shift <= 30, "invalid Core assembly shift");
+          for (size_t i = 0; i < plane.size(); ++i) {
+            int32_t v = clip(asr(int64_t(core->planes[index][i]) +
+                                     (shift ? INT64_C(1) << (shift - 1) : 0),
+                                 unsigned(shift)));
+            plane[i] =
+                add(plane[i], wrap(int64_t(v) * (INT64_C(1) << assembly)));
+          }
+        }
+        channels.push_back({speaker(b), std::move(plane)});
+        ++c;
+      }
   }
   std::sort(channels.begin(), channels.end(),
             [](const auto &l, const auto &r) { return l.first < r.first; });
@@ -546,13 +579,360 @@ static Planes standardPrivate(const uint8_t *p, size_t n, const XLL &x) {
   }
   return height;
 }
-void decodePrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n) {
+// Fixed type-2 declarations contain speaker identities and compatibility
+// matrices only. Audio is decoded from the following scalable-LSB group.
+struct FixedProfile {
+  std::vector<uint8_t> metadata;
+  int bed;
+  std::vector<hdmaxdec_speaker> heights;
+  std::vector<std::vector<std::pair<hdmaxdec_speaker, int>>> folds;
+};
+static const std::vector<FixedProfile> &fixedProfiles() {
+  static const std::vector<FixedProfile> profiles = {
+      {{2, 0, 8, 0x50, 0x28, 0x4b, 0xfa, 0x69, 0x0d, 0x62, 2, 0xfa, 2, 0xdc,
+        0x13, 0x73, 0x0c, 0x71},
+       8,
+       {HD_TFL, HD_TFR, HD_TBC},
+       {{{HD_FL, 23170}}, {{HD_FR, 23170}}, {{HD_BL, 16423}, {HD_BR, 16423}}}},
+      {{2, 0, 8, 0x50, 0x28, 0x4b, 0xfa, 0x50, 0xd6, 0x20, 0x2f, 0xa0, 0x2d,
+        0xc1, 0x37},
+       8,
+       {HD_TFL, HD_TFR},
+       {{{HD_FL, 23170}}, {{HD_FR, 23170}}}},
+      {{2, 0, 8, 0x50, 0x28, 0x4b, 0xfa, 0x65, 9, 0x62, 2, 0xfa, 0x40, 0xde, 3,
+        0x70},
+       8,
+       {HD_TSL, HD_TSR},
+       {{{HD_SL, 23170}}, {{HD_SR, 23170}}}},
+      {{2, 0, 8, 0x50, 0x0f, 0xfa, 0x70, 0x15, 0xe1, 2, 0xfa, 0x0b, 0x71, 0x37,
+        7, 0x72, 0x37, 0x43, 0x70},
+       6,
+       {HD_TFL, HD_TFC, HD_TFR, HD_TBL, HD_TBR},
+       {{{HD_FL, 23170}},
+        {{HD_FC, 23170}},
+        {{HD_FR, 23170}},
+        {{HD_SL, 23170}},
+        {{HD_SR, 23170}}}},
+      {{2, 0, 8, 0x50, 0x0f, 0xfa, 0x70, 5, 0xe1, 2, 0xfa, 0x0b, 0x71, 0x37,
+        0x23, 0x74, 0x37},
+       6,
+       {HD_TFL, HD_TFR, HD_TBL, HD_TBR},
+       {{{HD_FL, 23170}},
+        {{HD_FR, 23170}},
+        {{HD_SL, 23170}},
+        {{HD_SR, 23170}}}},
+      {{2, 0, 8, 0x50, 0x0f, 0xfa, 0x68, 5, 0xe1, 2, 0xfa, 0x0b, 0x71, 0x37,
+        0x63, 0x1c, 0x40},
+       6,
+       {HD_TFL, HD_TFR, HD_TBC},
+       {{{HD_FL, 23170}}, {{HD_FR, 23170}}, {{HD_SL, 16423}, {HD_SR, 16423}}}}};
+  return profiles;
+}
+static bool fixedPrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n,
+                         const std::vector<size_t> &metadata,
+                         const std::vector<size_t> &groups) {
+  for (const auto &profile : fixedProfiles()) {
+    size_t bytes = profile.metadata.size() + 2;
+    if (n <= bytes || std::memcmp(p, profile.metadata.data(), bytes - 2))
+      continue;
+    require(a.layout.count == uint32_t(profile.bed), "fixed speaker bed count");
+    require(!crc(p, bytes), "fixed metadata CRC", HD_CRC);
+    require(p[bytes] == (profile.bed == 8 ? 2 : 1), "fixed group association");
+    Bits r(p + bytes + 1, n - bytes - 1);
+    XLL y = x;
+    y.width = std::max(8, x.width);
+    y.crcMode = 0;
+    y.scalable = true;
+    y.fixedLSB = 0;
+    y.sets.resize(1);
+    auto sets = decodeGroups(r, y, true, true);
+    auto &h = sets[0].planes;
+    require(h.size() == profile.heights.size(), "fixed speaker group count");
+    require(metadata.empty() || (metadata == std::vector<size_t>{bytes} &&
+                                 groups == std::vector<size_t>{r.pos / 8}),
+            "fixed ExSS group size mismatch");
+    require(r.size - r.pos / 8 < 4, "fixed speaker tail size");
+    r.zeros(r.limit);
+    for (size_t c = 0; c < h.size(); ++c) {
+      for (const auto &fold : profile.folds[c]) {
+        uint32_t dest = 0;
+        while (dest < a.layout.count && a.layout.speakers[dest] != fold.first)
+          ++dest;
+        require(dest < a.layout.count, "fixed fold speaker missing");
+        for (size_t i = 0; i < h[c].size(); ++i)
+          a.planes[dest][i] =
+              sub(a.planes[dest][i], norm(int64_t(h[c][i]) * fold.second, 15));
+      }
+      a.layout.speakers[a.layout.count++] = profile.heights[c];
+      a.planes.push_back(std::move(h[c]));
+    }
+    a.immersive = 1;
+    return true;
+  }
+  return false;
+}
+struct ObjectMetadata {
+  int count = 0;
+  bool reserved = false;
+  size_t bytes = 0;
+  std::vector<size_t> chunks;
+  std::array<std::array<double, 12>, 5> images{};
+  std::array<std::array<double, 8>, 5> folds{};
+  std::array<int, 5> gains{};
+  int heightGain = 0;
+};
+static int gainQ15(int code) {
+  require(code >= 0 && code <= 61, "object gain code");
+  return code ? table::downmixCoefficientsQ15[4 * code - 3] : 0;
+}
+static ObjectMetadata objectMetadata(const uint8_t *p, size_t n) {
+  Bits r(p, n);
+  auto expect = [&](unsigned bits, uint64_t value) {
+    require(r.read(bits) == value, "unsupported object metadata field",
+            HD_UNSUPPORTED);
+  };
+  expect(8, 0xf1);
+  expect(8, 0x40);
+  expect(5, 0);
+  expect(4, 1);
+  expect(1, 1);
+  expect(1, 0);
+  expect(1, 1);
+  ObjectMetadata m;
+  m.count = r.get(4) + 1;
+  require(m.count == 4 || m.count == 5, "object declaration count",
+          HD_UNSUPPORTED);
+  expect(9, 0x60);
+  expect(3, 2);
+  expect(12, 0x84b);
+  expect(8, 0);
+  for (int i = 0; i < m.count; ++i) {
+    expect(1, 1);
+    expect(2, 3);
+    expect(3, unsigned(i));
+    expect(2, 1);
+    expect(10, 0);
+  }
+  int referenceOrder[] = {2, 0, 1, 3, 6, 7, 4, 5};
+  std::array<std::array<int, 8>, 5> codes{};
+  int firstAz = 0, firstEl = 0, firstDistance = 0;
+  for (int i = 0; i < m.count; ++i) {
+    expect(3, 0);
+    expect(7, 0x20);
+    expect(1, 1);
+    expect(1, 1);
+    expect(2, 0);
+    int gain = r.get(6);
+    require(gain >= 1 && gain <= 61, "object presentation gain escape");
+    m.gains[i] = gainQ15(gain);
+    int distance = r.get(6), az = r.get(8), el = r.get(7);
+    require(az <= 239 && el <= 120, "object spherical position");
+    if (!i) {
+      firstAz = az;
+      firstEl = el;
+      firstDistance = distance;
+    }
+    m.images[i] = objectImage(az, el);
+    expect(1, 0);
+    expect(1, 1);
+    expect(1, 0);
+    int mask = r.get(8);
+    for (int j = 0; j < 8; ++j)
+      if (mask & (1 << j)) {
+        int code = r.get(6);
+        require(code >= 1 && code <= 61, "object reference gain escape");
+        int c = referenceOrder[j];
+        codes[i][c] = code;
+        m.folds[i][c] = code <= 1 ? 0 : double(gainQ15(code)) / 32768;
+      }
+  }
+  m.reserved = r.get(1);
+  require(m.reserved == (m.count == 5), "reserved TFC/object role count");
+  if (m.reserved) {
+    for (int i = 0; i < m.count; ++i) {
+      expect(1, i == 0);
+      if (!i) {
+        expect(2, 0);
+        expect(5, 8);
+        expect(8, 0x80);
+        expect(1, 1);
+        expect(1, 1);
+        expect(6, 61);
+      }
+    }
+    require(firstAz == 120 && firstEl == 77 && firstDistance == 63 &&
+                m.gains[0] == gainQ15(61) &&
+                codes[0] == std::array<int, 8>{46, 46, 58, 0, 0, 0, 0, 0},
+            "reserved TFC declaration changed");
+  }
+  r.zeros((r.pos + 7) & ~size_t(7));
+  size_t objectBytes = r.pos / 8;
+  expect(8, 3);
+  expect(8, 0);
+  expect(1, 0);
+  expect(4, 1);
+  expect(4, 1);
+  expect(1, 0);
+  expect(1, 0);
+  expect(4, 0);
+  expect(1, 1);
+  expect(6, 61);
+  expect(1, 0);
+  expect(3, 3);
+  expect(16, 0x886b);
+  expect(5, 2);
+  expect(6, 0);
+  expect(1, 1);
+  expect(1, 0);
+  expect(12, 0x3fa);
+  int bedColumns[] = {1, 2, 6, 7}, heightColumns[] = {4, 5, 10, 11};
+  int heightCode = m.reserved ? 61 : 55;
+  m.heightGain = gainQ15(heightCode);
+  for (int i = 0; i < 4; ++i) {
+    expect(12, (1 << bedColumns[i]) | (1 << heightColumns[i]));
+    expect(6, unsigned(heightCode));
+    expect(6, 61);
+  }
+  r.zeros((r.pos + 7) & ~size_t(7));
+  m.bytes = r.pos / 8 + 2;
+  r.checkCRC(0, m.bytes);
+  m.chunks = {objectBytes, m.bytes - objectBytes - 2};
+  return m;
+}
+static Planes associatedGroup(const uint8_t *p, size_t n, size_t &at,
+                              const XLL &x, int association, int channels,
+                              size_t declared) {
+  require(at <= n && n - at >= 13 && p[at] == association &&
+              be32(p + at + 1) == 0x34388c4f,
+          "object audio association");
+  at += 5;
+  Bits r(p + at, n - at);
+  require(!r.get(4), "object common version", HD_UNSUPPORTED);
+  int header = r.get(8) + 1, bits = r.get(5) + 1;
+  size_t frame = size_t(r.read(unsigned(bits)) + 1);
+  require(!r.get(4), "object set count");
+  XLL y;
+  y.segments = 1 << r.get(4);
+  y.samples = 1 << r.get(4);
+  y.width = r.get(5) + 1;
+  y.crcMode = r.get(2);
+  y.scalable = r.get(1);
+  y.privateOffset = size_t(r.get(5) + 1);
+  require(header >= 12 && frame >= size_t(header) && frame - 4 <= n - at &&
+              y.segments == x.segments && y.samples == x.samples &&
+              y.segments * y.samples == 512 &&
+              y.width == std::max(8, x.width) && y.width <= 16 && !y.crcMode &&
+              !y.scalable,
+          "object shared header contract");
+  require(!declared || declared == frame + 1,
+          "ExSS object group size mismatch");
+  r.checkCRC(0, size_t(header - 4));
+  r.size = frame - 4;
+  r.limit = r.size * 8;
+  r.seek(size_t(header - 4) * 8);
+  y.sets.resize(1);
+  auto sets = decodeGroups(r, y, true);
+  r.zeros(r.limit);
+  require(sets[0].count == channels, "object group channel count");
+  at += frame - 4;
+  return std::move(sets[0].planes);
+}
+static void dynamicPrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n,
+                           Presentation &state,
+                           const std::vector<size_t> &metadataSizes,
+                           const std::vector<size_t> &groupSizes) {
+  require(a.layout.count == 8 && x.segments * x.samples == 512,
+          "dynamic bed dimensions");
+  ObjectMetadata m = objectMetadata(p, n);
+  require(metadataSizes.empty() || metadataSizes == m.chunks,
+          "ExSS object metadata sizes");
+  require(groupSizes.empty() || groupSizes.size() == 2,
+          "ExSS object group count");
+  size_t at = m.bytes;
+  Planes objects = associatedGroup(p, n, at, x, 3, m.count,
+                                   groupSizes.empty() ? 0 : groupSizes[0]);
+  Planes heights = associatedGroup(p, n, at, x, 2, 4,
+                                   groupSizes.empty() ? 0 : groupSizes[1]);
+  require(n - at < 4, "object tail size");
+  for (; at < n; ++at)
+    require(!p[at], "object tail padding");
+  if (state.records != m.count) {
+    state.records = m.count;
+    state.reference = m.folds;
+    state.image = m.images;
+  }
+  int order[] = {0, 1, 2, 3,
+                 6, 7, 4, 5}; // Authoring order to published WAVE bed.
+  int destinations[] = {0, 1, 4, 5};
+  for (int h = 0; h < 4; ++h) {
+    for (size_t i = 0; i < 512; ++i)
+      a.planes[destinations[h]][i] =
+          sub(a.planes[destinations[h]][i],
+              norm(int64_t(heights[h][i]) * m.heightGain, 15));
+    a.planes.push_back(std::move(heights[h]));
+  }
+  hdmaxdec_speaker tops[] = {HD_TFL, HD_TFR, HD_TBL, HD_TBR};
+  for (auto top : tops)
+    a.layout.speakers[a.layout.count++] = top;
+  if (m.reserved) {
+    for (int c = 0; c < 3; ++c)
+      for (size_t i = 0; i < 512; ++i)
+        a.planes[c][i] =
+            sub(a.planes[c][i],
+                norm(int64_t(objects[0][i]) * gainQ15(c == 2 ? 58 : 46), 15));
+    a.planes.push_back(std::move(objects[0]));
+    a.layout.speakers[a.layout.count++] = HD_TFC;
+  }
+  constexpr double transition = 0.001098198738079148;
+  for (size_t i = 0; i < 512; ++i) {
+    std::array<double, 12> rendered{};
+    for (int slot = m.reserved ? 1 : 0; slot < m.count; ++slot) {
+      int32_t value = objects[slot][i];
+      for (int c = 0; c < 8; ++c) {
+        double &g = state.reference[slot][c];
+        g += (m.folds[slot][c] - g) * transition;
+        int coefficient = int(std::round(g * 32768));
+        a.planes[order[c]][i] =
+            sub(a.planes[order[c]][i], norm(int64_t(value) * coefficient, 15));
+      }
+      for (int c = 0; c < 12; ++c) {
+        double &g = state.image[slot][c];
+        g += (m.images[slot][c] - g) * transition;
+        rendered[c] += double(value) * double(m.gains[slot]) / 32768 * g;
+      }
+    }
+    for (int c = 0; c < 12; ++c) {
+      int dest = c < 8 ? order[c] : c;
+      int64_t value =
+          int64_t(a.planes[dest][i]) + int64_t(std::round(rendered[c]));
+      require(value >= -8388608 && value <= 8388607,
+              "object rendering exceeds signed 24-bit");
+      a.planes[dest][i] = int32_t(value);
+    }
+  }
+  a.immersive = m.reserved ? 2 : 1;
+}
+void decodePrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n,
+                   Presentation &presentation,
+                   const std::vector<size_t> &metadataSizes,
+                   const std::vector<size_t> &groupSizes) {
   if (!n)
+    return;
+  require(n >= 4, "private presentation prefix");
+  if (be32(p) == 0xf14000d3 || be32(p) == 0xf14000d4) {
+    dynamicPrivate(a, x, p, n, presentation, metadataSizes, groupSizes);
+    return;
+  }
+  if (fixedPrivate(a, x, p, n, metadataSizes, groupSizes))
     return;
   require(a.layout.count == 8, "private presentation requires 7.1 bed",
           HD_UNSUPPORTED);
   Planes h;
   if (be32(p) == 0x02000850) {
+    require(metadataSizes.empty() ||
+                (metadataSizes == std::vector<size_t>{21} && n >= 23 &&
+                 groupSizes == std::vector<size_t>{n - 23}),
+            "standard ExSS navigation sizes");
     h = standardPrivate(p, n, x);
     a.immersive = 1;
     int bed[] = {0, 1, 4, 5};
@@ -561,6 +941,10 @@ void decodePrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n) {
         a.planes[bed[c]][i] =
             sub(a.planes[bed[c]][i], norm(int64_t(h[c][i]) * 23170, 15));
   } else if (be32(p) == 0xf14000d0) {
+    require(metadataSizes.empty() ||
+                (metadataSizes == std::vector<size_t>{20, 23} &&
+                 groupSizes.size() == 2),
+            "IMAX ExSS metadata navigation sizes");
     const uint8_t metadata[] = {
         0xf1, 0x40, 0x00, 0xd0, 0x30, 0x28, 0x4b, 0,    0xe1, 0,    2,    0x0c,
         0xf7, 0xf7, 0x89, 0xa8, 0x1f, 0xab, 0xae, 0,    3,    0,    8,    0x81,
@@ -602,6 +986,8 @@ void decodePrivate(Audio &a, const XLL &x, const uint8_t *p, size_t n) {
       require(sets[0].count == (g ? 4 : 1), "IMAX group count");
       for (auto &plane : sets[0].planes)
         h.push_back(std::move(plane));
+      require(groupSizes.empty() || groupSizes[size_t(g)] == frame + 1,
+              "ExSS associated group size mismatch");
       at += frame - 4;
     }
     require(n - at < 4, "IMAX tail size");

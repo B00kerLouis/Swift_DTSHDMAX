@@ -16,6 +16,7 @@ struct hdmaxdec_file {
   struct SeekPoint {
     uint64_t offset = 0, produced = 0, trim = 0;
     hd::Core core;
+    hd::Presentation presentation;
   };
   std::vector<SeekPoint> seekPoints;
   FILE *fp = nullptr;
@@ -58,12 +59,13 @@ struct ScanWindow {
     hd::require(at <= file->length && count <= file->length - at &&
                     count <= (1u << 20),
                 "AU scan exceeds input bound");
-    if (begin == UINT64_MAX || at < begin ||
-        at - begin > bytes.size() || count > bytes.size() - size_t(at - begin)) {
+    if (begin == UINT64_MAX || at < begin || at - begin > bytes.size() ||
+        count > bytes.size() - size_t(at - begin)) {
       begin = at;
       bytes.resize(size_t(std::min<uint64_t>(file->length - at, 1u << 20)));
-      hd::require(readAt(file->fp, file->start + at, bytes.data(), bytes.size()),
-                  "AU scan read failed", HD_IO);
+      hd::require(
+          readAt(file->fp, file->start + at, bytes.data(), bytes.size()),
+          "AU scan read failed", HD_IO);
     }
     return bytes.data() + size_t(at - begin);
   }
@@ -101,8 +103,7 @@ ScanAU scanAU(hdmaxdec_file *f, ScanWindow &window, uint64_t at) {
     bool wide = r.get(1);
     size_t header = size_t(r.get(wide ? 12 : 8) + 1);
     size_t bytes = size_t(r.get(wide ? 20 : 16) + 1);
-    hd::require(header <= bytes && bytes <= f->length - next,
-                "ExSS scan size");
+    hd::require(header <= bytes && bytes <= f->length - next, "ExSS scan size");
     au.end = next + bytes;
     xll = next + header;
   } else
@@ -120,8 +121,7 @@ ScanAU scanAU(hdmaxdec_file *f, ScanWindow &window, uint64_t at) {
               "XLL scan dimensions");
   if (!au.end)
     au.end = xll + bytes;
-  hd::require(au.end > at && au.end - at <= (1u << 20) &&
-                  xll + bytes <= au.end,
+  hd::require(au.end > at && au.end - at <= (1u << 20) && xll + bytes <= au.end,
               "AU scan boundary");
   return au;
 }
@@ -297,14 +297,15 @@ int hdmaxdec_file_seek_progress(hdmaxdec_file *f, uint64_t sample,
     f->trim = f->initialTrim;
     f->hasPending = false;
     f->error.clear();
-    auto point = std::upper_bound(
-        f->seekPoints.begin(), f->seekPoints.end(), sample,
-        [](uint64_t value, const hdmaxdec_file::SeekPoint &p) {
-          return value < p.produced;
-        });
+    auto point =
+        std::upper_bound(f->seekPoints.begin(), f->seekPoints.end(), sample,
+                         [](uint64_t value, const hdmaxdec_file::SeekPoint &p) {
+                           return value < p.produced;
+                         });
     if (point != f->seekPoints.begin()) {
       --point;
       hd::coreState(f->decoder) = point->core;
+      hd::presentationState(f->decoder) = point->presentation;
       f->offset = point->offset;
       f->produced = point->produced;
       f->trim = point->trim;
@@ -361,7 +362,7 @@ int hdmaxdec_file_measure(hdmaxdec_file *f, hdmaxdec_progress callback,
   }
 }
 int hdmaxdec_file_prepare_seek(hdmaxdec_file *f, hdmaxdec_progress callback,
-                                void *context) {
+                               void *context) {
   if (!f)
     return HD_INVALID;
   if (!f->seekPoints.empty())
@@ -379,6 +380,7 @@ int hdmaxdec_file_prepare_seek(hdmaxdec_file *f, hdmaxdec_progress callback,
     std::vector<hdmaxdec_file::SeekPoint> points;
     points.reserve(size_t(std::min<uint64_t>(limit, f->total / stride + 1)));
     hd::Core core;
+    hd::Presentation presentation;
     ScanWindow window(f);
     uint64_t at = 0, coded = 0, next = 0;
     while (at < f->length) {
@@ -386,18 +388,26 @@ int hdmaxdec_file_prepare_seek(hdmaxdec_file *f, hdmaxdec_progress callback,
         return HD_CANCELLED;
       uint64_t produced = coded > f->initialTrim ? coded - f->initialTrim : 0;
       if (produced >= next && produced < f->total) {
-        points.push_back({at, produced, coded < f->initialTrim
-                                           ? f->initialTrim - coded : 0, core});
+        points.push_back({at, produced,
+                          coded < f->initialTrim ? f->initialTrim - coded : 0,
+                          core, presentation});
         next = produced + stride;
       }
       auto au = scanAU(f, window, at);
-      if (au.coreSize) {
+      if (!f->coreOnly) {
+        size_t consumed = 0;
+        auto audio = hd::decodeAU(core, presentation,
+                                  window.get(at, size_t(au.end - at)),
+                                  size_t(au.end - at), consumed);
+        hd::require(consumed == au.end - at &&
+                        audio.planes[0].size() == au.samples,
+                    "seek presentation timeline mismatch");
+      } else if (au.coreSize) {
         auto audio = core.decode(window.get(at, au.coreSize), au.coreSize);
         hd::require(audio.planes[0].size() == au.samples,
                     "seek Core timeline mismatch");
       }
-      hd::require(au.samples <= UINT64_MAX - coded,
-                  "seek timeline overflow");
+      hd::require(au.samples <= UINT64_MAX - coded, "seek timeline overflow");
       coded += au.samples;
       at = au.end;
     }

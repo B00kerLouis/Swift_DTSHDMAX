@@ -146,6 +146,13 @@ struct Audio {
   hdmaxdec_layout layout{};
   uint32_t immersive = 0;
 };
+// Both reference-fold recovery and the software speaker image are continuous
+// across AUs. Seek snapshots must restore them alongside Core history.
+struct Presentation {
+  int records = 0;
+  std::array<std::array<double, 8>, 5> reference{};
+  std::array<std::array<double, 12>, 5> image{};
+};
 struct Core {
   struct Synth {
     std::array<int32_t, 512> history{};
@@ -158,10 +165,15 @@ struct Core {
   Audio decode(const uint8_t *, size_t);
 };
 Core &coreState(hdmaxdec_decoder *);
+Presentation &presentationState(hdmaxdec_decoder *);
+std::array<double, 12> objectImage(int azimuth, int elevation);
 XLL decodeXLL(const uint8_t *, size_t);
 Audio assemble(const XLL &, const Audio *);
-void decodePrivate(Audio &, const XLL &, const uint8_t *, size_t);
+void decodePrivate(Audio &, const XLL &, const uint8_t *, size_t,
+                   Presentation &, const std::vector<size_t> &metadata = {},
+                   const std::vector<size_t> &groups = {});
 void predict(Set &);
-std::vector<Set> decodeGroups(Bits &, XLL &, bool alternate);
-Audio decodeAU(Core &, const uint8_t *, size_t, size_t &);
+std::vector<Set> decodeGroups(Bits &, XLL &, bool alternate,
+                              bool fixedMapping = false);
+Audio decodeAU(Core &, Presentation &, const uint8_t *, size_t, size_t &);
 } // namespace hd

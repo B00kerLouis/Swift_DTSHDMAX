@@ -5,6 +5,7 @@ struct ExSS {
   size_t header = 0, frame = 0, asset = 0, privateOffset = 0, privateSize = 0;
   int channels = 0;
   bool immersive = false;
+  std::vector<size_t> metadata, groups;
 };
 static ExSS exss(const uint8_t *p, size_t n) {
   Bits r(p, n);
@@ -71,21 +72,29 @@ static ExSS exss(const uint8_t *p, size_t n) {
   require(!r.get(1) && !r.get(1), "ExSS secondary/DRC rev2", HD_UNSUPPORTED);
   require(r.pos <= end, "ExSS descriptor closure");
   size_t remaining = end - r.pos;
-  if (remaining == 67) {
+  Bits preview = r;
+  if (remaining >= 60 && remaining <= 67 && !type && preview.get(5) == 3) {
     require(r.get(5) == 3, "DTS:X descriptor profile");
     e.privateOffset = size_t(r.get(16));
-    require(r.read(24) == 0x1145, "DTS:X signature");
-    size_t nibbles = size_t(r.get(16));
-    require(nibbles % 2 == 0 && !r.get(6), "DTS:X descriptor payload");
-    e.privateSize = 24 + nibbles / 2;
+    uint64_t signature = r.read(24);
+    require((signature & 0xff00ff) == 0x45, "DTS:X signature");
+    size_t metadata = size_t((signature >> 8) & 255) + 4;
+    size_t group = size_t(r.get(15) + 1);
+    r.zeros(end);
+    e.metadata = {metadata};
+    e.groups = {group};
+    e.privateSize = (metadata + 1 + group + 3) & ~size_t(3);
     e.immersive = true;
   } else if (remaining == 95 && type) {
     require(r.get(5) == 3, "IMAX profile");
     e.privateOffset = size_t(r.get(16));
-    require(r.read(40) == 0x1112154444, "IMAX signature");
+    require(r.get(4) == 1 && r.get(4) == 1, "object metadata navigation");
+    e.metadata = {size_t(r.get(8) + 2), size_t(r.get(8) + 2)};
+    require(r.get(8) == 0x44 && r.get(8) == 0x44, "object audio navigation");
     size_t first = size_t(r.get(15) + 1), second = size_t(r.get(15) + 1);
     require(!r.get(4), "IMAX descriptor padding");
-    e.privateSize = 45 + first + second;
+    e.groups = {first, second};
+    e.privateSize = e.metadata[0] + e.metadata[1] + 2 + first + second;
     e.privateSize = (e.privateSize + 3) & ~size_t(3);
     e.immersive = true;
   } else
@@ -96,7 +105,8 @@ static ExSS exss(const uint8_t *p, size_t n) {
   require(e.asset == xll && xll <= n - e.header, "ExSS asset size closure");
   return e;
 }
-Audio decodeAU(Core &state, const uint8_t *p, size_t n, size_t &consumed) {
+Audio decodeAU(Core &state, Presentation &presentation, const uint8_t *p,
+               size_t n, size_t &consumed) {
   consumed = 0;
   if (n < 10)
     throw Error(HD_NEED_MORE, "access unit prefix");
@@ -142,6 +152,7 @@ Audio decodeAU(Core &state, const uint8_t *p, size_t n, size_t &consumed) {
   Audio core;
   const Audio *corePtr = nullptr;
   Core next = state;
+  Presentation nextPresentation = presentation;
   // Commit Core history only after the entire public/private AU has closed.
   if (coreSize) {
     core = next.decode(p, coreSize);
@@ -166,7 +177,8 @@ Audio decodeAU(Core &state, const uint8_t *p, size_t n, size_t &consumed) {
       require(e.privateOffset == x.privateOffset &&
                   e.privateSize == privateSize,
               "ExSS/private range mismatch");
-    decodePrivate(a, x, xll + x.privateOffset, privateSize);
+    decodePrivate(a, x, xll + x.privateOffset, privateSize, nextPresentation,
+                  e.metadata, e.groups);
   } else if (e.immersive)
     throw Error(HD_INVALID, "advertised private presentation is missing");
   for (const auto &plane : a.planes)
@@ -174,18 +186,21 @@ Audio decodeAU(Core &state, const uint8_t *p, size_t n, size_t &consumed) {
       require(v >= -8388608 && v <= 8388607,
               "reconstructed PCM outside signed 24-bit");
   state = std::move(next);
+  presentation = std::move(nextPresentation);
   consumed = at + frame;
   return a;
 }
 } // namespace hd
 struct hdmaxdec_decoder {
   hd::Core core;
+  hd::Presentation presentation;
   hd::Audio audio;
   std::string error;
 };
 namespace hd {
 Core &coreState(hdmaxdec_decoder *d) { return d->core; }
-}
+Presentation &presentationState(hdmaxdec_decoder *d) { return d->presentation; }
+} // namespace hd
 extern "C" {
 hdmaxdec_decoder *hdmaxdec_create(void) {
   try {
@@ -198,6 +213,7 @@ void hdmaxdec_destroy(hdmaxdec_decoder *d) { delete d; }
 void hdmaxdec_reset(hdmaxdec_decoder *d) {
   if (d) {
     d->core = {};
+    d->presentation = {};
     d->audio = {};
     d->error.clear();
   }
@@ -210,7 +226,7 @@ int hdmaxdec_decode(hdmaxdec_decoder *d, const uint8_t *p, size_t n,
   *f = {};
   try {
     size_t used = 0;
-    d->audio = hd::decodeAU(d->core, p, n, used);
+    d->audio = hd::decodeAU(d->core, d->presentation, p, n, used);
     f->sample_rate = 48000;
     f->bit_depth = 24;
     f->sample_count = uint32_t(d->audio.planes[0].size());

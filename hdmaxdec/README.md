@@ -2,7 +2,7 @@
 
 Copyright (c) 2026 B00kerLouis. LGPL-2.1-or-later.
 
-An independent C17/C++17 decoder for this project's 48 kHz, 24-bit Core/ExSS/XLL delivery streams, standard branch-0 DTS:X, and D0 IMAX. Decoding does not link the Swift encoder, an external codec library, or an external decoder process.
+An independent C17/C++17 decoder for this project's 48 kHz, 24-bit Core/ExSS/XLL delivery streams, standard branch-0 DTS:X, fixed speaker formats, D0 IMAX, and four-aggregate object presentations. Decoding does not link the Swift encoder, an external codec library, or an external decoder process.
 
 ## Targets and shared products
 
@@ -44,7 +44,7 @@ The QC layout is independent of the DAC: a stereo device can inspect and export 
 
 Metering occurs before monitoring volume and DAC clipping. Export does not apply monitoring volume. The UI runs on the main thread; decoding, header measurement, Core-history seeking, and export run on background threads. Meter snapshots are displayed at 30 fps. There is no whole-programme PCM cache, UI persistence database, or persistent checkpoint model.
 
-On opening a programme, QC prepares a session-only AU/Core-history index. It retains at most 4096 history states, below 64 MiB, and discards it when the file closes. Seeks restore the nearest exact Core state and decode only the remaining local span. Pressing the seek slider immediately discards queued monitoring audio; dragging updates the position preview silently. Releasing it performs one exact seek to the final position and restores the previous play/pause state. Keyboard seeks cancel older work so the latest position wins. Layout/monitor/Solo changes discard queued monitor audio and reuse the open audio device. Pause, seek and stop do not recreate the audio queue. Preparation is cancellable when opening another file or closing the player.
+On opening a programme, QC prepares a session-only AU/history index. It retains at most 4096 history states, below 64 MiB, and discards it when the file closes. Seeks restore the nearest exact Core and object-presentation state and decode only the remaining local span. Pressing the seek slider immediately discards queued monitoring audio; dragging updates the position preview silently. Releasing it performs one exact seek to the final position and restores the previous play/pause state. Keyboard seeks cancel older work so the latest position wins. Layout/monitor/Solo changes discard queued monitor audio and reuse the open audio device. Pause, seek and stop do not recreate the audio queue. Preparation is cancellable when opening another file or closing the player.
 
 The GUI is compiled entirely as C++, using the system AppKit/Core Graphics boundary through Objective-C runtime C APIs. It contains no `.m`, `.mm`, or Swift implementation. C++ runtime, Objective-C++, SwiftUI, Qt, and WebView approaches were evaluated; C++ runtime preserves the language constraint and platform isolation.
 
@@ -78,8 +78,10 @@ The headless decode/play commands retain automatic uniform peak headroom for rem
 5. Recover the 6+2 hierarchy from Core, public residuals, Q16 scales and Q15 undo-downmix before publishing the explicit speaker order.
 6. Standard XLL-X sync is `0x02000850`. Decode branch-0 routing, predictors, CRC and entropy using `max(8, public nBits4SSize)`. Compact navigated zeros still validate that width. Accept the exact canonical 48-byte zero grammar only for 2x256 with public width <=8.
 7. D0 sync is `0xf14000d0`. Validate fixed metadata, mono TFC and quartet height groups, shared widths, CRC, and 2/4/8 partitions. Undo TFC C/L/R Q15 27571/13818/13818 and unity corner-height folds.
+8. Fixed type-2 presentations support `7.1.3`, `7.1.2F`, `7.1.2S`, `5.1.5`, `5.1.4` and `5.1.3`. Short groups inherit the public scalable-LSB fields and shared NAVI width. Recover the single-set 5.1 Core residual, preserve the 5.1.5 front-height permutation, and undo the declared Q15 folds, including centre rear height at 16423 to each surround. Native `7.1.2S` uses TSL/TSR; use raw PCM or the C/AVFrame API for those positions.
+9. D3/D4 declarations carry four moving records, with a separate reserved TFC in D4, and a fixed height quartet. Validate every metadata/audio navigation size and group CRC. Recover the fixed bed using continuous reference gains, then render the four aggregates with continuous 7.1.4 speaker-image gains. The output is a software speaker presentation; it does not recover original IAB objects or certify hardware rendering. See [VALIDATION.md](VALIDATION.md) for measured differences against official PCM and qualification limits.
 
-File reading retains at most a 1 MiB compressed window plus bounded PCM frames. Default seeking replays Core history from the beginning and is cancellable. Interactive clients may call `hdmaxdec_file_prepare_seek` once to build the bounded session index and accelerate subsequent exact seeks. The preparation pass scans AU boundaries and reconstructs Core history without decoding or retaining whole-programme XLL PCM. A file NAVI entry alone cannot restore Core history.
+File reading retains at most a 1 MiB compressed window plus bounded PCM frames. Default seeking replays history from the beginning and is cancellable. Interactive clients may call `hdmaxdec_file_prepare_seek` once to build the bounded session index and accelerate subsequent exact seeks. The preparation pass decodes bounded AUs to restore both Core and object-presentation state, retaining only history snapshots. A file NAVI entry alone cannot restore this history.
 
 ## C and FFmpeg integration
 
@@ -102,7 +104,7 @@ Hosts demux MKV/MOV/TS, assemble complete AUs, and handle packet PTS, container 
 
 ## Validation and scope
 
-Regressions cover deterministic stereo/5.1/7.1 and layered Core/private vectors, extreme values, predictor history, ten speaker layouts, impulse routing, standard/IMAX folds, truncation, 4096 malformed vectors, PCM export precision, cancellation and Unicode paths. `hdmaxdec_tests FILE...` checks complete programmes, exact source counts, EOF re-entry and stop/play reset. Playback material must be at least 90 seconds long.
+Regressions cover deterministic stereo/5.1/7.1, the six additional fixed formats, D3/D4 object presentations, and layered Core/private vectors, extreme values, predictor history, ten speaker layouts, impulse routing, standard/IMAX folds, truncation, 4096 malformed vectors, PCM export precision, cancellation and Unicode paths. `hdmaxdec_tests FILE...` checks complete programmes, exact source counts, EOF re-entry and stop/play reset. Playback material must be at least 90 seconds long.
 
 Programme media, measurements and research reports remain local under ignored `Research/`. The supported contract is this encoder's auto/standard, vision 1/2 delivery profile. Other commercial object grammars, Core Huffman/non-AMODE-9, non-48-kHz audio, PBR fragmentation, multiple assets and private research branches 1/2/3 are outside qualification. PCM correctness and system playback do not establish hardware DTS:X/IMAX presentation acceptance or certification.
 

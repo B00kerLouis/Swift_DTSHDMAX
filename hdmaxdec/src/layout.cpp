@@ -260,28 +260,40 @@ int hdmaxdec_frame_mix_matrix(const hdmaxdec_frame *f,
         return int(c);
     return -1;
   };
-  Speaker tops[] = {HD_TFL, HD_TFR, HD_TBL, HD_TBR};
-  Speaker beds[] = {HD_FL, HD_FR, HD_BL, HD_BR};
-  float gain = f->immersive == 2 ? 1.0f : 23170.0f / 32768;
-  for (int j = 0; j < 4; ++j) {
-    int top = input(tops[j]), bed = input(beds[j]);
-    if (top < 0 || bed < 0)
-      return HD_INVALID;
-    for (uint32_t o = 0; o < out->count; ++o)
-      m[o * f->layout.count + uint32_t(top)] =
-          gain * m[o * f->layout.count + uint32_t(bed)];
-  }
-  if (f->immersive == 2) {
-    int top = input(HD_TFC), left = input(HD_FL), right = input(HD_FR),
-        center = input(HD_FC);
-    if (top < 0 || left < 0 || right < 0 || center < 0)
-      return HD_INVALID;
+  auto fold = [&](Speaker speaker,
+                  std::initializer_list<std::pair<Speaker, float>> routes) {
+    int top = input(speaker);
+    if (top < 0)
+      return true;
     for (uint32_t o = 0; o < out->count; ++o) {
-      float *row = m + o * f->layout.count;
-      row[top] = (row[left] + row[right]) * (13818.0f / 32768) +
-                 row[center] * (27571.0f / 32768);
+      float value = 0;
+      for (const auto &route : routes) {
+        int bed = input(route.first);
+        if (bed < 0)
+          return false;
+        value += route.second * m[o * f->layout.count + uint32_t(bed)];
+      }
+      m[o * f->layout.count + uint32_t(top)] = value;
     }
-  }
+    return true;
+  };
+  Speaker rearLeft = input(HD_BL) >= 0 ? HD_BL : HD_SL;
+  Speaker rearRight = input(HD_BR) >= 0 ? HD_BR : HD_SR;
+  float gain = f->immersive == 2 ? 1.0f : 23170.0f / 32768;
+  if (!fold(HD_TFL, {{HD_FL, gain}}) || !fold(HD_TFR, {{HD_FR, gain}}) ||
+      !fold(HD_TBL, {{rearLeft, gain}}) || !fold(HD_TBR, {{rearRight, gain}}) ||
+      !fold(HD_TSL, {{HD_SL, 23170.0f / 32768}}) ||
+      !fold(HD_TSR, {{HD_SR, 23170.0f / 32768}}) ||
+      !fold(HD_TBC,
+            {{rearLeft, 16423.0f / 32768}, {rearRight, 16423.0f / 32768}}))
+    return HD_INVALID;
+  if (f->immersive == 2) {
+    if (!fold(HD_TFC, {{HD_FL, 13818.0f / 32768},
+                       {HD_FR, 13818.0f / 32768},
+                       {HD_FC, 27571.0f / 32768}}))
+      return HD_INVALID;
+  } else if (!fold(HD_TFC, {{HD_FC, 23170.0f / 32768}}))
+    return HD_INVALID;
   return HD_OK;
 }
 int hdmaxdec_render_float(const hdmaxdec_frame *f, const hdmaxdec_layout *out,
@@ -312,3 +324,94 @@ int hdmaxdec_render_float(const hdmaxdec_frame *f, const hdmaxdec_layout *out,
   return HD_OK;
 }
 }
+
+namespace hd {
+// The 7.1.4 display panner uses speaker-anchored spherical directions. Distance
+// is preserved by metadata validation but does not spread this speaker image.
+std::array<double, 12> objectImage(int azimuth, int elevation) {
+  using V = std::array<float, 3>;
+  struct Patch {
+    std::array<int, 3> channels;
+    std::array<V, 3> inverse;
+  };
+  constexpr float pi = 3.14159265358979323846f;
+  const auto direction = [](float az, float el) -> V {
+    float a = az * pi / 180, e = el * pi / 180;
+    return {std::sin(a) * std::cos(e), std::cos(a) * std::cos(e), std::sin(e)};
+  };
+  static const auto patches = [&] {
+    const float angles[][2] = {{-30, 0},  {30, 0},  {0, 0},     {0, 0},
+                               {-90, 0},  {90, 0},  {-150, 0},  {150, 0},
+                               {-45, 45}, {45, 45}, {-135, 45}, {135, 45}};
+    const int indices[][3] = {{0, 2, 8},   {0, 4, 8},  {2, 1, 9},  {2, 8, 9},
+                              {1, 5, 9},   {4, 6, 10}, {4, 8, 10}, {5, 7, 11},
+                              {5, 9, 11},  {6, 7, 10}, {6, 7, 11}, {6, 10, 11},
+                              {7, 10, 11}, {8, 9, 10}, {8, 9, 11}, {8, 10, 11},
+                              {9, 10, 11}};
+    std::vector<Patch> result;
+    for (const auto &ix : indices) {
+      std::array<V, 3> a;
+      for (int i = 0; i < 3; ++i)
+        a[i] = direction(angles[ix[i]][0], angles[ix[i]][1]);
+      float det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+                  a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                  a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+      if (std::abs(det) <= 8 * std::numeric_limits<float>::epsilon())
+        continue;
+      float inv = 1 / det;
+      result.push_back({{ix[0], ix[1], ix[2]},
+                        {{{{inv * (a[1][1] * a[2][2] - a[1][2] * a[2][1]),
+                            inv * (a[0][2] * a[2][1] - a[0][1] * a[2][2]),
+                            inv * (a[0][1] * a[1][2] - a[0][2] * a[1][1])}},
+                          {{inv * (a[1][2] * a[2][0] - a[1][0] * a[2][2]),
+                            inv * (a[0][0] * a[2][2] - a[0][2] * a[2][0]),
+                            inv * (a[0][2] * a[1][0] - a[0][0] * a[1][2])}},
+                          {{inv * (a[1][0] * a[2][1] - a[1][1] * a[2][0]),
+                            inv * (a[0][1] * a[2][0] - a[0][0] * a[2][1]),
+                            inv * (a[0][0] * a[1][1] - a[0][1] * a[1][0])}}}}});
+    }
+    return result;
+  }();
+  float az = azimuth == 47    ? -110
+             : azimuth == 193 ? 110
+                              : float(azimuth) * 1.5f - 180;
+  V v = direction(az, float(elevation - 60) * 1.5f);
+  float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  if (length > 1e-7f)
+    for (float &c : v)
+      c /= length;
+  std::array<float, 12> gains{};
+  float active = 0, epsilon = 8 * std::numeric_limits<float>::epsilon();
+  for (const auto &patch : patches) {
+    V c{};
+    int significant = 0;
+    bool outside = false;
+    for (int i = 0; i < 3; ++i) {
+      c[i] = v[0] * patch.inverse[0][i] + v[1] * patch.inverse[1][i] +
+             v[2] * patch.inverse[2][i];
+      outside |= c[i] < -epsilon;
+      significant += c[i] > epsilon;
+    }
+    if (outside)
+      continue;
+    float weight = significant == 2 ? 0.5f : 1;
+    for (int i = 0; i < 3; ++i)
+      gains[patch.channels[i]] += c[i] * weight;
+    active += weight;
+    if (significant == 1)
+      break;
+  }
+  if (active > 0)
+    for (float &g : gains)
+      g /= active;
+  float power = 0;
+  for (float g : gains)
+    power += g * g;
+  float norm = std::sqrt(power);
+  std::array<double, 12> result{};
+  if (norm > 1e-12f)
+    for (size_t i = 0; i < gains.size(); ++i)
+      result[i] = double(gains[i] / norm);
+  return result;
+}
+} // namespace hd
